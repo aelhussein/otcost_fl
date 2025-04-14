@@ -81,6 +81,7 @@ DATA_DIR = f'{ROOT_DIR}/data'       # Directory containing datasets
 EVAL_DIR = f'{ROOT_DIR}/code/evaluation' # Directory for evaluation scripts/results
 OTCOST_DIR = f'{ROOT_DIR}/code/OTCost' # Directory for evaluation scripts/results
 RESULTS_DIR = f'{ROOT_DIR}/results' # Directory to save experiment results
+ACTIVATION_DIR = f'{ROOT_DIR}/activations'
 
 # --- Add project directories to Python path ---
 # Allows importing modules from these directories
