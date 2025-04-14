@@ -8,7 +8,21 @@ def set_seeds(seed_value=1):
     random.seed(seed_value)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-set_seeds(seed_value=1)
+    os.environ['PYTHONHASHSEED'] = str(seed_value)
+    torch.use_deterministic_algorithms(True)
+    g = torch.Generator()
+    g.manual_seed(1)
+    return g
+g = set_seeds(seed_value=1)
+
+def seed_worker():
+    """
+    Seeds a DataLoader worker. Call this function via worker_init_fn.
+    Ensures that shuffling and augmentations are reproducible across workers.
+    """
+    worker_seed = torch.initial_seed() % 2**32 # Get the main process seed
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 def cleanup_gpu():
     """Clean up GPU memory."""
@@ -66,5 +80,33 @@ def get_default_reg(DATASET):
     return reg
 
 
+class ModelDiversity:
+    """Calculates diversity metrics between two clients' models."""
+    def __init__(self, client_1, client_2):
+        self.client_1 = client_1
+        self.client_2 = client_2
 
+    def calculate_weight_divergence(self):
+        """Calculate weight divergence metrics between two clients."""
+        weights_1 = self._get_weights(self.client_1)
+        weights_2 = self._get_weights(self.client_2)
+        
+        # Normalize weights
+        norm_1 = torch.norm(weights_1)
+        norm_2 = torch.norm(weights_2)
+        w1_normalized = weights_1 / norm_1 if norm_1 != 0 else weights_1
+        w2_normalized = weights_2 / norm_2 if norm_2 != 0 else weights_2
+        
+        # Calculate divergence metrics
+        weight_div = torch.norm(w1_normalized - w2_normalized)
+        weight_orient = torch.dot(w1_normalized, w2_normalized)
+        
+        return weight_div.item(), weight_orient.item()
 
+    def _get_weights(self, client):
+        """Extract weights from a client's model."""
+        weights = []
+        state = client.global_state
+        for param in state.model.parameters():
+            weights.append(param.data.view(-1))  # Flatten weights
+        return torch.cat(weights)

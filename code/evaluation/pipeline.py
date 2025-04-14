@@ -1,5 +1,5 @@
 from configs import *
-from data_preprocessing import *
+from data_processing import *
 from servers import *
 from helper import *
 from losses import *
@@ -17,7 +17,7 @@ class ExperimentConfig:
     def __init__(self, dataset, experiment_type, params_to_try=None):
         self.dataset = dataset
         self.experiment_type = experiment_type
-        self.params_to_try = params_to_try or self._get_params_test()
+        self.params_to_try = self._get_params_test()
 
     def _get_params_test(self):
         if self.experiment_type == ExperimentType.LEARNING_RATE:
@@ -160,7 +160,7 @@ class Experiment:
                 
         #self.logger.info(f"Found {completed_runs} completed runs")
         
-        remaining_runs = self.default_params['runs_lr'] - completed_runs
+        remaining_runs = self.default_params['runs_tune'] - completed_runs
         if remaining_runs > 0:
             remaining_costs = costs
         #self.logger.info(f"Remaining costs to process: {remaining_costs}")
@@ -172,16 +172,16 @@ class Experiment:
         results, remaining_costs, completed_runs = self._check_existing_results(costs)
         
         # If no costs remain and all runs are completed, return existing results
-        if not remaining_costs and completed_runs >= self.default_params['runs_lr']:
+        if not remaining_costs and completed_runs >= self.default_params['runs_tune']:
             #self.logger.info("All experiments are already completed")
             return results
             
         # Calculate remaining runs
-        remaining_runs = self.default_params['runs_lr'] - completed_runs
+        remaining_runs = self.default_params['runs_tune'] - completed_runs
         
         for run in range(remaining_runs):
             current_run = completed_runs + run + 1
-            #self.logger.info(f"Starting run {current_run}/{self.default_params['runs_lr']}")
+            #self.logger.info(f"Starting run {current_run}/{self.default_params['runs_tune']}")
             results_run = {}
             
             for cost in remaining_costs:
@@ -265,13 +265,13 @@ class Experiment:
             print(f"Evaluating {server_type} model with best hyperparameters")
             lr = self.results_manager.get_best_parameters(
                 ExperimentType.LEARNING_RATE, server_type, cost)
-            print(lr, flush = True)
+            
+
             if server_type in ['pfedme', 'ditto']:
                 reg_param = self.results_manager.get_best_parameters(
                     ExperimentType.REG_PARAM, server_type, cost)
             else:
                 reg_param = None
-            
             config = self._create_trainer_config(server_type,lr, reg_param)
 
             server = self._create_server_instance(cost, server_type, config, tuning = False)
@@ -325,13 +325,14 @@ class Experiment:
             model = getattr(ms, self.config.dataset)()
 
         criterion = {
-            'Synthetic': nn.BCELoss(),
-            'Credit': nn.BCELoss(),
+            'Synthetic': nn.CrossEntropyLoss(),
+            'Credit': nn.CrossEntropyLoss(),
             'Weather': nn.MSELoss(),
             'EMNIST': nn.CrossEntropyLoss(),
             'CIFAR': nn.CrossEntropyLoss(),
             'IXITiny': get_dice_score,
-            'ISIC': nn.CrossEntropyLoss()
+            'ISIC': nn.CrossEntropyLoss(),
+            'Heart': nn.CrossEntropyLoss(),
         }.get(self.config.dataset, None)
 
         optimizer = torch.optim.Adam(
@@ -345,7 +346,6 @@ class Experiment:
 
     def _create_server_instance(self, cost, server_type, config, tuning):
         learning_rate = config.learning_rate
-        
         model, criterion, optimizer = self._create_model(cost, learning_rate)
         globalmodelstate = ModelState(
             model=model,
@@ -355,6 +355,7 @@ class Experiment:
         server_mapping = {
             'local': Server,
             'fedavg': FedAvgServer,
+            'fedprox': FedProxServer,
             'pfedme': PFedMeServer,
             'ditto': DittoServer
         }

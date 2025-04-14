@@ -1,18 +1,28 @@
 
 from configs import *
 
+
+class L2Normalize(torch.nn.Module):
+    def __init__(self, dim=1):
+        super(L2Normalize, self).__init__()
+        self.dim = dim
+        
+    def forward(self, x):
+        return F.normalize(x, p=2, dim=self.dim)
+    
+
 class Synthetic(torch.nn.Module):
     def __init__(self, dropout_rate=0.3):
         super(Synthetic, self).__init__()
-        self.input_size = 12
-        self.hidden_size = 12
+        self.input_size = 10
+        self.hidden_size = 10
         
         self.fc = torch.nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size),
-            nn.BatchNorm1d(self.hidden_size),
+            nn.LayerNorm(self.hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(self.hidden_size, 1)
+            nn.Linear(self.hidden_size, 2)
         )
         
         self.sigmoid = torch.nn.Sigmoid()
@@ -26,27 +36,55 @@ class Synthetic(torch.nn.Module):
     
     def forward(self, x):
         x = x.squeeze(1)
-        return self.sigmoid(self.fc(x))
+        logits = self.fc(x)
+        logits = torch.clamp(logits, min=-10.0, max=10.0) 
+        return logits
+
+
+class Heart(torch.nn.Module):
+    def __init__(self, dropout_rate=0.3):
+        super(Heart, self).__init__()
+        self.input_size = 10
+        self.hidden_size = 10
+        
+        self.fc = torch.nn.Sequential(
+            nn.Linear(self.input_size, self.hidden_size),
+            nn.LayerNorm(self.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(self.hidden_size, 5)
+        )
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        for layer in self.fc:
+            if isinstance(layer, nn.Linear):
+                nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
+                nn.init.constant_(layer.bias, 0)
+    
+    def forward(self, x):
+        x = x.squeeze(1)
+        return self.fc(x)
 
 class Credit(torch.nn.Module):
     def __init__(self, dropout_rate=0.3):
         super(Credit, self).__init__()
         self.input_size = 28
-        self.hidden_size = [56, 56]
+        self.hidden_size = [56, 28]
         
         self.fc = nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size[0]),
-            nn.BatchNorm1d(self.hidden_size[0]),
+            nn.LayerNorm(self.hidden_size[0]),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
             nn.Linear(self.hidden_size[0], self.hidden_size[1]),
-            nn.BatchNorm1d(self.hidden_size[1]),
+            nn.LayerNorm(self.hidden_size[1]),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(self.hidden_size[1], 1)
+            nn.Linear(self.hidden_size[1], 2)
         )
         
-        self.sigmoid = torch.nn.Sigmoid()
         self._initialize_weights()
     
     def _initialize_weights(self):
@@ -57,7 +95,10 @@ class Credit(torch.nn.Module):
     
     def forward(self, x):
         x = x.squeeze(1)
-        return self.sigmoid(self.fc(x))
+        logits = self.fc(x)
+        logits = torch.clamp(logits, min=-10.0, max=10.0) 
+        return logits
+        # return self.sigmoid(self.fc(x))
 
 class Weather(torch.nn.Module):
     def __init__(self, dropout_rate=0.3):

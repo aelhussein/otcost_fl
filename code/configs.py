@@ -97,8 +97,8 @@ N_WORKERS = 4 # Default number of workers for DataLoader
 ALGORITHMS = [
     'local',            # Local training only
     'fedavg',           # Federated Averaging
-    'pfedme',           # pFedMe (personalized FedAvg with proximal term)
-    'ditto',            # Ditto (dual model training: global and personal)
+    # 'fedprox',           # Fedprox (personalized FedAvg with proximal term)
+    # 'ditto',            # Ditto (dual model training: global and personal)
 ]
 
 # --- Supported Datasets ---
@@ -109,7 +109,8 @@ DATASETS = [
     'CIFAR',     # CIFAR-10
     'ISIC'       # Skin dermoscopy
     'IXITiny',   # Brain MRI
-    'Weather'    # Weather prediction
+    'Weather',    # Weather prediction
+    'Heart'
 ]
 
 
@@ -117,33 +118,33 @@ DATASETS = [
 DEFAULT_PARAMS = {
     'Synthetic': {
         'learning_rates_try':[5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3], # LRs to try during tuning
-        'default_lr': 1e-2,                                 # Default LR
+        'default_lr': 1e-3,                                 # Default LR
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5],  # Reg params to try during tuning for pfedme and ditto
         'default_reg_param': 1e-1,                  # Default Reg param
         'num_clients': 5,                           # Number of clients in federation
-        'sizes_per_client': 100,                   # Number of samples per client (if simulating)
+        'sizes_per_client': 250,                   # Number of samples per client (if simulating)
         'classes': 2,                              # Number of output classes
-        'batch_size': 128,                          # Training batch size
+        'batch_size': 64,                          # Training batch size
         'epochs_per_round': 1,                      # Local epochs per communication round
         'rounds': 100,                              # Total communication rounds
         'runs': 20,                                 # Number of independent runs for final evaluation
-        'runs_tune': 3,                             # Number of independent runs for LR tuning
+        'runs_tune': 10,                             # Number of independent runs for LR tuning
         'metric': 'F1'                              # Evaluation metric
     },
 
     'Credit': {
         'learning_rates_try':[5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3], 
-        'default_lr':1e-2, 
+        'default_lr':1e-3, 
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 
         'default_reg_param': 1e-1,
         'num_clients': 5,                          
-        'sizes_per_client': 100,                  
+        'sizes_per_client': 200,                  
         'classes': 2,                             
-        'batch_size': 128,                         
+        'batch_size': 64,                         
         'epochs_per_round': 1,                     
         'rounds': 100,                            
         'runs': 20,                                 
-        'runs_tune': 3,                           
+        'runs_tune': 10,                           
         'metric': 'F1'                             
     },
 
@@ -221,14 +222,31 @@ DEFAULT_PARAMS = {
         'runs': 10,
         'runs_tune': 3,
         'metric': 'R2'  
+    },
+
+    'Heart': {
+        'learning_rates_try':[5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3], 
+        'default_lr':1e-3, 
+        'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 
+        'default_reg_param': 1e-1,
+        'num_clients': 5,                          
+        'sizes_per_client': None,                  
+        'classes': 2,                             
+        'batch_size': 64,                         
+        'epochs_per_round': 1,                     
+        'rounds': 100,                            
+        'runs': 100,                                 
+        'runs_tune': 10,                           
+        'metric': 'F1'                             
     }
+
 }
 
 
-TABULAR = ['Synthetic', 'Credit', 'Weather']
+TABULAR = ['Synthetic', 'Credit', 'Weather', 'Heart']
 CLASS_ADJUST = ['EMNIST', 'CIFAR']
-SQUEEZE = ['Synthetic', 'Credit']
-LONG = ['EMNIST', 'CIFAR', 'ISIC']
+SQUEEZE = ['Synthetic', 'Credit', 'EMNIST', 'CIFAR', 'ISIC', 'Heart']
+LONG = ['EMNIST', 'CIFAR', 'ISIC', 'Heart']
 CLASS_ADJUST = ['EMNIST', 'CIFAR']
 TENSOR = ['IXITiny']
 CONTINUOUS_OUTCOME = ['Weather']

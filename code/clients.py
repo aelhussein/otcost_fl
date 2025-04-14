@@ -67,8 +67,7 @@ class MetricsCalculator:
     def __init__(self, dataset_name):
         self.dataset_name = dataset_name
         self.continuous_outcome = ['Weather']
-        self.squeeze_required = ['Synthetic', 'Credit']
-        self.long_required = ['CIFAR', 'EMNIST', 'ISIC']
+        self.long_required = ['CIFAR', 'EMNIST', 'ISIC', 'Heart', 'Synthetic', 'Credit']
         self.tensor_metrics = ['IXITiny']
         
     def get_metric_function(self):
@@ -80,7 +79,8 @@ class MetricsCalculator:
             'EMNIST': metrics.accuracy_score,
             'CIFAR': metrics.accuracy_score,
             'IXITiny': get_dice_score,
-            'ISIC': metrics.balanced_accuracy_score
+            'ISIC': metrics.balanced_accuracy_score,
+            'Heart':metrics.balanced_accuracy_score
         }
         return metric_mapping[self.dataset_name]
 
@@ -91,8 +91,6 @@ class MetricsCalculator:
         
         if self.dataset_name in self.continuous_outcome:
             predictions = np.clip(predictions, -2, 2)
-        elif self.dataset_name in self.squeeze_required:
-            predictions = (predictions >= 0.5).astype(int)
         elif self.dataset_name in self.long_required:
             predictions = predictions.argmax(axis=1)
             
@@ -109,8 +107,8 @@ class MetricsCalculator:
             )
         else:
             return metric_func(
-                np.array(true_labels),
-                np.array(predictions)
+                np.array(true_labels).reshape(-1),
+                np.array(predictions).reshape(-1)
             )        
 
 class Client:
@@ -137,10 +135,13 @@ class Client:
         state = self.personal_state if personal else self.global_state
         return state
 
-    def set_model_state(self, state_dict):
+    def set_model_state(self, state_dict, test = False):
         """Set model state from dictionary."""
         state = self.get_client_state(personal = False)
-        state.model.load_state_dict(state_dict)
+        if test:
+            state.best_model.load_state_dict(state_dict)
+        else:
+            state.model.load_state_dict(state_dict)
 
     def update_best_model(self, loss, personal):
         """Update best model if loss improves."""
@@ -156,14 +157,15 @@ class Client:
         """Train for one epoch."""
         try:
             state = self.get_client_state(personal)
-            model = state.model.train()#.to(self.device)
+            model = state.model.train().to(self.device)
             total_loss = 0.0
             for batch_x, batch_y in self.data.train_loader:
                 batch_x = move_to_device(batch_x, self.device)
                 batch_y = move_to_device(batch_y, self.device)
-                
                 state.optimizer.zero_grad()
                 outputs = model(batch_x)
+                if self.config.dataset_name in SQUEEZE:
+                    batch_y = batch_y.squeeze(1).long()
                 loss = state.criterion(outputs, batch_y)
                 loss.backward()
                 
@@ -189,7 +191,7 @@ class Client:
         """Evaluate model performance."""
         try:
             state = self.get_client_state(personal)
-            model = (state.model if validate else state.best_model)#.to(self.device)
+            model = (state.model if validate else state.best_model).to(self.device)
             model.eval()
             
             total_loss = 0.0
@@ -200,6 +202,8 @@ class Client:
                     batch_x = move_to_device(batch_x, self.device)
                     batch_y = move_to_device(batch_y, self.device)
                     outputs = model(batch_x)
+                    if self.config.dataset_name in SQUEEZE:
+                        batch_y = batch_y.squeeze(1).long()
                     loss = state.criterion(outputs, batch_y)
                     total_loss += loss.item()
                     
@@ -208,11 +212,10 @@ class Client:
                     )
                     all_predictions.extend(predictions)
                     all_labels.extend(labels)
-
             avg_loss = total_loss / len(loader)
             metrics = self.metrics_calculator.calculate_metrics(
-                np.array(all_labels),
-                np.array(all_predictions)
+                all_labels,
+                all_predictions,
             )
             return avg_loss, metrics
             
@@ -250,7 +253,112 @@ class Client:
         
         return test_loss, test_metrics
     
+class FedProxClient(Client):
+    """
+    Client implementation for the FedProx algorithm.
 
+    Inherits from the base `Client` and overrides the `train_epoch` method
+    to include the proximal regularization term in the loss calculation.
+    The proximal term penalizes deviation from the global model received
+    from the server.
+    """
+    def __init__(self, *args, **kwargs):
+        """
+        Initializes the FedProxClient.
+
+        Retrieves the regularization parameter (mu or reg_param) from the config.
+        """
+        super().__init__(*args, **kwargs)
+        if 'reg_param' not in self.config.algorithm_params:
+             raise ValueError("FedProx requires 'reg_param' (mu) in algorithm_params.")
+        self.reg_param = self.config.algorithm_params['reg_param'] # mu parameter in FedProx paper
+
+    def train_epoch(self, personal: bool = False) -> float:
+        """
+        Performs one epoch of FedProx training.
+
+        Adds the proximal term to the standard loss before backpropagation.
+        Note: FedProx typically operates on the global model (personal=False).
+
+        Args:
+            personal (bool): Should generally be False for standard FedProx.
+                             Included for consistency with the base class signature.
+
+        Returns:
+            float: The average *original* training loss (excluding proximal term) for the epoch.
+        """
+        if personal:
+             print("Warning: FedProxClient training called with personal=True. FedProx typically updates the global model.")
+
+        state = self.get_client_state(personal=False) # FedProx modifies the main model state
+        model = state.model.to(self.device)
+        model.train()
+        # Get a reference to the global model parameters *before* training starts
+        # The server must ensure global_state.model holds the model from the start of the round.
+        global_model_params = [p.detach().clone() for p in self.global_state.model.parameters()] # Crucial: Use the initial global model
+
+        total_original_loss = 0.0
+        num_batches = 0
+
+        try:
+            for batch_x, batch_y in self.data.train_loader:
+                batch_x = move_to_device(batch_x, self.device)
+                batch_y = move_to_device(batch_y, self.device)
+
+                state.optimizer.zero_grad()
+                outputs = model(batch_x)
+                # Calculate the primary task loss (e.g., CrossEntropy)
+                if self.config.dataset_name in SQUEEZE:
+                    batch_y = batch_y.squeeze(1).long()
+                loss = state.criterion(outputs, batch_y)
+
+                # Calculate the FedProx proximal term
+                proximal_term = self.compute_proximal_term(
+                    model.parameters(),
+                    global_model_params, # Compare against the initial global model of the round
+                )
+
+                # Combine the task loss and the proximal term
+                total_loss_batch = loss + proximal_term
+                total_loss_batch.backward()
+
+                state.optimizer.step()
+                total_original_loss += loss.item() # Track the original loss, not including prox term
+                num_batches += 1
+
+            avg_loss = total_original_loss / num_batches if num_batches > 0 else 0.0
+            state.train_losses.append(avg_loss)
+            return avg_loss
+
+        except Exception as e:
+             print(f"Error during FedProx training epoch for client {self.data.site_id}: {e}")
+             return float('inf')
+        finally:
+            del batch_x, batch_y, outputs, loss, proximal_term, total_loss_batch, global_model_params
+            # cleanup_gpu()
+
+    def compute_proximal_term(self, model_params: Iterator[nn.Parameter], reference_params: List[Tensor]) -> Tensor:
+        """
+        Calculates the proximal term for FedProx.
+
+        Term = (mu / 2) * || w - w_global ||^2
+
+        Args:
+            model_params (Iterator[nn.Parameter]): Parameters of the current local model.
+            reference_params (List[Tensor]): Parameters of the reference model (global model at round start).
+
+        Returns:
+            Tensor: The calculated proximal term (scalar).
+        """
+        proximal_term = torch.tensor(0.0, device=self.device)
+        # Use zip ensuring parameters are aligned correctly
+        for param, ref_param in zip(model_params, reference_params):
+             if param.requires_grad: # Only include trainable parameters
+                 # Ensure ref_param is on the same device
+                 ref_param_device = ref_param.to(self.device)
+                 proximal_term += torch.norm(param - ref_param_device, p=2)**2
+        return (self.reg_param / 2) * proximal_term
+    
 
 class PFedMeClient(Client):
     """PFedMe client implementation with proximal regularization."""
@@ -262,8 +370,8 @@ class PFedMeClient(Client):
         """Train for one epoch with proximal term regularization."""
         try:
             state = self.get_client_state(personal)
-            model = state.model.train()#.to(self.device)
-            global_model = self.global_state.model.train()#.to(self.device)
+            model = state.model.train().to(self.device)
+            global_model = self.global_state.model.train().to(self.device)
             total_loss = 0.0
             for batch_x, batch_y in self.data.train_loader:
                 batch_x = move_to_device(batch_x, self.device)
@@ -271,6 +379,8 @@ class PFedMeClient(Client):
                 
                 state.optimizer.zero_grad()
                 outputs = model(batch_x)
+                if LONG:
+                    batch_y = batch_y.squeeze(1).long()
                 loss = state.criterion(outputs, batch_y)
                 
                 proximal_term = self.compute_proximal_term(
@@ -319,8 +429,8 @@ class DittoClient(Client):
         else:
             try:
                 state = self.get_client_state(personal)
-                model = state.model.train()#.to(self.device)
-                global_model = self.global_state.model.train()#.to(self.device)
+                model = state.model.train().to(self.device)
+                global_model = self.global_state.model.train().to(self.device)
                 total_loss = 0.0
                 for batch_x, batch_y in self.data.train_loader:
                     batch_x = move_to_device(batch_x, self.device)
@@ -328,6 +438,8 @@ class DittoClient(Client):
                     
                     state.optimizer.zero_grad()
                     outputs = model(batch_x)
+                    if LONG:
+                        batch_y = batch_y.squeeze(1).long()
                     loss = state.criterion(outputs, batch_y)
                     loss.backward()
                     

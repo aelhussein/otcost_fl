@@ -1,5 +1,5 @@
 from configs import *
-
+from helper import *
 
 def sample_per_class(labels, class_size=500):
     df = pd.DataFrame({'labels': labels})
@@ -19,20 +19,20 @@ def align_image_label_files(image_files, label_files):
     return [images_dict[key] for key in common_keys], [labels_dict[key] for key in common_keys]
 
 
-
 def loadData(DATASET, DATA_DIR, data_num, cost):
     try:
         if DATASET in TABULAR:
             # Load tabular data
-            column_counts = {'Synthetic': 13, 'Credit': 29, 'Weather': 124}
-            sample_sizes = {'Synthetic': 800, 'Credit': 800, 'Weather': 1600}
+            column_counts = {'Synthetic': 11, 'Credit': 29, 'Weather': 124, 'Heart': 11}
+            
 
             file_path = f'{DATA_DIR}/data_{data_num}_{cost:.2f}.csv'
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"File not found: {file_path}")
 
             X = pd.read_csv(file_path, sep=' ', names=[i for i in range(column_counts[DATASET])])
-            X = X.sample(sample_sizes[DATASET], replace=(DATASET == 'Credit'))
+            if DATASET != 'Heart':
+                X = X.sample(DEFAULT_PARAMS[DATASET]['sizes_per_client'], replace=(DATASET == 'Credit'))
 
             y = X.iloc[:, -1]
             X = X.iloc[:, :-1]
@@ -144,6 +144,10 @@ class SyntheticDataset(BaseTabularDataset):
 
 class CreditDataset(BaseTabularDataset):
     """Dataset handler for credit data with categorical outcomes"""
+    pass  # Inherits all functionality from BaseTabularDataset
+
+class HeartDataset(BaseTabularDataset):
+    """Dataset handler for heart data with categorical outcomes"""
     pass  # Inherits all functionality from BaseTabularDataset
 
 class WeatherDataset(BaseTabularDataset):
@@ -342,7 +346,8 @@ class DataPreprocessor:
             'EMNIST': EMNISTDataset,
             'CIFAR': CIFARDataset,
             'IXITiny': IXITinyDataset,
-            'ISIC': ISICDataset
+            'ISIC': ISICDataset,
+            'Heart': HeartDataset
         }
         return dataset_classes[self.dataset_name]
 
@@ -353,10 +358,6 @@ class DataPreprocessor:
         # Process individual client data
         for client_id, data in client_data.items():
             processed_data[client_id] = self._process_single_client(data)
-            
-        # Process joint data
-        joint_data = self._combine_client_data(client_data)
-        processed_data['client_joint'] = self._process_single_client(joint_data)
             
         return processed_data
 
@@ -387,16 +388,10 @@ class DataPreprocessor:
         
         # Create and return dataloaders
         return (
-            DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True),
+            DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, generator=g),
             DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False),
             DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
         )
-    
-    def _combine_client_data(self, client_data):
-        """Combine data from multiple clients into a single dataset."""
-        combined_X = np.concatenate([data['X'] for data in client_data.values()])
-        combined_y = np.concatenate([data['y'] for data in client_data.values()])
-        return {'X': combined_X, 'y': combined_y}
 
     def _split_data(self, X, y):
         test_size = 0.2

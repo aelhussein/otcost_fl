@@ -79,6 +79,7 @@ class Server:
         """Test the model across all clients."""
         test_loss = 0
         test_score = 0
+        self.distribute_global_model(test = True)
         
         for client in self.clients.values():
             client_loss, client_score = client.test(self.personal)
@@ -94,7 +95,7 @@ class Server:
         """Base aggregation method - to be implemented by subclasses."""
         return
     
-    def distribute_global_model(self):
+    def distribute_global_model(self, test = False):
         """Base distribution method - to be implemented by subclasses"""
         return
     
@@ -112,11 +113,12 @@ class FLServer(Server):
             for g_param, c_param in zip(self.serverstate.model.parameters(), client_model.parameters()):
                 g_param.data.add_(c_param.data * client.data.weight)
 
-    def distribute_global_model(self):
+    def distribute_global_model(self, test = False):
         """Distribute global model to all clients."""
-        global_state = self.serverstate.model.state_dict()
+        global_state = self.serverstate.best_model.state_dict() if test  else self.serverstate.model.state_dict()
         for client in self.clients.values():
-            client.set_model_state(global_state)
+            client.set_model_state(global_state, test)
+
 
 class FedAvgServer(FLServer):
     """FedAvg server implementation."""
@@ -168,6 +170,39 @@ class FedAvgServer(FLServer):
             self.serverstate.best_model = copy.deepcopy(self.serverstate.model)
             
         return train_loss, val_loss, val_score
+    
+    
+class FedProxServer(FLServer):
+    """
+    Server implementation for the FedProx algorithm.
+
+    Uses standard FedAvg aggregation (`FLServer.aggregate_models`) and distribution
+    (`FLServer.distribute_global_model`). Its main distinction is that it creates
+    `FedProxClient` instances, which implement the proximal term logic locally.
+    """
+    def _create_client(self, clientdata: SiteData, modelstate: ModelState, personal_model: bool = False) -> FedProxClient:
+        """
+        Overrides the factory method to create `FedProxClient` instances.
+
+        Args:
+            clientdata (SiteData): Client's data.
+            modelstate (ModelState): Initial global model state.
+            personal_model (bool): Should be False for standard FedProx.
+
+        Returns:
+            FedProxClient: An instance of the FedProx client.
+        """
+        print(f"Creating FedProxClient for site {clientdata.site_id}")
+        # Ensure personal_model is False for FedProx
+        if personal_model:
+            print("Warning: FedProxServer forcing personal_model=False for client creation.")
+        return FedProxClient(
+            config=self.config,
+            data=clientdata,
+            modelstate=modelstate.copy(), # Pass a copy
+            metrics_calculator=MetricsCalculator(self.config.dataset_name),
+            personal_model=False # FedProx operates on the global model state
+        )
 
 
 class PFedMeServer(FLServer):
@@ -241,36 +276,5 @@ class DittoServer(FLServer):
             self.serverstate.best_model = copy.deepcopy(self.serverstate.model)
 
         return personal_train_loss, personal_val_loss, personal_val_score
-
-class ModelDiversity:
-    """Calculates diversity metrics between two clients' models."""
-    def __init__(self, client_1: Client, client_2: Client):
-        self.client_1 = client_1
-        self.client_2 = client_2
-
-    def calculate_weight_divergence(self):
-        """Calculate weight divergence metrics between two clients."""
-        weights_1 = self._get_weights(self.client_1)
-        weights_2 = self._get_weights(self.client_2)
-        
-        # Normalize weights
-        norm_1 = torch.norm(weights_1)
-        norm_2 = torch.norm(weights_2)
-        w1_normalized = weights_1 / norm_1 if norm_1 != 0 else weights_1
-        w2_normalized = weights_2 / norm_2 if norm_2 != 0 else weights_2
-        
-        # Calculate divergence metrics
-        weight_div = torch.norm(w1_normalized - w2_normalized)
-        weight_orient = torch.dot(w1_normalized, w2_normalized)
-        
-        return weight_div.item(), weight_orient.item()
-
-    def _get_weights(self, client: Client):
-        """Extract weights from a client's model."""
-        weights = []
-        state = client.global_state
-        for param in state.model.parameters():
-            weights.append(param.data.view(-1))  # Flatten weights
-        return torch.cat(weights)
 
 

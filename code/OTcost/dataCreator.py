@@ -4,7 +4,7 @@ import random
 from sklearn.utils import shuffle
 
 global ROOT_DIR
-ROOT_DIR = '/gpfs/commons/groups/gursoy_lab/aelhussein/ot_cost/otcost_fl'
+ROOT_DIR = '/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'
 DATA_DIR = f'{ROOT_DIR}/data/Synthetic'
 
 class SyntheticDataGenerator:
@@ -238,3 +238,7 @@ def non_iid_creator(frac, total_cases=800, n_features=10, dist_type1='normal', d
     return data, label
 
 
+def saveDataset(X,y, name):
+    d1= np.concatenate((X, y.reshape(-1,1)), axis=1)
+    np.savetxt(f'{DATA_DIR}/{name}.csv',d1)
+    return
