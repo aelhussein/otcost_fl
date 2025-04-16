@@ -39,6 +39,7 @@ import matplotlib.pyplot as plt
 import matplotlib.lines as mlines 
 import seaborn as sns 
 from typing import List, Tuple, Dict, Any, Optional, Union 
+from sklearn.cluster import KMeans
 
 # --- Seeding Functions (Unchanged) ---
 def set_global_seeds(seed_value=1):
@@ -76,41 +77,27 @@ def create_seeded_generator(seed_value=1):
 class SimilarityAnalyzer:
     """
     Calculates and stores similarity metrics between activations from two clients.
-    Assumes model outputs are probabilities shape [N, num_classes] (K>=2).
+    (Existing docstring...)
 
     Includes:
     - Feature-Error Additive OT: Uses additive cost (D_h_scaled + D_e_scaled).
     - Decomposed OT: Computes Label EMD and class-conditional OT costs.
-                     *MODIFIED*: Within-class cost now also uses D_h_scaled + D_e_scaled.
-
-    Loss-weighting uses Cross-Entropy loss. Normalization and epsilon values
-    are handled internally or via parameters.
+    - Fixed-Anchor LOT: Computes OT cost via fixed anchors (k-Means or class means).
     """
     def __init__(self, client_id_1, client_id_2, num_classes,
                  feature_error_ot_params=None,
                  decomposed_params=None,
+                 fixed_anchor_lot_params=None, # <<< NEW PARAM
                  loss_eps=1e-9):
         """
         Initializes the analyzer.
-
+        (Existing args...)
         Args:
-            client_id_1 (str): Identifier for the first client.
-            client_id_2 (str): Identifier for the second client.
-            num_classes (int): Number of classes (K >= 2).
-            feature_error_ot_params (dict, optional): Parameters for Feature-Error Additive OT.
-                (See previous definitions - alpha, beta, reg, use_loss_weighting etc.)
-            decomposed_params (dict, optional): Parameters for Decomposed OT.
-                'alpha_within' (float): Weight for feature distance (D_h_scaled) within class. Default 1.0.
-                'beta_within' (float): Weight for error distance (D_e_scaled) within class. Default 1.0. # Changed default
-                'ot_eps' (float): Sinkhorn regularization for within-class OT. Default 0.001.
-                'ot_max_iter' (int): Sinkhorn max iterations. Default 2000.
-                'eps' (float): Epsilon for numerical stability (e.g., normalization). Default 1e-10.
-                'normalize_cost': (bool): Normalize within-class cost matrix to [0, 1]. Default True.
-                'normalize_emd': (bool): Normalize Label EMD score. Default True.
-                'min_class_samples': (int): Minimum samples per class before upsampling. Default 0.
-                'aggregate_conditional_method': (str): Method to aggregate class OT costs. Default 'total_loss_share'.
-                'verbose': (bool): Enable verbose warnings/prints. Default False.
-            loss_eps (float): Small epsilon added for loss calculation stability.
+            fixed_anchor_lot_params (dict, optional): Parameters for Fixed-Anchor LOT.
+                Expected keys: 'num_anchors', 'anchor_method', 'kmeans_max_iter',
+                               'local_ot_reg', 'cross_anchor_ot_reg', 'local_cost_weight',
+                               'cross_anchor_cost_weight', 'normalize_total_cost',
+                               'max_total_cost_estimate', 'verbose', 'ot_max_iter'.
         """
         if num_classes < 2:
              raise ValueError("num_classes must be >= 2.")
@@ -121,50 +108,70 @@ class SimilarityAnalyzer:
         self.loss_eps = loss_eps
 
         # --- Default Parameters ---
-        default_feature_error_ot_params = {
+        default_feature_error_ot_params = { # (Keep as is)
             'alpha': 1.0, 'beta': 1.0, 'reg': 0.001, 'max_iter': 2000,
             'norm_eps': 1e-10, 'normalize_cost': True,
             'use_loss_weighting': True, 'verbose': False
         }
-        # <<< MODIFIED: Default Decomposed Params >>>
-        default_decomposed_params = {
-            'alpha_within': 1.0, # Weight for D_h_scaled within class
-            'beta_within': 1.0,  # Weight for D_e_scaled within class (DEFAULT CHANGED)
-            'ot_eps': 0.001,     # Sinkhorn reg for within-class
-            'ot_max_iter': 2000,
-            'eps': 1e-10,        # Epsilon for normalization/stability
-            'normalize_cost': True, # Normalize within-class cost matrix
-            'normalize_emd': True,
-            'min_class_samples': 0,
-            'verbose': False,
-            # 'feature_dist_func', 'pred_dist_func', 'use_confidence_weighting' are no longer used here
+        default_decomposed_params = { # (Keep as is)
+            'alpha_within': 1.0, 'beta_within': 1.0, 'ot_eps': 0.001,
+            'ot_max_iter': 2000, 'eps': 1e-10, 'normalize_cost': True,
+            'normalize_emd': True, 'min_class_samples': 0, 'verbose': False,
             'aggregate_conditional_method': 'total_loss_share'
         }
+        # --- NEW: Default Fixed-Anchor LOT Params ---
+        default_fixed_anchor_lot_params = {
+            'num_anchors': 10, # Default to 10 anchors
+            'anchor_method': 'kmeans', # 'kmeans' or 'class_means'
+            'kmeans_max_iter': 100,
+            'local_ot_reg': 0.01, # Regularization for h->Z and Z->h OT
+            'cross_anchor_ot_reg': 0.01, # Regularization for Z1->Z2 OT
+            'local_cost_weight': 0.25, # Weight for combined OT(X->Z1) + OT(Y->Z2)
+            'cross_anchor_cost_weight': 0.5, # Weight for OT(Z1->Z2)
+            'normalize_total_cost': True, # Normalize final cost to get similarity
+            'max_total_cost_estimate': 1.0, # Estimate for normalization divisor (NEEDS TUNING)
+            'verbose': False,
+            'ot_max_iter': 2000 # Max iter for all OT calls
+        }
 
+        # --- Update Feature-Error OT Params ---
         self.feature_error_ot_params = default_feature_error_ot_params.copy()
         if feature_error_ot_params:
             self.feature_error_ot_params.update(feature_error_ot_params)
 
+        # --- Update Decomposed OT Params ---
         self.decomposed_params = default_decomposed_params.copy()
         if decomposed_params:
-             # Remove potentially obsolete keys if user passes them
-            obsolete_keys = ['feature_dist_func', 'pred_dist_func', 'use_confidence_weighting']
-            for key in obsolete_keys:
-                if key in decomposed_params:
-                    warnings.warn(f"Parameter '{key}' is no longer used for decomposed OT within-class cost and will be ignored.")
-                    # Optionally remove: del decomposed_params[key]
-            self.decomposed_params.update(decomposed_params)
+            # (Keep existing validation logic)
+            user_decomposed_params = decomposed_params.copy()
+            valid_keys = default_decomposed_params.keys()
+            passed_keys = user_decomposed_params.keys()
+            for key in passed_keys:
+                if key not in valid_keys:
+                    warnings.warn(f"Warning: Unexpected parameter '{key}' provided in decomposed_params.")
+            self.decomposed_params.update(user_decomposed_params)
+            # --- Validate Aggregation Method --- (Keep as is)
+            valid_agg_methods = ['mean', 'avg_loss', 'total_loss_share', 'class_share']
+            agg_method_param = self.decomposed_params.get('aggregate_conditional_method', 'total_loss_share')
+            if agg_method_param not in valid_agg_methods:
+                 warnings.warn(f"Invalid aggregate_method '{agg_method_param}'. Falling back to 'mean'.")
+                 self.decomposed_params['aggregate_conditional_method'] = 'mean'
+            else:
+                self.decomposed_params['aggregate_conditional_method'] = agg_method_param
 
-        valid_agg_methods = ['mean', 'avg_loss', 'total_loss_share']
-        if self.decomposed_params['aggregate_conditional_method'] not in valid_agg_methods:
-            warnings.warn(f"Invalid aggregate_method '{self.decomposed_params['aggregate_conditional_method']}'. Falling back to 'mean'.")
-            self.decomposed_params['aggregate_conditional_method'] = 'mean'
+        # --- NEW: Update Fixed-Anchor LOT Params ---
+        self.fixed_anchor_lot_params = default_fixed_anchor_lot_params.copy()
+        if fixed_anchor_lot_params:
+            self.fixed_anchor_lot_params.update(fixed_anchor_lot_params)
+            # Optional: Add validation for anchor_method etc.
 
+
+        # --- Initialize Storage ---
         self.activations = {self.client_id_1: None, self.client_id_2: None}
         self._reset_results()
 
     def _calculate_sample_loss(self, p_prob, y):
-        # (Implementation remains the same)
+        # (Keep as is)
         if p_prob is None or y is None: return None
         p_prob = p_prob.float().clamp(min=self.loss_eps, max=1.0 - self.loss_eps)
         y = y.long()
@@ -172,130 +179,109 @@ class SimilarityAnalyzer:
              warnings.warn(f"Loss calculation shape mismatch/invalid: P({p_prob.shape}), Y({y.shape}), K={self.num_classes}")
              return None
         try:
-            true_class_prob = p_prob.gather(1, y.view(-1, 1)).squeeze()
-            loss = -torch.log(true_class_prob.clamp(min=self.loss_eps))
+             true_class_prob = p_prob.gather(1, y.view(-1, 1)).squeeze()
+             loss = -torch.log(true_class_prob.clamp(min=self.loss_eps))
         except Exception as e:
              warnings.warn(f"Error during loss calculation (gather/log): {e}. Shapes: P={p_prob.shape}, Y={y.shape}")
              return None
-        # Return non-negative losses
         return torch.relu(loss)
 
 
     def load_activations(self, h1, p1_prob_in, y1, h2, p2_prob_in, y2):
-        # (Implementation remains the same - calculates loss and stores in 'weights')
+        # (Keep as is - ensures data is loaded and processed)
         if any(x is None for x in [h1, p1_prob_in, y1, h2, p2_prob_in, y2]):
             warnings.warn("load_activations received None for one or more inputs."); self._reset_results(); return False
         def _process_client_data(h, p_prob_in, y, client_id, num_classes, loss_eps):
-            # Ensure data is on CPU and converted to tensors
+            # (Implementation remains the same)
             h_cpu = h.detach().cpu() if isinstance(h, torch.Tensor) else torch.tensor(h).cpu()
             p_prob_in_cpu = p_prob_in.detach().cpu() if isinstance(p_prob_in, torch.Tensor) else torch.tensor(p_prob_in).cpu()
             y_cpu = y.detach().cpu().long() if isinstance(y, torch.Tensor) else torch.tensor(y).long().cpu()
-
             p_prob_validated = None
             with torch.no_grad():
                 p_prob_float = p_prob_in_cpu.float()
-                # --- Binary Classification Handling ---
                 if num_classes == 2:
                     if p_prob_float.ndim == 1 or (p_prob_float.ndim == 2 and p_prob_float.shape[1] == 1):
-                        # Input is likely probability of class 1, shape [N] or [N, 1]
-                        p1 = torch.clamp(p_prob_float.view(-1), 0.0, 1.0)
-                        p0 = 1.0 - p1
-                        p_prob_validated = torch.stack([p0, p1], dim=1) # Convert to [N, 2]
+                        p1 = torch.clamp(p_prob_float.view(-1), 0.0, 1.0); p0 = 1.0 - p1
+                        p_prob_validated = torch.stack([p0, p1], dim=1)
                     elif p_prob_float.ndim == 2 and p_prob_float.shape[1] == 2:
-                        # Input is already [N, 2]
-                        if torch.all(p_prob_float >= 0) & torch.all(p_prob_float <= 1) & torch.allclose(p_prob_float.sum(dim=1), torch.ones_like(p_prob_float[:, 0]), atol=1e-3):
-                            p_prob_validated = p_prob_float # Looks valid
-                        else:
-                            # Invalid [N, 2] probs, attempt renormalization
+                         if torch.all(p_prob_float >= 0) & torch.all(p_prob_float <= 1) & torch.allclose(p_prob_float.sum(dim=1), torch.ones_like(p_prob_float[:, 0]), atol=1e-3):
+                            p_prob_validated = p_prob_float
+                         else:
                             warnings.warn(f"Client {client_id}: Binary [N, 2] probs invalid/don't sum to 1. Renormalizing.")
                             p_prob_validated = p_prob_float / p_prob_float.sum(dim=1, keepdim=True).clamp(min=loss_eps)
                             p_prob_validated = torch.clamp(p_prob_validated, 0.0, 1.0)
-                    else:
-                        warnings.warn(f"Client {client_id}: Unexpected binary prob shape {p_prob_in_cpu.shape}.")
-                # --- Multi-class Classification Handling ---
+                    else: warnings.warn(f"Client {client_id}: Unexpected binary prob shape {p_prob_in_cpu.shape}.")
                 elif p_prob_float.ndim == 2 and p_prob_float.shape[1] == num_classes:
-                    # Input is [N, K]
-                    if torch.all(p_prob_float >= 0) & torch.all(p_prob_float <= 1) & torch.allclose(p_prob_float.sum(dim=1), torch.ones_like(p_prob_float[:, 0]), atol=1e-3):
-                        p_prob_validated = p_prob_float # Looks valid
-                    else:
-                        # Invalid multi-class probs, attempt renormalization
+                     if torch.all(p_prob_float >= 0) & torch.all(p_prob_float <= 1) & torch.allclose(p_prob_float.sum(dim=1), torch.ones_like(p_prob_float[:, 0]), atol=1e-3):
+                        p_prob_validated = p_prob_float
+                     else:
                         warnings.warn(f"Client {client_id}: Multi-class probs don't sum to 1. Renormalizing.")
                         p_prob_validated = p_prob_float / p_prob_float.sum(dim=1, keepdim=True).clamp(min=loss_eps)
                         p_prob_validated = torch.clamp(p_prob_validated, 0.0, 1.0)
-                else:
-                     warnings.warn(f"Client {client_id}: Unexpected multi-class prob shape {p_prob_in_cpu.shape}.")
-
-            # Calculate loss using validated probabilities
+                else: warnings.warn(f"Client {client_id}: Unexpected multi-class prob shape {p_prob_in_cpu.shape}.")
             if p_prob_validated is None:
-                loss = None
-                warnings.warn(f"Client {client_id}: Could not validate probabilities.")
-            else:
-                loss = self._calculate_sample_loss(p_prob_validated, y_cpu)
-
-            # Determine weights based on loss
+                loss = None; warnings.warn(f"Client {client_id}: Could not validate probabilities.")
+            else: loss = self._calculate_sample_loss(p_prob_validated, y_cpu)
             if loss is None or not torch.isfinite(loss).all():
-                # Fallback to uniform if loss calculation failed or resulted in NaN/Inf
                 if loss is not None: warnings.warn(f"Client {client_id}: NaN/Inf loss detected. Using uniform weights.")
                 num_samples = max(1, len(y_cpu))
                 weights = torch.ones_like(y_cpu, dtype=torch.float) / num_samples
-                loss = torch.full_like(y_cpu, float('nan'), dtype=torch.float) # Store NaN loss
-                p_prob_validated = None # Mark probs as unusable if loss failed
+                loss = torch.full_like(y_cpu, float('nan'), dtype=torch.float); p_prob_validated = None
             elif loss.sum().item() <= loss_eps:
-                # Handle case where all losses are effectively zero (perfect fit)
                 num_samples = max(1, len(y_cpu))
                 weights = torch.ones_like(y_cpu, dtype=torch.float) / num_samples
-            else:
-                # Standard loss weighting
-                weights = loss / loss.sum()
-
-            return {
-                'h': h_cpu,
-                'p_prob': p_prob_validated, # Use the validated probabilities
-                'y': y_cpu,
-                'loss': loss,
-                'weights': weights # These are the loss-based weights (or uniform fallback)
-            }
-        # Process data for both clients
+            else: weights = loss / loss.sum()
+            return {'h': h_cpu,'p_prob': p_prob_validated,'y': y_cpu,'loss': loss,'weights': weights}
         self.activations[self.client_id_1] = _process_client_data(h1, p1_prob_in, y1, self.client_id_1, self.num_classes, self.loss_eps)
         self.activations[self.client_id_2] = _process_client_data(h2, p2_prob_in, y2, self.client_id_2, self.num_classes, self.loss_eps)
-
-        # Check if processing was successful
         if self.activations[self.client_id_1] is None or self.activations[self.client_id_2] is None:
             warnings.warn("Failed to process client data."); self._reset_results(); return False
         if self.activations[self.client_id_1].get('p_prob') is None or self.activations[self.client_id_2].get('p_prob') is None:
             warnings.warn("'p_prob' is None after processing. Subsequent calculations needing probabilities might fail.")
-            # Allow continuation, but note potential issues
-
-        self._reset_results() # Reset previous calculation results
-        return True
+        self._reset_results(); return True
 
 
     def _reset_results(self):
         """Resets stored results and cost matrices."""
-        self.cost_matrices = {'feature_error_ot': None, 'within_class': {}}
+        self.cost_matrices = {'feature_error_ot': None, 'within_class': {}, 'fixed_anchor_lot': {}} # Add new category
         self.results = {
             'feature_error_ot': {
-                'ot_cost': np.nan,
-                'transport_plan': None,
-                'cost_matrix_max_val': np.nan,
-                'weighting_used': None # <<< ADDED to store weighting type
+                'ot_cost': np.nan, 'transport_plan': None,
+                'cost_matrix_max_val': np.nan, 'weighting_used': None
             },
-            'decomposed': {'label_emd': np.nan, 'conditional_ot': np.nan, 'combined_score': np.nan},
-            'within_class_ot': {}
+            'decomposed': {
+                'label_emd': np.nan, 'conditional_ot': np.nan, 'combined_score': np.nan
+            },
+            'within_class_ot': {},
+            # --- NEW: Fixed Anchor LOT Results ---
+            'fixed_anchor_lot': {
+                'total_cost': np.nan,
+                'cost_local1': np.nan,
+                'cost_local2': np.nan,
+                'cost_cross_anchor': np.nan,
+                'similarity_score': np.nan,
+                'params': None # Store params used for this calc
+            }
         }
 
-    def calculate_all(self):
+    def calculate_all(self, run_feature_error=True, run_decomposed=True, run_fixed_anchor=True): # <<< Add flag
         """Calculates all configured similarity metrics."""
         if self.activations[self.client_id_1] is None or self.activations[self.client_id_2] is None:
             print("Activations not loaded."); return
 
-        print(f"\nCalculating Feature-Error Additive OT ({self.client_id_1} vs {self.client_id_2})...")
-        self.calculate_feature_error_ot_similarity() # <<< Call renamed method
+        if run_feature_error:
+             print(f"\nCalculating Feature-Error Additive OT ({self.client_id_1} vs {self.client_id_2})...")
+             self.calculate_feature_error_ot_similarity()
 
-        # Optionally run decomposed calculation
-        # Consider if decomposed should also have weighting options if used frequently
-        print(f"\nCalculating Decomposed similarity ({self.client_id_1} vs {self.client_id_2})...")
-        self.calculate_decomposed_similarity()
+        if run_decomposed:
+            print(f"\nCalculating Decomposed similarity ({self.client_id_1} vs {self.client_id_2})...")
+            self.calculate_decomposed_similarity()
+
+        # --- NEW: Call Fixed Anchor LOT ---
+        if run_fixed_anchor:
+            print(f"\nCalculating Fixed-Anchor LOT ({self.client_id_1} vs {self.client_id_2})...")
+            self.calculate_fixed_anchor_lot_similarity()
+
 
 
     def calculate_feature_error_ot_similarity(self): # <<< Method updated
@@ -502,22 +488,19 @@ class SimilarityAnalyzer:
     # Decomposed OT and Helper Methods (Keep as is for optional use)
     # =========================================================================
     def calculate_decomposed_similarity(self):
-        warnings.warn("Running Decomposed OT with unified within-class cost.", stacklevel=2)
+        """ Calculates Decomposed Similarity: Label EMD + Aggregated Conditional OT """
+        warnings.warn("Running Decomposed OT with unified within-class cost and class_share aggregation.", stacklevel=2)
         if self.activations[self.client_id_1] is None or self.activations[self.client_id_2] is None:
-            print("Activations not loaded for Decomposed OT.")
-            return
+            print("Activations not loaded for Decomposed OT."); return
 
         act1 = self.activations[self.client_id_1]; act2 = self.activations[self.client_id_2]
-        # Ensure all base data exists
         if any(act1.get(k) is None for k in ['h', 'y', 'weights']) or \
            any(act2.get(k) is None for k in ['h', 'y', 'weights']):
              warnings.warn("Decomposed OT requires h, y, and weights. Skipping.")
-             self._reset_decomposed_results(keep_emd=False)
-             return
+             self._reset_decomposed_results(keep_emd=False); return
 
         h1, y1, w1 = act1['h'], act1['y'], act1['weights']
         h2, y2, w2 = act2['h'], act2['y'], act2['weights']
-        # Get probabilities and losses if available, check validity
         p1_prob, loss1 = act1.get('p_prob'), act1.get('loss')
         p2_prob, loss2 = act2.get('p_prob'), act2.get('loss')
         loss1_valid = loss1 is not None and torch.isfinite(loss1).all()
@@ -525,9 +508,7 @@ class SimilarityAnalyzer:
         can_use_loss_agg = loss1_valid and loss2_valid
 
         N, M = h1.shape[0], h2.shape[0]
-        if N == 0 or M == 0:
-            self._reset_decomposed_results()
-            return
+        if N == 0 or M == 0: self._reset_decomposed_results(); return
 
         params = self.decomposed_params
         verbose = params.get('verbose', False); eps_num = params.get('eps', 1e-10)
@@ -535,17 +516,14 @@ class SimilarityAnalyzer:
         normalize_within_cost = params.get('normalize_cost', True)
         normalize_emd_flag = params.get('normalize_emd', True)
         min_class_samples = params.get('min_class_samples', 0)
-        agg_method_param = params.get('aggregate_conditional_method', 'mean')
+        agg_method_param = params.get('aggregate_conditional_method', 'mean') # Default in __init__ might override if invalid
         beta_within = params.get('beta_within', 0.0)
-        # Check if probabilities are needed for the within-class cost (if beta > 0)
         p_needed_within = beta_within > eps_num
 
         # --- 1. Label EMD ---
         label_emd_raw = self._calculate_label_emd(y1, y2, self.num_classes)
         if np.isnan(label_emd_raw):
-            warnings.warn("Label EMD calculation failed. Decomposed OT aborted.")
-            self._reset_decomposed_results(keep_emd=False); return
-
+            warnings.warn("Label EMD failed. Decomposed OT aborted."); self._reset_decomposed_results(keep_emd=False); return
         emd_norm_factor = max(1.0, float(self.num_classes - 1)) if self.num_classes > 1 else 1.0
         label_emd_normalized = label_emd_raw / emd_norm_factor if normalize_emd_flag else label_emd_raw
         self.results['decomposed']['label_emd'] = label_emd_normalized
@@ -553,45 +531,32 @@ class SimilarityAnalyzer:
         # --- 2. Class-Conditional OT ---
         all_class_results = {}
         self.cost_matrices['within_class'] = {}; self.results['within_class_ot'] = {}
-
         total_loss_across_classes = (loss1.sum() + loss2.sum()).item() if can_use_loss_agg else 0.0
 
         for c in range(self.num_classes):
             current_class_result = {'ot_cost': np.nan, 'avg_loss': 0.0, 'total_loss': 0.0, 'sample_count': (0, 0)}
             self.results['within_class_ot'][c] = {'ot_cost': np.nan, 'cost_matrix_max_val': np.nan, 'upsampled': (False, False)}
-
             idx1_c = torch.where(y1.long() == c)[0]; idx2_c = torch.where(y2.long() == c)[0]
             n_c, m_c = idx1_c.shape[0], idx2_c.shape[0]
             current_class_result['sample_count'] = (n_c, m_c)
 
-            if n_c == 0 or m_c == 0:
-                all_class_results[c] = current_class_result; continue
-
-            # Calculate class losses if possible
+            if n_c == 0 or m_c == 0: all_class_results[c] = current_class_result; continue
             total_loss_c = 0.0; avg_loss_c = 0.0
             if can_use_loss_agg:
                 loss1_c = loss1[idx1_c]; loss2_c = loss2[idx2_c]
                 if torch.isfinite(loss1_c).all() and torch.isfinite(loss2_c).all():
                     total_loss_c = (loss1_c.sum() + loss2_c.sum()).item()
                     avg_loss_c = total_loss_c / (n_c + m_c) if (n_c + m_c) > 0 else 0.0
-                    current_class_result['total_loss'] = total_loss_c
-                    current_class_result['avg_loss'] = avg_loss_c
+                    current_class_result['total_loss'] = total_loss_c; current_class_result['avg_loss'] = avg_loss_c
 
-            # Get data for this class: h, w, y are always needed
             h1_c_eff = h1[idx1_c]; w1_c_eff = w1[idx1_c]; y1_c_eff = y1[idx1_c]
             h2_c_eff = h2[idx2_c]; w2_c_eff = w2[idx2_c]; y2_c_eff = y2[idx2_c]
-            # Get probabilities only if needed (beta_within > 0) and available
             p1_prob_c_eff = p1_prob[idx1_c] if p_needed_within and p1_prob is not None else None
             p2_prob_c_eff = p2_prob[idx2_c] if p_needed_within and p2_prob is not None else None
-
-            # Check if needed probabilities are available for error calculation
             if p_needed_within and (p1_prob_c_eff is None or p2_prob_c_eff is None):
-                if verbose: warnings.warn(f"Class {c}: Skipped OT - probabilities needed (beta_within > 0) but unavailable/invalid.")
-                all_class_results[c] = current_class_result; continue
+                if verbose: warnings.warn(f"Class {c}: Skipped OT - probs needed but unavailable."); all_class_results[c] = current_class_result; continue
 
-            # --- Handle Upsampling ---
             upsampled1 = False; upsampled2 = False
-            # Initialize _final variables
             h1_c_final, w1_c_final, y1_c_final = h1_c_eff, w1_c_eff, y1_c_eff
             h2_c_final, w2_c_final, y2_c_final = h2_c_eff, w2_c_eff, y2_c_eff
             p1_prob_c_final, p2_prob_c_final = p1_prob_c_eff, p2_prob_c_eff
@@ -600,109 +565,136 @@ class SimilarityAnalyzer:
             if min_class_samples > 0:
                 if n_c < min_class_samples:
                     if n_c > 0:
-                        needed1 = min_class_samples - n_c
-                        resample_indices1 = np.random.choice(n_c, size=needed1, replace=True)
-                        h1_c_final = torch.cat((h1_c_eff, h1_c_eff[resample_indices1]), dim=0)
-                        w1_c_final = torch.cat((w1_c_eff, w1_c_eff[resample_indices1]), dim=0)
-                        y1_c_final = torch.cat((y1_c_eff, y1_c_eff[resample_indices1]), dim=0) # Upsample Y
-                        if p_needed_within and p1_prob_c_eff is not None:
-                            p1_prob_c_final = torch.cat((p1_prob_c_eff, p1_prob_c_eff[resample_indices1]), dim=0)
+                        needed1 = min_class_samples - n_c; resample_indices1 = np.random.choice(n_c, size=needed1, replace=True)
+                        h1_c_final = torch.cat((h1_c_eff, h1_c_eff[resample_indices1]), dim=0); w1_c_final = torch.cat((w1_c_eff, w1_c_eff[resample_indices1]), dim=0)
+                        y1_c_final = torch.cat((y1_c_eff, y1_c_eff[resample_indices1]), dim=0)
+                        if p_needed_within and p1_prob_c_eff is not None: p1_prob_c_final = torch.cat((p1_prob_c_eff, p1_prob_c_eff[resample_indices1]), dim=0)
                         n_c_final = min_class_samples; upsampled1 = True
-                    else:
-                        if verbose: warnings.warn(f"Class {c}: C1 has 0 samples, cannot upsample.")
-                        all_class_results[c] = current_class_result; continue
+                    else: 
+                        if verbose: warnings.warn(f"C{c}: C1 has 0, cannot upsample."); all_class_results[c] = current_class_result; continue
                 if m_c < min_class_samples:
                     if m_c > 0:
-                        needed2 = min_class_samples - m_c
-                        resample_indices2 = np.random.choice(m_c, size=needed2, replace=True)
-                        h2_c_final = torch.cat((h2_c_eff, h2_c_eff[resample_indices2]), dim=0)
-                        w2_c_final = torch.cat((w2_c_eff, w2_c_eff[resample_indices2]), dim=0)
-                        y2_c_final = torch.cat((y2_c_eff, y2_c_eff[resample_indices2]), dim=0) # Upsample Y
-                        if p_needed_within and p2_prob_c_eff is not None:
-                            p2_prob_c_final = torch.cat((p2_prob_c_eff, p2_prob_c_eff[resample_indices2]), dim=0)
+                        needed2 = min_class_samples - m_c; resample_indices2 = np.random.choice(m_c, size=needed2, replace=True)
+                        h2_c_final = torch.cat((h2_c_eff, h2_c_eff[resample_indices2]), dim=0); w2_c_final = torch.cat((w2_c_eff, w2_c_eff[resample_indices2]), dim=0)
+                        y2_c_final = torch.cat((y2_c_eff, y2_c_eff[resample_indices2]), dim=0)
+                        if p_needed_within and p2_prob_c_eff is not None: p2_prob_c_final = torch.cat((p2_prob_c_eff, p2_prob_c_eff[resample_indices2]), dim=0)
                         m_c_final = min_class_samples; upsampled2 = True
                     else:
-                         if verbose: warnings.warn(f"Class {c}: C2 has 0 samples, cannot upsample.")
-                         all_class_results[c] = current_class_result; continue
-
+                        if verbose: warnings.warn(f"C{c}: C2 has 0, cannot upsample."); all_class_results[c] = current_class_result; continue
             self.results['within_class_ot'][c]['upsampled'] = (upsampled1, upsampled2)
 
-            # --- Calculate Within-Class Cost Matrix (using updated function) ---
             cost_matrix_c, max_cost_c = self._calculate_cost_within_class(
-                h1_c_final, p1_prob_c_final, y1_c_final, # Pass Y
-                h2_c_final, p2_prob_c_final, y2_c_final, # Pass Y
-                **params # Pass decomposed_params
-            )
+                h1_c_final, p1_prob_c_final, y1_c_final, h2_c_final, p2_prob_c_final, y2_c_final, **params)
             self.results['within_class_ot'][c]['cost_matrix_max_val'] = max_cost_c
 
             if cost_matrix_c is not None and (not np.isfinite(max_cost_c) or max_cost_c > eps_num):
-                if normalize_within_cost and np.isfinite(max_cost_c) and max_cost_c > eps_num:
-                    normalized_cost_matrix_c = cost_matrix_c / max_cost_c
+                if normalize_within_cost and np.isfinite(max_cost_c) and max_cost_c > eps_num: normalized_cost_matrix_c = cost_matrix_c / max_cost_c
                 else:
-                    if normalize_within_cost and not np.isfinite(max_cost_c): warnings.warn(f"Class {c}: Max cost infinite.")
+                    if normalize_within_cost and not np.isfinite(max_cost_c): warnings.warn(f"C{c}: Max cost infinite.")
                     normalized_cost_matrix_c = cost_matrix_c
-
                 self.cost_matrices['within_class'][c] = normalized_cost_matrix_c
-
-                # Prepare Marginals (use loss-based weights 'w', re-normalized for the class)
-                w1_c_np = w1_c_final.cpu().numpy().astype(np.float64)
-                w2_c_np = w2_c_final.cpu().numpy().astype(np.float64)
+                w1_c_np = w1_c_final.cpu().numpy().astype(np.float64); w2_c_np = w2_c_final.cpu().numpy().astype(np.float64)
                 sum1_c = w1_c_np.sum(); sum2_c = w2_c_np.sum()
-
                 if sum1_c < eps_num: a_c = np.ones(n_c_final)/max(1,n_c_final); warnings.warn(f"C{c}: C1 weights sum zero.")
                 else: a_c = w1_c_np / sum1_c
                 if sum2_c < eps_num: b_c = np.ones(m_c_final)/max(1,m_c_final); warnings.warn(f"C{c}: C2 weights sum zero.")
                 else: b_c = w2_c_np / sum2_c
-
-                # Compute Within-Class OT Cost
-                ot_cost_c_norm, _ = self._compute_ot_cost(
-                    normalized_cost_matrix_c, a=a_c, b=b_c,
-                    eps=ot_eps, sinkhorn_max_iter=ot_max_iter
-                )
+                ot_cost_c_norm, _ = self._compute_ot_cost(normalized_cost_matrix_c, a=a_c, b=b_c, eps=ot_eps, sinkhorn_max_iter=ot_max_iter)
                 current_class_result['ot_cost'] = ot_cost_c_norm
                 self.results['within_class_ot'][c]['ot_cost'] = ot_cost_c_norm
                 if np.isnan(ot_cost_c_norm) and verbose: warnings.warn(f"OT cost failed class {c}.")
             else:
                 fail_reason = "calc failed" if cost_matrix_c is None else "max cost near zero"
                 if verbose: warnings.warn(f"Within-class cost matrix {fail_reason} class {c}.")
-
             all_class_results[c] = current_class_result
 
         # --- 3. Aggregate Conditional OT Costs ---
-        # (Aggregation logic remains the same)
         valid_classes = [c for c, res in all_class_results.items() if not np.isnan(res.get('ot_cost', np.nan))]
-        agg_conditional_ot = np.nan; agg_method_used = "None"
-        if not valid_classes: warnings.warn("No valid conditional OT costs to aggregate.")
+        agg_conditional_ot = np.nan
+        agg_method_used = "None" # Initialize
+
+        if not valid_classes:
+             warnings.warn("No valid conditional OT costs calculated to aggregate.")
         else:
-            costs_agg = np.array([all_class_results[c]['ot_cost'] for c in valid_classes]); effective_agg_method=agg_method_param; agg_method_used=f"'{effective_agg_method}'"
-            if effective_agg_method != 'mean' and not can_use_loss_agg: warnings.warn(f"Cannot use agg '{agg_method_param}', fallback mean."); effective_agg_method='mean'; agg_method_used="Mean (Fallback)"
-            if effective_agg_method == 'mean': agg_conditional_ot=np.mean(costs_agg); agg_method_used="Mean"
+            costs_agg = np.array([all_class_results[c]['ot_cost'] for c in valid_classes], dtype=np.float64)
+            effective_agg_method = agg_method_param # Get method chosen in __init__
+            agg_method_used = f"'{effective_agg_method}'" # Default description
+
+            # Check if loss-based aggregation is feasible
+            if effective_agg_method in ['avg_loss', 'total_loss_share'] and not can_use_loss_agg:
+                 warnings.warn(f"Cannot use '{agg_method_param}' due to invalid losses. Falling back to 'mean'.")
+                 effective_agg_method = 'mean'
+                 agg_method_used = "Mean (Fallback - Invalid Loss)"
+
+            # Calculate weights based on the chosen method
+            weights_agg = None # Initialize weights_agg
+            if effective_agg_method == 'mean':
+                weights_agg = np.ones_like(costs_agg) # Uniform weights for mean
+                agg_method_used = "Mean"
+            elif effective_agg_method == 'class_share':
+                total_samples = N + M
+                if total_samples > 0:
+                    weights_agg_list = []
+                    for c in valid_classes:
+                        n_c_agg, m_c_agg = all_class_results[c]['sample_count']
+                        class_samples = n_c_agg + m_c_agg
+                        weights_agg_list.append(float(class_samples) / total_samples)
+                    weights_agg = np.array(weights_agg_list, dtype=np.float64)
+                    agg_method_used = "Weighted by Class Share"
+                else: # Defensive check
+                    warnings.warn("Total samples N+M zero during class share agg. Fallback to mean.")
+                    weights_agg = np.ones_like(costs_agg)
+                    agg_method_used = "Mean (Fallback - Zero Total Samples)"
+            elif effective_agg_method == 'avg_loss':
+                weights_agg = np.array([all_class_results[c]['avg_loss'] for c in valid_classes], dtype=np.float64)
+                agg_method_used = "Weighted by Avg Loss"
+            elif effective_agg_method == 'total_loss_share':
+                # Handle zero total loss to avoid NaN weights
+                if total_loss_across_classes > eps_num:
+                     weights_agg = np.array([all_class_results[c]['total_loss'] / total_loss_across_classes for c in valid_classes], dtype=np.float64)
+                     agg_method_used = "Weighted by Total Loss Share"
+                else:
+                     warnings.warn("Total loss near zero. Using uniform weights for total_loss_share.")
+                     weights_agg = np.ones_like(costs_agg) # Fallback to uniform
+                     agg_method_used = "Weighted by Total Loss Share (Fallback - Zero Total Loss)"
+            # else: # Fallback handled by __init__ validation
+
+            # Ensure weights_agg is assigned before proceeding
+            if weights_agg is None:
+                warnings.warn(f"Weight calculation failed for method '{effective_agg_method}'. Falling back to mean.")
+                weights_agg = np.ones_like(costs_agg)
+                agg_method_used = "Mean (Fallback - Weight Calc Failed)"
+
+            # Normalize weights and compute weighted average
+            weights_agg = np.maximum(weights_agg, 0) # Ensure non-negative
+            total_weight = weights_agg.sum()
+            if total_weight < eps_num: # Check if total weight is effectively zero
+                agg_conditional_ot = np.mean(costs_agg) # Fallback to mean
+                agg_method_used += " (Fallback - Zero Weight Sum)" # Append fallback info
             else:
-                if effective_agg_method == 'avg_loss': weights_agg=np.array([all_class_results[c]['avg_loss'] for c in valid_classes]); agg_method_used="Weighted by Avg Loss"
-                elif effective_agg_method == 'total_loss_share': weights_agg=np.array([all_class_results[c]['total_loss'] for c in valid_classes]); agg_method_used="Weighted by Total Loss Share"
-                else: weights_agg=np.ones_like(costs_agg); agg_method_used="Mean (Fallback)"
-                weights_agg=np.maximum(weights_agg,0); weights_agg+=eps_num; total_weight=weights_agg.sum()
-                if total_weight < eps_num * len(weights_agg): agg_conditional_ot=np.mean(costs_agg); agg_method_used+=" (Fallback - Zero Weight)"
-                else: normalized_weights_agg=weights_agg/total_weight; agg_conditional_ot=np.sum(normalized_weights_agg*costs_agg)
+                normalized_weights_agg = weights_agg / total_weight
+                agg_conditional_ot = np.sum(normalized_weights_agg * costs_agg)
+
         self.results['decomposed']['conditional_ot'] = agg_conditional_ot
 
         # --- 4. Calculate Combined Score ---
+        # Simple sum of normalized EMD and aggregated conditional OT
         if not np.isnan(label_emd_normalized) and not np.isnan(agg_conditional_ot):
             total_score = label_emd_normalized + agg_conditional_ot
-            total_score = total_score / 2.0
+            # Note: Consider if components need rescaling before summing if ranges differ significantly
         else:
             total_score = np.nan
-        self.results['decomposed']['combined_score'] = total_score
+        self.results['decomposed']['combined_score'] = total_score / 2
 
         # --- Print Decomposed Results Summary ---
         print("-" * 30)
-        print("--- Decomposed Similarity Results (Unified Within-Class Cost) ---") # This printed before
+        print("--- Decomposed Similarity Results ---")
         emd_str = f"{self.results['decomposed']['label_emd']:.3f}" if not np.isnan(self.results['decomposed']['label_emd']) else 'Failed'
-        print(f"  Label EMD (Normalized={normalize_emd_flag}): {emd_str}") # Should print
+        print(f"  Label EMD (Normalized={normalize_emd_flag}): {emd_str}")
 
         beta_str = f", BetaW={params.get('beta_within', 0.0):.2f}" if params.get('beta_within', 0.0) > eps_num else ""
         min_samp_str = f", Upsampled to {min_class_samples}" if min_class_samples > 0 else ""
-        print(f"  Conditional Within-Class OT Costs (NormCost={normalize_within_cost}{beta_str}{min_samp_str}):") # Should print
+        print(f"  Conditional Within-Class OT Costs (NormCost={normalize_within_cost}{beta_str}{min_samp_str}):")
 
         for c in range(self.num_classes):
             cost_val = self.results['within_class_ot'].get(c, {}).get('ot_cost', np.nan)
@@ -710,22 +702,19 @@ class SimilarityAnalyzer:
             avg_loss_val = all_class_results.get(c, {}).get('avg_loss', 0.0)
             total_loss_val = all_class_results.get(c, {}).get('total_loss', 0.0)
             n_c_orig, m_c_orig = all_class_results.get(c, {}).get('sample_count', (0, 0))
-
             cost_str = f"{cost_val:.3f}" if not np.isnan(cost_val) else 'Skipped/Failed'
             upsample_note = ""
             if upsampled_status != (False, False):
                 upsample_note = " (Both Upsampled)" if upsampled_status[0] and upsampled_status[1] \
                      else f" ({self.client_id_1} Upsampled)" if upsampled_status[0] \
-                     else f" ({self.client_id_2} Upsampled)" if upsampled_status[1] \
-                     else ""
-            # <<< This print statement needs to execute for each class >>>
+                     else f" ({self.client_id_2} Upsampled)" if upsampled_status[1] else ""
             print(f"     - Class {c}: Cost={cost_str}{upsample_note} (Samples=[{n_c_orig},{m_c_orig}], AvgLoss={avg_loss_val:.3f}, TotalLoss={total_loss_val:.3f})")
 
         cond_ot_agg_str = f"{self.results['decomposed']['conditional_ot']:.3f}" if not np.isnan(self.results['decomposed']['conditional_ot']) else 'Failed/Not Applicable'
-        print(f"  Aggregated Conditional OT ({agg_method_used}): {cond_ot_agg_str}") # Should print
+        print(f"  Aggregated Conditional OT ({agg_method_used}): {cond_ot_agg_str}") # Now shows selected method
         comb_score_str = f"{self.results['decomposed']['combined_score']:.3f}" if not np.isnan(self.results['decomposed']['combined_score']) else 'Invalid'
-        print(f"  Combined Score (Sum): {comb_score_str}") # Should print
-        print("-" * 30) # Should print
+        print(f"  Combined Score (Sum): {comb_score_str}")
+        print("-" * 30)
 
 
     def _reset_decomposed_results(self, keep_emd=True):
@@ -1052,6 +1041,208 @@ class SimilarityAnalyzer:
         # Clamp result to theoretical range [0, 1]
         return torch.clamp(hellinger_sq, min=0.0, max=1.0)
 
+    def _pairwise_euclidean_sq(self, X, Y):
+            """ Calculates pairwise squared Euclidean distance: C[i,j] = ||X[i] - Y[j]||_2^2 """
+            if X is None or Y is None or X.ndim != 2 or Y.ndim != 2 or X.shape[1] != Y.shape[1]:
+                warnings.warn("_pairwise_euclidean_sq: Invalid input shapes.")
+                return None
+            try:
+                # Using cdist is generally numerically stable and clear
+                dist_sq = torch.cdist(X.float(), Y.float(), p=2).pow(2)
+                return dist_sq
+            except Exception as e:
+                warnings.warn(f"Error calculating squared Euclidean distance: {e}")
+                return None
+
+    def _compute_anchors(self, h, y, params):
+        """ Computes fixed anchors Z based on method specified in params. """
+        if h is None or h.shape[0] == 0:
+            warnings.warn("Cannot compute anchors: Input activations 'h' are None or empty.")
+            return None
+
+        method = params.get('anchor_method', 'kmeans')
+        k = params.get('num_anchors', 10)
+        verbose = params.get('verbose', False)
+
+        if verbose: print(f"    Computing anchors using method: {method}, k={k}")
+
+        if method == 'class_means':
+            if y is None:
+                warnings.warn("Cannot compute 'class_means' anchors: Input labels 'y' are None.")
+                return None
+            if k != self.num_classes:
+                warnings.warn(f"Requested {k} anchors but method is 'class_means', using num_classes={self.num_classes} instead.")
+                k = self.num_classes
+
+            anchors = []
+            present_classes = torch.unique(y)
+            if verbose: print(f"    Present classes: {present_classes.tolist()}")
+            for c in range(self.num_classes):
+                if c in present_classes:
+                    mask = (y == c)
+                    class_mean = h[mask].mean(dim=0)
+                    anchors.append(class_mean)
+                else:
+                    # Handle missing class - append zero vector or average of others?
+                    # Appending zero might distort distances in OT(Z1,Z2)
+                    # Let's append nan and filter later? Or skip? Skip for now.
+                    if verbose: warnings.warn(f"Class {c} missing, anchor not computed.")
+                    # Or maybe: anchors.append(torch.full((h.shape[1],), float('nan'))) ?
+
+            if not anchors:
+                warnings.warn("No anchors computed (likely no classes present?).")
+                return None
+            # Need to ensure consistent number/order if classes are missing?
+            # For now, return only anchors for present classes. OT needs defined costs.
+            # This makes OT(Z1, Z2) tricky if sets differ. Let's stick to k-Means for robustness for now.
+            warnings.warn("'class_means' anchor method currently experimental due to handling of missing classes. Recommend 'kmeans'.")
+            # Fallback or error needed here if using class_means. Returning None for now.
+            return None # Requires better handling of missing classes for Z1-Z2 alignment
+
+        elif method == 'kmeans':
+            if h.shape[0] < k:
+                warnings.warn(f"Number of samples ({h.shape[0]}) is less than k ({k}). Reducing k for KMeans.")
+                k = max(1, h.shape[0]) # Adjust k to number of samples if fewer
+
+            try:
+                # Use scikit-learn KMeans
+                h_np = h.detach().cpu().numpy()
+                kmeans = KMeans(n_clusters=k,
+                                n_init='auto', # Use 'auto' for modern sklearn
+                                max_iter=params.get('kmeans_max_iter', 100),
+                                random_state=42) # For reproducibility
+                kmeans.fit(h_np)
+                anchors_np = kmeans.cluster_centers_
+                if verbose: print(f"    Computed {anchors_np.shape[0]} k-Means anchors.")
+                return torch.from_numpy(anchors_np).float().cpu() # Ensure CPU tensor
+            except Exception as e:
+                warnings.warn(f"KMeans anchor computation failed: {e}")
+                return None
+        else:
+            warnings.warn(f"Unknown anchor method: {method}")
+            return None
+
+    def calculate_fixed_anchor_lot_similarity(self):
+        """ Calculates the Fixed-Anchor LOT cost and similarity score. (With Debug Prints) """
+        if self.activations[self.client_id_1] is None or self.activations[self.client_id_2] is None:
+             print("Activations not loaded for Fixed-Anchor LOT."); return
+
+        params = self.fixed_anchor_lot_params.copy() # Work on a copy
+        self.results['fixed_anchor_lot']['params'] = params # Store params used
+        verbose = params.get('verbose', True) # <<< Force verbose for debugging
+        eps_num = self.loss_eps # Small number epsilon
+        print(f"  DEBUG (FA-LOT): Starting calculation with params: {params}") # <<< DEBUG
+
+        # --- Get Data ---
+        act1 = self.activations[self.client_id_1]; act2 = self.activations[self.client_id_2]
+        h1, y1 = act1.get('h'), act1.get('y')
+        h2, y2 = act2.get('h'), act2.get('y')
+        if h1 is None or y1 is None or h2 is None or y2 is None:
+            warnings.warn("Fixed-Anchor LOT requires h and y data for both clients. Skipping.")
+            self.results['fixed_anchor_lot'].update({k: np.nan for k in ['total_cost', 'cost_local1', 'cost_local2', 'cost_cross_anchor', 'similarity_score']})
+            return
+
+        N, M = h1.shape[0], h2.shape[0]
+        if N == 0 or M == 0:
+            warnings.warn("Fixed-Anchor LOT: One or both clients have zero samples. Setting costs to 0, similarity to NaN.")
+            self.results['fixed_anchor_lot'].update({'total_cost': 0.0, 'cost_local1': 0.0, 'cost_local2': 0.0, 'cost_cross_anchor': 0.0, 'similarity_score': np.nan})
+            return
+
+        # --- Step 1: Compute Anchors ---
+        Z1 = self._compute_anchors(h1, y1, params)
+        Z2 = self._compute_anchors(h2, y2, params)
+
+        if Z1 is None or Z2 is None or Z1.shape[0] == 0 or Z2.shape[0] == 0:
+            warnings.warn("Failed to compute valid anchors for one or both clients. Skipping Fixed-Anchor LOT.")
+            print(f"  DEBUG (FA-LOT): Anchor computation failed. Z1 valid: {Z1 is not None and Z1.shape[0]>0}, Z2 valid: {Z2 is not None and Z2.shape[0]>0}") # <<< DEBUG
+            self.results['fixed_anchor_lot'].update({k: np.nan for k in ['total_cost', 'cost_local1', 'cost_local2', 'cost_cross_anchor', 'similarity_score']})
+            return
+
+        k1, k2 = Z1.shape[0], Z2.shape[0]
+        
+
+        # --- Step 2 & 3: Compute OT Costs ---
+        ot_max_iter = params.get('ot_max_iter', 2000)
+        cost_local1 = np.nan
+        cost_local2 = np.nan
+        cost_cross_anchor = np.nan
+        cost_matrix_local1, cost_matrix_local2, cost_matrix_cross_anchor = None, None, None # Init cost matrices
+
+        try:
+            cost_matrix_local1 = self._pairwise_euclidean_sq(h1, Z1)
+            if cost_matrix_local1 is not None:
+                a1 = np.ones(N, dtype=np.float64) / N
+                b1 = np.ones(k1, dtype=np.float64) / k1
+                local_reg1 = params.get('local_ot_reg', 0.01)
+                cost_local1, _ = self._compute_ot_cost(cost_matrix_local1, a=a1, b=b1, eps=local_reg1, sinkhorn_max_iter=ot_max_iter)
+                self.cost_matrices['fixed_anchor_lot']['local1'] = cost_matrix_local1.cpu().numpy()
+            else: print("  DEBUG (FA-LOT): Cost Matrix Local 1 is None.") # <<< DEBUG
+        except Exception as e:
+            warnings.warn(f"Error computing Cost_Local1: {e}")
+            cost_local1 = np.nan
+
+        try:
+            cost_matrix_local2 = self._pairwise_euclidean_sq(h2, Z2)
+            if cost_matrix_local2 is not None:
+                a2 = np.ones(M, dtype=np.float64) / M
+                b2 = np.ones(k2, dtype=np.float64) / k2
+                local_reg2 = params.get('local_ot_reg', 0.01)
+                cost_local2, _ = self._compute_ot_cost(cost_matrix_local2, a=a2, b=b2, eps=local_reg2, sinkhorn_max_iter=ot_max_iter)
+                self.cost_matrices['fixed_anchor_lot']['local2'] = cost_matrix_local2.cpu().numpy()
+            else: print("  DEBUG (FA-LOT): Cost Matrix Local 2 is None.") # <<< DEBUG
+        except Exception as e:
+            warnings.warn(f"Error computing Cost_Local2: {e}")
+            cost_local2 = np.nan
+
+        try:
+            cost_matrix_cross_anchor = self._pairwise_euclidean_sq(Z1, Z2)
+            if cost_matrix_cross_anchor is not None:
+                aZ = np.ones(k1, dtype=np.float64) / k1
+                bZ = np.ones(k2, dtype=np.float64) / k2
+                cross_reg = params.get('cross_anchor_ot_reg', 0.01)
+                cost_cross_anchor, _ = self._compute_ot_cost(cost_matrix_cross_anchor, a=aZ, b=bZ, eps=cross_reg, sinkhorn_max_iter=ot_max_iter)
+                self.cost_matrices['fixed_anchor_lot']['cross_anchor'] = cost_matrix_cross_anchor.cpu().numpy()
+            else: print("  DEBUG (FA-LOT): Cost Matrix Cross Anchor is None.") # <<< DEBUG
+        except Exception as e:
+            warnings.warn(f"Error computing Cost_CrossAnchor: {e}")
+            cost_cross_anchor = np.nan
+
+        # --- Store raw costs ---
+        self.results['fixed_anchor_lot']['cost_local1'] = cost_local1
+        self.results['fixed_anchor_lot']['cost_local2'] = cost_local2
+        self.results['fixed_anchor_lot']['cost_cross_anchor'] = cost_cross_anchor
+
+        # --- Step 4: Aggregate Costs ---
+        total_cost = np.nan
+        if np.isfinite(cost_local1) and np.isfinite(cost_local2) and np.isfinite(cost_cross_anchor):
+            w1 = params.get('local_cost_weight', 0.25); w2 = params.get('local_cost_weight', 0.25); wZ = params.get('cross_anchor_cost_weight', 0.5)
+            total_cost = w1 * cost_local1 + w2 * cost_local2 + wZ * cost_cross_anchor
+        else:
+            warnings.warn("One or more OT cost components failed (NaN/Inf). Cannot compute total cost.")
+
+
+        self.results['fixed_anchor_lot']['total_cost'] = total_cost
+
+        # --- Step 5: Normalization / Similarity Score ---
+        similarity_score = np.nan
+        if np.isfinite(total_cost) and params.get('normalize_total_cost', True):
+            max_cost_estimate = params.get('max_total_cost_estimate', 1.0)
+            if max_cost_estimate > eps_num:
+                similarity_score = max(0.0, 1.0 - (total_cost / max_cost_estimate))
+            else:
+                warnings.warn(f"max_total_cost_estimate ({max_cost_estimate}) is too small for normalization. Similarity set to NaN.")
+                print("  DEBUG (FA-LOT): Normalization failed (max_cost_estimate too small).") # <<< DEBUG
+        elif np.isfinite(total_cost) and not params.get('normalize_total_cost', True):
+             similarity_score = -total_cost # Use negative cost if not normalizing
+        else:
+             print(f"  DEBUG (FA-LOT): Skipping similarity score (TotalCost={total_cost}).") # <<< DEBUG
+
+
+        self.results['fixed_anchor_lot']['similarity_score'] = similarity_score
+
+        print(f"  ---> Fixed-Anchor LOT Total Cost: {f'{total_cost:.4f}' if np.isfinite(total_cost) else 'Failed'}")
+        print(f"  ---> Fixed-Anchor LOT Similarity: {f'{similarity_score:.4f}' if np.isfinite(similarity_score) else 'Failed'}")
+
 # ==============================================================================
 # Function to be Updated
 # ==============================================================================
@@ -1288,181 +1479,235 @@ def run_cost_param_sweep_pipeline(
     dataset_name: str,
     costs_list: List[float],
     target_rounds: int,
-    feature_error_ot_configs: List[Tuple[str, Dict[str, Any]]],
     client_id_1: Union[str, int],
     client_id_2: Union[str, int],
     num_classes: int,
     activation_loader_type: str = 'val',
     performance_aggregation: str = 'mean',
-    decomposed_params: Optional[Dict[str, Any]] = None,
     analyzer_loss_eps: float = 1e-9,
-    base_seed: int = 2
+    base_seed: int = 2,
+    # Allow providing specific configs for each method
+    feature_error_ot_configs: Optional[List[Tuple[str, Dict[str, Any]]]] = None,
+    decomposed_ot_configs: Optional[List[Tuple[str, Dict[str, Any]]]] = None,
+    fixed_anchor_lot_configs: Optional[List[Tuple[str, Dict[str, Any]]]] = None, # <<< NEW: Configs for Fixed Anchor LOT
 ) -> pd.DataFrame:
     """
-    Runs OT analysis using cached activations (string paths) and loads final performance
-    from standard file locations based on dataset_name.
-    (Full docstring omitted for brevity)
+    Runs OT analysis using cached activations and loads final performance.
+    Now supports running different configurations for Feature-Error OT,
+    Decomposed OT, and Fixed-Anchor LOT. At least one config list must be provided.
+
+    Args:
+        (Existing args...)
+        feature_error_ot_configs: List of (name, params_dict) for Feature-Error OT.
+        decomposed_ot_configs: List of (name, params_dict) for Decomposed OT.
+        fixed_anchor_lot_configs: List of (name, params_dict) for Fixed-Anchor LOT.
+        (Other args...)
+
+    Returns:
+        pd.DataFrame: DataFrame containing performance and similarity results.
     """
     results_list = []
     client_id_1_str = str(client_id_1)
     client_id_2_str = str(client_id_2)
 
-    print(f"--- Starting Streamlined Pipeline (String Paths) ---")
+    # --- Input Validation ---
+    if not feature_error_ot_configs and not decomposed_ot_configs and not fixed_anchor_lot_configs:
+        raise ValueError("Must provide at least one configuration list (feature_error_ot_configs, decomposed_ot_configs, or fixed_anchor_lot_configs).")
+
+    # Create combined list of all configurations to run per cost/activation set
+    all_configs = []
+    config_provided = False
+    if feature_error_ot_configs:
+        config_provided = True
+        for name, params in feature_error_ot_configs:
+            all_configs.append({'type': 'feature_error', 'name': name, 'params': params})
+    if decomposed_ot_configs:
+        config_provided = True
+        for name, params in decomposed_ot_configs:
+            all_configs.append({'type': 'decomposed', 'name': name, 'params': params})
+    if fixed_anchor_lot_configs:
+        config_provided = True
+        for name, params in fixed_anchor_lot_configs:
+            all_configs.append({'type': 'fixed_anchor', 'name': name, 'params': params})
+    if not config_provided: # Should be caught by earlier check, but defensive
+         raise ValueError("No OT configurations provided to run.")
+
+
+    print(f"--- Starting Streamlined Pipeline ---")
     print(f"Dataset: {dataset_name}")
     print(f"Target Activation Round: {target_rounds}")
-    print(f"Performance Aggregation: {performance_aggregation}")
     print(f"Clients: {client_id_1_str} vs {client_id_2_str}")
     print(f"Costs: {costs_list}")
-    print(f"FE-OT Configs: {[name for name, _ in feature_error_ot_configs]}")
-    print(f"Activation Loader: {activation_loader_type}")
-    print(f"Using Activation Cache Base: {ACTIVATION_DIR}") # Use global string
-    print(f"Using Perf Results Base: {RESULTS_DIR}") # Use global string
+    print(f"Total OT Configs per Run: {len(all_configs)}")
     print("-" * 60)
 
     # Outer loop: Iterate through costs
     for i, cost in enumerate(costs_list):
         print(f"\nProcessing Cost: {cost} (Round: {target_rounds}) ({i+1}/{len(costs_list)})...")
-        current_seed = base_seed
+        current_seed = base_seed # Use consistent seed per cost for activation generation
 
         # --- 1. Load Final Performance Metrics ---
         final_local_score, final_fedavg_score = load_final_performance(
             dataset_name, cost, performance_aggregation
         )
-        print(f"  Loaded Final Performance (Agg: {performance_aggregation}): Local={final_local_score:.4f}, FedAvg={final_fedavg_score:.4f}")
+        print(f"  Loaded Final Performance (Agg: {performance_aggregation}): Local={f'{final_local_score:.4f}' if np.isfinite(final_local_score) else 'NaN'}, FedAvg={f'{final_fedavg_score:.4f}' if np.isfinite(final_fedavg_score) else 'NaN'}")
+        loss_delta_value = np.nan
+        if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score):
+            # Calculate absolute delta: FedAvg_Loss - Local_Loss (Negative means FedAvg better loss)
+            loss_delta_value = final_fedavg_score - final_local_score
 
         # --- 2. Obtain Activations (Cache or Generate) ---
         activations_data = None
-        loaded_from_cache = False
         activation_status = "Pending"
-
-        # Construct cache path (returns string)
-        cache_path_str = _get_activation_cache_path(
-            dataset_name, cost, target_rounds, current_seed,
-            client_id_1_str, client_id_2_str, activation_loader_type
-        )
-        print(f"  Looking for cached activations: {cache_path_str}")
-
-        # Try loading from cache using string path
-        # <<< FIX: Use os.path.isfile for string paths >>>
+        # (Keep cache loading / generation logic as in your provided code)
+        # ... (Assume this block successfully populates activations_data or sets it to None) ...
+        # Example placeholder for cache/generation logic:
+        cache_path_str = _get_activation_cache_path(dataset_name, cost, target_rounds, current_seed, client_id_1_str, client_id_2_str, activation_loader_type)
         if os.path.isfile(cache_path_str):
-            try:
-                activations_data = torch.load(cache_path_str)
-                # Validation (same as before)
-                if isinstance(activations_data, tuple) and len(activations_data) == 6 and all(isinstance(t, torch.Tensor) or t is None for t in activations_data):
-                    if activations_data[0] is not None and activations_data[3] is not None: # Check h1 and h2
-                        loaded_from_cache = True
-                        activation_status = "Loaded from Cache"
-                        print(f"  Successfully loaded activations from cache.")
-                    else:
-                        warnings.warn(f"Cached file {cache_path_str} missing essential components. Regenerating.")
-                        activations_data = None
-                else:
-                    warnings.warn(f"Cached file {cache_path_str} format error. Regenerating.")
-                    activations_data = None
-            except Exception as e:
-                warnings.warn(f"Failed loading cache {cache_path_str}: {type(e).__name__} - {e}. Regenerating.")
-                activations_data = None
+             try:
+                 activations_data = torch.load(cache_path_str)
+                 # Add validation checks here...
+                 if isinstance(activations_data, tuple) and len(activations_data) == 6 and activations_data[0] is not None and activations_data[3] is not None:
+                     activation_status = "Loaded from Cache"
+                     print(f"  Successfully loaded activations from cache.")
+                 else: raise ValueError("Invalid cached data format/content.")
+             except Exception as e:
+                 warnings.warn(f"Failed loading cache {cache_path_str}: {e}. Regenerating.")
+                 activations_data = None
 
-        # Generate if not loaded (same logic as before)
+        if activations_data is None and activation_status != "Pending": # Only generate if cache failed, not if pending
+             # ... (Activation generation logic using run_experiment_get_activations) ...
+             # ... (Save to cache if successful) ...
+             pass # Placeholder: Assume generation sets activations_data or leaves it None on failure
+
+        # --- 3. Handle Activation Failure ---
         if activations_data is None:
-            print(f"  Cache miss. Generating activations (Rounds={target_rounds})...")
-            try:
-                if 'run_experiment_get_activations' not in globals():
-                     raise NameError("Function 'run_experiment_get_activations' is not defined or imported.")
+            print(f"  FAILED to load or generate activations for Cost {cost}. Skipping OT.")
+            # Create one placeholder row per config that *would* have run
+            for config in all_configs:
+                 placeholder_row = {
+                    'Cost': cost, 'Round': target_rounds, 'Param_Set_Name': config['name'],
+                    'Run_Status': activation_status if activation_status != "Pending" else "Activation Failed", # Use status if generation failed
+                    'OT_Method': config['type'],
+                    'Local_Final_Loss': final_local_score, 'FedAvg_Final_Loss': final_fedavg_score,
+                    'Loss_Delta': loss_delta_value, # Store FedAvg - Local
+                     # Add NaNs for all possible result columns
+                    'FeatureErrorOT_Cost': np.nan, 'FeatureErrorOT_Weighting': None,
+                    'Decomposed_LabelEMD': np.nan, 'Decomposed_ConditionalOT': np.nan, 'Decomposed_CombinedScore': np.nan,
+                    'FixedAnchor_TotalCost': np.nan, 'FixedAnchor_SimScore': np.nan,
+                    'FixedAnchor_CostL1': np.nan, 'FixedAnchor_CostL2': np.nan, 'FixedAnchor_CostX': np.nan,
+                 }
+                 results_list.append(placeholder_row)
+            continue # Skip to next cost
 
-                _, _, activations_tuple, _, _ = run_experiment_get_activations(
-                    dataset=dataset_name, cost=cost, client_id_1=client_id_1_str,
-                    client_id_2=client_id_2_str, loader_type=activation_loader_type,
-                    rounds=target_rounds, base_seed=current_seed
-                )
+        # --- 4. Instantiate Analyzer ONCE and Load Activations ONCE ---
+        print(f"  Instantiating Analyzer and loading {activation_status.lower()} activations...")
+        analyzer = None # Define analyzer outside try block
+        try:
+            analyzer = SimilarityAnalyzer(
+                client_id_1=client_id_1_str, client_id_2=client_id_2_str,
+                num_classes=num_classes,
+                # Pass default params initially, will be updated per config run
+                feature_error_ot_params=None,
+                decomposed_params=None,
+                fixed_anchor_lot_params=None,
+                loss_eps=analyzer_loss_eps
+            )
+            load_success = analyzer.load_activations(*activations_data)
+            if not load_success:
+                raise RuntimeError(f"SimilarityAnalyzer failed to load valid activations.")
+        except Exception as e_init:
+             warnings.warn(f"Cost {cost}, R{target_rounds}: FAILED Analyzer init/load - {type(e_init).__name__}: {e_init}", stacklevel=2)
+             # Create placeholder rows if analyzer fails
+             for config in all_configs:
+                 placeholder_row = {
+                    'Cost': cost, 'Round': target_rounds, 'Param_Set_Name': config['name'],
+                    'Run_Status': activation_status + f" + Failed Analyzer Load: {type(e_init).__name__}",
+                    'OT_Method': config['type'], 'Local_Final_Loss': final_local_score,
+                    'FedAvg_Final_Loss': final_fedavg_score, 'Loss_Delta': loss_delta_value,
+                    'FeatureErrorOT_Cost': np.nan, 'FeatureErrorOT_Weighting': None, # Add NaNs...
+                    'Decomposed_LabelEMD': np.nan, 'Decomposed_ConditionalOT': np.nan, 'Decomposed_CombinedScore': np.nan,
+                    'FixedAnchor_TotalCost': np.nan, 'FixedAnchor_SimScore': np.nan,
+                    'FixedAnchor_CostL1': np.nan, 'FixedAnchor_CostL2': np.nan, 'FixedAnchor_CostX': np.nan,
+                 }
+                 results_list.append(placeholder_row)
+             continue # Skip to next cost
 
-                if activations_tuple is None or not isinstance(activations_tuple, tuple) or len(activations_tuple) != 6:
-                     raise ValueError(f"run_experiment returned invalid activation tuple: {type(activations_tuple)}")
-                h1, p1, y1, h2, p2, y2 = activations_tuple
-                if any(x is None for x in [h1, y1, h2, y2]):
-                    raise ValueError("Generated activation components (h1/y1 or h2/y2) are None.")
-                activations_data = activations_tuple
+        # --- 5. Inner loop: Run OT Configs using the single Analyzer instance ---
+        print(f"  Calculating similarities for {len(all_configs)} configurations...")
+        for config in all_configs:
+            param_name = config['name']
+            params = config['params']
+            method_type = config['type']
 
-                # Try saving to cache using string path
-                try:
-                    # Ensure directory exists using os.makedirs
-                    os.makedirs(os.path.dirname(cache_path_str), exist_ok=True)
-                    torch.save(activations_data, cache_path_str)
-                    activation_status = "Generated and Cached"
-                    print(f"  Generated activations saved to cache: {cache_path_str}")
-                except Exception as e_save:
-                    warnings.warn(f"Failed to save activations to {cache_path_str}: {type(e_save).__name__} - {e_save}")
-                    activation_status = "Generated (Cache Failed)"
-
-            except Exception as e_gen:
-                warnings.warn(f"Cost {cost}, R{target_rounds}: FAILED activation generation - {type(e_gen).__name__}: {e_gen}", stacklevel=2)
-                activation_status = f"Failed Activation Gen: {type(e_gen).__name__}"
-                activations_data = None
-        # --- 3. Proceed if Activations Available (same logic as before) ---
-        if activations_data is None:
-            placeholder_row = {
-                'Cost': cost, 'Round': target_rounds, 'Param_Set_Name': 'N/A',
-                'Run_Status': activation_status,
-                'Local_Final_Loss': final_local_score, 
-                'FedAvg_Final_Loss': final_fedavg_score,
-                'FeatureErrorOT_Cost': np.nan, 'FeatureErrorOT_Weighting': None,
-                'Decomposed_LabelEMD': np.nan, 'Decomposed_ConditionalOT': np.nan,
-                'Decomposed_CombinedScore': np.nan
-            }
-            results_list.append(placeholder_row)
-            print(f"  Skipping OT calculations for Cost {cost}, Round {target_rounds}.")
-            continue
-
-        # --- 4. Inner loop: OT Parameter Configurations (same logic as before) ---
-        print(f"  Calculating similarities using {activation_status.lower()} activations...")
-        for param_name, current_feature_params in feature_error_ot_configs:
-            row_data = {
+            row_data = { # Base data for this row
                 'Cost': cost, 'Round': target_rounds, 'Param_Set_Name': param_name,
                 'Local_Final_Loss': final_local_score, 'FedAvg_Final_Loss': final_fedavg_score,
-                'Loss_Delta_pct': 100* (final_local_score - final_fedavg_score) / final_local_score,
+                'Loss_Delta': loss_delta_value, # Store FedAvg - Local loss
+                'Run_Status': activation_status, 'OT_Method': method_type,
+                # Initialize all possible results to NaN
                 'FeatureErrorOT_Cost': np.nan, 'FeatureErrorOT_Weighting': None,
-                'Decomposed_LabelEMD': np.nan, 'Decomposed_ConditionalOT': np.nan,
-                'Decomposed_CombinedScore': np.nan, 'Run_Status': activation_status
+                'Decomposed_LabelEMD': np.nan, 'Decomposed_ConditionalOT': np.nan, 'Decomposed_CombinedScore': np.nan,
+                'FixedAnchor_TotalCost': np.nan, 'FixedAnchor_SimScore': np.nan,
+                'FixedAnchor_CostL1': np.nan, 'FixedAnchor_CostL2': np.nan, 'FixedAnchor_CostX': np.nan,
             }
+
             try:
-                analyzer = SimilarityAnalyzer(
-                    client_id_1=client_id_1_str, client_id_2=client_id_2_str,
-                    num_classes=num_classes, feature_error_ot_params=current_feature_params,
-                    decomposed_params=decomposed_params, loss_eps=analyzer_loss_eps
-                )
-                load_success = analyzer.load_activations(*activations_data)
-                if not load_success:
-                    raise RuntimeError(f"SimilarityAnalyzer failed to load valid activations.")
-
-                analyzer.calculate_all()
-                ot_results = analyzer.get_results()
-
-                if ot_results:
-                    fe_ot = ot_results.get('feature_error_ot', {})
-                    decomp = ot_results.get('decomposed', {})
-                    row_data['FeatureErrorOT_Cost'] = fe_ot.get('ot_cost', np.nan)
-                    row_data['FeatureErrorOT_Weighting'] = fe_ot.get('weighting_used', None)
-                    row_data['Decomposed_LabelEMD'] = decomp.get('label_emd', np.nan)
-                    row_data['Decomposed_ConditionalOT'] = decomp.get('conditional_ot', np.nan)
-                    row_data['Decomposed_CombinedScore'] = decomp.get('combined_score', np.nan)
-                    row_data['Run_Status'] += " + OT Success"
+                run_status_suffix = ""
+                # Reconfigure analyzer for current params and run specific method
+                if method_type == 'feature_error':
+                    # Update only the specific params for this method type
+                    analyzer.feature_error_ot_params.update(params)
+                    analyzer.calculate_feature_error_ot_similarity()
+                    run_status_suffix = "FE-OT Success"
+                elif method_type == 'decomposed':
+                    analyzer.decomposed_params.update(params)
+                    analyzer.calculate_decomposed_similarity()
+                    run_status_suffix = "Decomp Success"
+                elif method_type == 'fixed_anchor':
+                    analyzer.fixed_anchor_lot_params.update(params)
+                    analyzer.calculate_fixed_anchor_lot_similarity()
+                    run_status_suffix = "FixAnch Success"
                 else:
-                    warnings.warn(f"Cost {cost}, R{target_rounds}, P '{param_name}': OT results retrieval failed.")
-                    row_data['Run_Status'] += " + Failed OT Retrieve"
+                     raise ValueError(f"Unknown method type in config: {method_type}")
+
+                # Get results and populate row_data
+                ot_results = analyzer.get_results()
+                if ot_results:
+                     if method_type == 'feature_error':
+                        fe_ot = ot_results.get('feature_error_ot', {})
+                        row_data['FeatureErrorOT_Cost'] = fe_ot.get('ot_cost', np.nan)
+                        row_data['FeatureErrorOT_Weighting'] = fe_ot.get('weighting_used', None)
+                     elif method_type == 'decomposed':
+                        decomp = ot_results.get('decomposed', {})
+                        row_data['Decomposed_LabelEMD'] = decomp.get('label_emd', np.nan)
+                        row_data['Decomposed_ConditionalOT'] = decomp.get('conditional_ot', np.nan)
+                        row_data['Decomposed_CombinedScore'] = decomp.get('combined_score', np.nan)
+                     elif method_type == 'fixed_anchor':
+                        fa_lot = ot_results.get('fixed_anchor_lot', {})
+                        row_data['FixedAnchor_TotalCost'] = fa_lot.get('total_cost', np.nan)
+                        row_data['FixedAnchor_SimScore'] = fa_lot.get('similarity_score', np.nan)
+                        row_data['FixedAnchor_CostL1'] = fa_lot.get('cost_local1', np.nan)
+                        row_data['FixedAnchor_CostL2'] = fa_lot.get('cost_local2', np.nan)
+                        row_data['FixedAnchor_CostX'] = fa_lot.get('cost_cross_anchor', np.nan)
+
+                     row_data['Run_Status'] += f" + {run_status_suffix}"
+                else:
+                    warnings.warn(f"Cost {cost}, P '{param_name}': OT results retrieval failed.")
+                    row_data['Run_Status'] += f" + Failed {method_type} Retrieve"
 
             except Exception as e_ot:
-                warnings.warn(f"Cost {cost}, R{target_rounds}, P '{param_name}': FAILED OT calculation - {type(e_ot).__name__}: {e_ot}", stacklevel=2)
-                row_data['Run_Status'] += f" + Failed OT Calc: {type(e_ot).__name__}"
+                 warnings.warn(f"Cost {cost}, P '{param_name}': FAILED {method_type} OT calc - {type(e_ot).__name__}: {e_ot}", stacklevel=2)
+                 row_data['Run_Status'] += f" + Failed {method_type} Calc: {type(e_ot).__name__}"
             finally:
-                results_list.append(row_data)
+                 results_list.append(row_data)
+
 
         # --- Cleanup ---
         activations_data = None
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except Exception as e_cuda:
-                warnings.warn(f"Error during CUDA cache cleanup: {e_cuda}")
+        analyzer = None # Release analyzer instance
+        # (Optional GPU cleanup)
+        # cleanup_gpu()
 
 
     # --- Final DataFrame Creation ---
@@ -1472,12 +1717,17 @@ def run_cost_param_sweep_pipeline(
         return pd.DataFrame()
 
     results_df = pd.DataFrame(results_list)
+
+    # Define potentially all columns you might want, in logical order
     cols_order = [
-        'Cost', 'Round', 'Param_Set_Name', 'Run_Status',
-        'Local_Final_Loss', 'FedAvg_Final_Loss', 'Loss_Delta_pct',
+        'Cost', 'Round', 'Param_Set_Name', 'OT_Method', 'Run_Status',
+        'Local_Final_Loss', 'FedAvg_Final_Loss', 'Loss_Delta',
         'FeatureErrorOT_Cost', 'FeatureErrorOT_Weighting',
-        'Decomposed_CombinedScore', 'Decomposed_LabelEMD', 'Decomposed_ConditionalOT'
+        'Decomposed_CombinedScore', 'Decomposed_LabelEMD', 'Decomposed_ConditionalOT',
+        'FixedAnchor_SimScore', 'FixedAnchor_TotalCost',
+        'FixedAnchor_CostL1', 'FixedAnchor_CostL2', 'FixedAnchor_CostX'
     ]
+    # Ensure only columns actually present are selected, preserving order
     cols_present = [col for col in cols_order if col in results_df.columns]
     results_df = results_df[cols_present]
     return results_df
@@ -1487,8 +1737,12 @@ def run_cost_param_sweep_pipeline(
 # Activation Extraction Function (Standalone)
 # ==============================================================================
 
-# Function definition remains the same
-def get_acts_for_similarity(client_id_key, server_instance, dataloaders_dict, loader_type='train'):
+def get_acts_for_similarity(
+    client_id_key: Union[str, int],
+    server_instance,
+    dataloaders_dict: Dict,
+    loader_type: str = 'train'
+) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
     """
     Gets activations and labels by processing the ENTIRE specified dataloader
     for a given client using its 'best' or current model. Handles batch size 1 correctly.
@@ -1496,44 +1750,76 @@ def get_acts_for_similarity(client_id_key, server_instance, dataloaders_dict, lo
     Args:
         client_id_key (str or int): The identifier for the client.
         server_instance: The server object (e.g., server_fedavg) containing clients.
+                         Assumed to have a .clients attribute behaving like a dict.
         dataloaders_dict (dict): Dictionary mapping client_id_key to (train, val, test) loaders.
         loader_type (str): Which loader to use ('train', 'val', or 'test'). Default is 'train'.
 
     Returns:
         torch.Tensor or None: Concatenated pre-final layer activations [N_total, D_pre].
-        torch.Tensor or None: Concatenated post-sigmoid/softmax activations [N_total] or [N_total, C].
+        torch.Tensor or None: Concatenated probabilities (post-sigmoid/softmax) [N_total] or [N_total, C].
         torch.Tensor or None: Concatenated labels [N_total].
         Returns None for all if errors occur or loader is empty.
     """
     client_id_str = str(client_id_key)
-    if client_id_str not in server_instance.clients:
-        raise KeyError(f"Client '{client_id_str}' not found in server.")
 
-    # Find the correct key for the dataloader dictionary (same logic as before)
+    # --- CORRECTED CLIENT LOOKUP ---
+    client_obj = None
+    # Check if .clients exists and is a dictionary
+    if hasattr(server_instance, 'clients') and isinstance(server_instance.clients, dict):
+        client_obj = server_instance.clients.get(client_id_str) # Try string key first
+        if client_obj is None:
+             try: # Try integer key if string key failed
+                 client_obj = server_instance.clients.get(int(client_id_key))
+             except (ValueError, TypeError):
+                 pass # Ignore error if key isn't convertible to int or not found
+    else:
+         # Handle cases where server_instance.clients is not a dict or missing
+         warnings.warn("server_instance.clients is not a dictionary or is missing. Cannot look up client.")
+         # Attempt a direct attribute access as a fallback, though likely to fail if not dict
+         try:
+             if client_id_str in server_instance.clients: # Check membership first if possible
+                client_obj = server_instance.clients[client_id_str]
+         except TypeError: # Handle if 'in' operator fails
+             pass
+         except AttributeError: # Handle if .clients doesn't exist
+             pass
+
+
+    if client_obj is None:
+        # Raise a more informative error if client lookup failed after trying common patterns
+        client_keys_found = list(getattr(server_instance, 'clients', {}).keys()) if hasattr(server_instance, 'clients') else 'N/A'
+        raise KeyError(f"Client '{client_id_str}' (or int key {client_id_key}) not found in server_instance.clients. Available keys: {client_keys_found}")
+    # --- END CORRECTION ---
+
+
+    # Find the correct key for the dataloader dictionary
     loader_key = None
-    if client_id_key in dataloaders_dict:
-        loader_key = client_id_key
-    elif client_id_str in dataloaders_dict:
-        loader_key = client_id_str
+    if client_id_key in dataloaders_dict: loader_key = client_id_key
+    elif client_id_str in dataloaders_dict: loader_key = client_id_str
     else:
         try:
             int_key = int(client_id_key)
-            if int_key in dataloaders_dict:
-                loader_key = int_key
-        except ValueError:
-            pass
-        if loader_key is None:
-             raise KeyError(f"Dataloader key matching '{client_id_key}' or '{client_id_str}' not found.")
+            if int_key in dataloaders_dict: loader_key = int_key
+        except ValueError: pass
+        if loader_key is None: raise KeyError(f"Dataloader key matching '{client_id_key}' not found.")
 
-    client_obj = server_instance.clients[client_id_str]
-    state_obj = client_obj.get_client_state(personal=False)
+    # Get model (using client_obj safely)
+    # Ensure get_client_state exists and handles errors
+    try:
+        state_obj = client_obj.get_client_state(personal=False)
+    except AttributeError:
+        raise AttributeError(f"Client object for ID '{client_id_str}' does not have method 'get_client_state'.")
+
     if hasattr(state_obj, 'best_model') and state_obj.best_model is not None:
         model = state_obj.best_model
-    else:
+    elif hasattr(state_obj, 'model'):
         warnings.warn(f"Client {client_id_str} has no best_model state. Using current model.")
         model = state_obj.model
+    else:
+         raise AttributeError(f"Could not find a 'best_model' or 'model' attribute in the client state for ID '{client_id_str}'.")
 
-    device = server_instance.device if hasattr(server_instance, 'device') else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = getattr(server_instance, 'device', torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device)
     model.eval()
 
@@ -1542,9 +1828,13 @@ def get_acts_for_similarity(client_id_key, server_instance, dataloaders_dict, lo
         raise ValueError(f"Invalid loader_type: '{loader_type}'. Choose 'train', 'val', or 'test'.")
 
     try:
-        data_loader = dataloaders_dict[loader_key][loader_idx]
-        if data_loader is None or len(data_loader) == 0 or len(data_loader.dataset) == 0:
-            warnings.warn(f"{loader_type.capitalize()} loader is empty for client {client_id_str} (key: {loader_key}).")
+        # Ensure dataloaders_dict[loader_key] is a list/tuple of loaders
+        client_loaders = dataloaders_dict[loader_key]
+        if not isinstance(client_loaders, (list, tuple)) or len(client_loaders) <= loader_idx:
+             raise TypeError(f"Expected dataloaders_dict[{loader_key}] to be a list/tuple of loaders.")
+        data_loader = client_loaders[loader_idx]
+        if data_loader is None or len(data_loader.dataset) == 0: # Check dataset length too
+            warnings.warn(f"{loader_type.capitalize()} loader is None or empty for client {client_id_str} (key: {loader_key}).")
             return None, None, None
     except Exception as e:
         warnings.warn(f"Error accessing {loader_type} loader for client {client_id_str} (key: {loader_key}): {e}")
@@ -1554,98 +1844,113 @@ def get_acts_for_similarity(client_id_key, server_instance, dataloaders_dict, lo
     all_post_activations = []
     all_labels = []
 
-    # Find the final linear layer (same logic as before)
+    # Find the final linear layer
     final_linear = None
-    possible_names = ['fc', 'linear', 'classifier', 'output']
+    # Prefer explicitly named layers if they exist
+    possible_names = ['output_layer', 'fc', 'linear', 'classifier', 'output']
     for name in possible_names:
         module = getattr(model, name, None)
-        if module is not None:
-            if isinstance(module, torch.nn.Linear): final_linear = module; break
-            elif isinstance(module, torch.nn.Sequential) and len(module) > 0 and isinstance(module[-1], torch.nn.Linear): final_linear = module[-1]; break
-    if final_linear is None:
+        if isinstance(module, torch.nn.Linear):
+            final_linear = module
+            # print(f"Found final layer '{name}'")
+            break
+        elif isinstance(module, torch.nn.Sequential):
+             # Check last layer of Sequential
+             if len(module) > 0 and isinstance(module[-1], torch.nn.Linear):
+                 final_linear = module[-1]
+                 # print(f"Found final layer in Sequential '{name}'")
+                 break
+    if final_linear is None: # Fallback: search all modules
         for module in reversed(list(model.modules())):
-            if isinstance(module, torch.nn.Linear):
-                final_linear = module
-                warnings.warn(f"Using potentially non-final Linear layer '{module}' for hooks.")
-                break
-        if final_linear is None:
-            raise AttributeError("Could not automatically find final linear layer for hooking.")
+             if isinstance(module, torch.nn.Linear):
+                 final_linear = module
+                 warnings.warn(f"Using last found Linear layer '{module}' for hooks (may not be correct).")
+                 break
+        if final_linear is None: raise AttributeError("Could not find any linear layer for hooking.")
 
-    # --- Hooking Logic (same as before) ---
+    # --- Hooking Logic ---
     current_batch_pre_acts_storage = []
     current_batch_post_logits_storage = []
     def pre_hook(module, input):
         inp = input[0] if isinstance(input, tuple) else input
-        if isinstance(inp, torch.Tensor):
-            current_batch_pre_acts_storage.append(inp.detach())
-
+        if isinstance(inp, torch.Tensor): current_batch_pre_acts_storage.append(inp.detach())
     def post_hook(module, input, output):
         out = output[0] if isinstance(output, tuple) else output
-        if isinstance(out, torch.Tensor):
-            current_batch_post_logits_storage.append(out.detach())
+        if isinstance(out, torch.Tensor): current_batch_post_logits_storage.append(out.detach())
 
     pre_handle = final_linear.register_forward_pre_hook(pre_hook)
     post_handle = final_linear.register_forward_hook(post_hook)
 
     # --- Process Data ---
-    with torch.no_grad():
-        for batch_x, batch_y in data_loader:
-            batch_x = batch_x.to(device)
-            # Keep batch_y on its original device for now
+    try:
+        with torch.no_grad():
+            for batch_data in data_loader:
+                # Adapt based on how data_loader yields data
+                if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 2:
+                    batch_x, batch_y = batch_data[0], batch_data[1]
+                elif isinstance(batch_data, dict):
+                     batch_x, batch_y = batch_data.get('features'), batch_data.get('labels')
+                     if batch_x is None or batch_y is None:
+                         warnings.warn(f"Skipping batch: Missing 'features' or 'labels' key.")
+                         continue
+                else:
+                    warnings.warn(f"Skipping batch: Unexpected data format from loader.")
+                    continue
 
-            current_batch_pre_acts_storage.clear()
-            current_batch_post_logits_storage.clear()
+                if batch_x.shape[0] == 0: continue # Skip empty batches
 
-            out = model(batch_x) # Forward pass triggers hooks
+                batch_x = batch_x.to(device)
 
-            if not current_batch_pre_acts_storage or not current_batch_post_logits_storage:
-                warnings.warn(f"Hooks failed for a batch in client {client_id_str}. Skipping batch.")
-                continue
+                current_batch_pre_acts_storage.clear()
+                current_batch_post_logits_storage.clear()
 
-            pre_acts_batch = current_batch_pre_acts_storage[0].cpu()
-            post_logits_batch = current_batch_post_logits_storage[0].cpu()
+                _ = model(batch_x) # Forward pass triggers hooks
 
-            # Handle post activations (sigmoid for binary, softmax for multi-class)
-            if post_logits_batch.shape[1] == 1:
-                 # Binary classification or regression output
-                 post_probs_batch = torch.sigmoid(post_logits_batch).squeeze(-1) # Shape: [batch_size]
-            elif post_logits_batch.ndim == 1: # If already squeezed
-                 post_probs_batch = torch.sigmoid(post_logits_batch) # Shape: [batch_size]
-            else:
-                 # Multi-class classification
-                 post_probs_batch = torch.softmax(post_logits_batch, dim=1) # Shape: [batch_size, num_classes]
+                if not current_batch_pre_acts_storage or not current_batch_post_logits_storage:
+                    warnings.warn(f"Hooks failed for a batch in client {client_id_str}. Skipping batch.")
+                    continue
 
-            all_pre_activations.append(pre_acts_batch)
-            all_post_activations.append(post_probs_batch)
+                pre_acts_batch = current_batch_pre_acts_storage[0].cpu()
+                post_logits_batch = current_batch_post_logits_storage[0].cpu()
 
-            # --- FIX: Ensure labels are 1D ---
-            # Move to CPU and reshape to (-1). This ensures it's 1D.
-            # If batch_y was (), reshape makes it (1,).
-            # If batch_y was (B,), reshape keeps it (B,).
-            all_labels.append(batch_y.cpu().reshape(-1))
-            # --- END FIX ---
+                # Determine num_classes dynamically if needed, though passed via Analyzer
+                num_classes_model = post_logits_batch.shape[-1] if post_logits_batch.ndim > 1 else 1
 
-    pre_handle.remove()
-    post_handle.remove()
+                # Handle post activations (sigmoid/softmax)
+                if num_classes_model == 1: # Binary classification or regression output
+                     post_probs_batch = torch.sigmoid(post_logits_batch).squeeze(-1)
+                elif post_logits_batch.ndim == 1: # Already squeezed, assume binary
+                     post_probs_batch = torch.sigmoid(post_logits_batch)
+                else: # Multi-class classification
+                     post_probs_batch = torch.softmax(post_logits_batch, dim=-1)
+
+                all_pre_activations.append(pre_acts_batch)
+                all_post_activations.append(post_probs_batch)
+                all_labels.append(batch_y.cpu().reshape(-1)) # Ensure 1D
+
+    except Exception as e_proc:
+         warnings.warn(f"Error during batch processing for client {client_id_str}: {e_proc}")
+         pre_handle.remove(); post_handle.remove() # Ensure hooks removed on error
+         return None, None, None
+    finally:
+        # Always remove hooks
+        pre_handle.remove()
+        post_handle.remove()
 
     # --- Concatenate Results ---
-    if not all_pre_activations: # Or check all_labels
+    if not all_pre_activations:
         warnings.warn(f"No batches processed successfully for client {client_id_str}.")
         return None, None, None
     try:
         final_pre_activations = torch.cat(all_pre_activations, dim=0)
         final_post_activations = torch.cat(all_post_activations, dim=0)
-        final_labels = torch.cat(all_labels, dim=0) # Should now work correctly
-    except Exception as e:
-        warnings.warn(f"Error concatenating batch results for client {client_id_str}: {e}")
-        # Optional: Add debugging prints for shapes if needed
-        # for i, t in enumerate(all_pre_activations): print(f"Pre act batch {i} shape: {t.shape}")
-        # for i, t in enumerate(all_post_activations): print(f"Post act batch {i} shape: {t.shape}")
-        # for i, t in enumerate(all_labels): print(f"Label batch {i} shape: {t.shape}") # Check label shapes here
+        final_labels = torch.cat(all_labels, dim=0)
+    except Exception as e_cat:
+        warnings.warn(f"Error concatenating batch results for client {client_id_str}: {e_cat}")
         return None, None, None
 
+    # print(f"  Success: Client {client_id_str} Activations Extracted - h:{final_pre_activations.shape}, p:{final_post_activations.shape}, y:{final_labels.shape}")
     return final_pre_activations, final_post_activations, final_labels
-
 # ==============================================================================
 # Plotting Function (Standalone)
 # ==============================================================================
@@ -2268,6 +2573,8 @@ def plot_ot_costs_vs_perf_delta(
         )
 
         ax.set_title(subplot_titles[i], fontsize=14)
+        ax.axhline(y=0, linestyle='--', color='black', linewidth=1)
+        ax.set_xlim(0.0, 0.7)
         ax.set_xlabel(x_labels[i], fontsize=12)
         ax.grid(True, linestyle='--', alpha=0.6)
 
