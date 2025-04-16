@@ -1951,6 +1951,8 @@ def get_acts_for_similarity(
 
     # print(f"  Success: Client {client_id_str} Activations Extracted - h:{final_pre_activations.shape}, p:{final_post_activations.shape}, y:{final_labels.shape}")
     return final_pre_activations, final_post_activations, final_labels
+
+    
 # ==============================================================================
 # Plotting Function (Standalone)
 # ==============================================================================

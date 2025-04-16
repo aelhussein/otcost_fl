@@ -5,7 +5,7 @@ import warnings
 from typing import List, Tuple, Dict, Any, Union, Optional
 
 # Import DataManager and BaseOTCalculator (for type hinting)
-from data_manager import DataManager
+from ot_data_manager import DataManager
 # Import BaseOTCalculator *AND* the new Config and Factory from ot_calculators.py
 from ot_calculators import BaseOTCalculator, OTConfig, OTCalculatorFactory
 
@@ -60,7 +60,7 @@ class PipelineRunner:
             final_local_score, final_fedavg_score = self.data_manager.get_performance(
                 dataset_name, cost, performance_aggregation
             )
-            loss_delta = final_fedavg_score - final_local_score if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score) else np.nan
+            loss_delta = final_local_score - final_fedavg_score if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score) else np.nan
             print(f"  Loaded Performance (Agg: {performance_aggregation}): Local={f'{final_local_score:.4f}' if np.isfinite(final_local_score) else 'NaN'}, FedAvg={f'{final_fedavg_score:.4f}' if np.isfinite(final_fedavg_score) else 'NaN'}, Delta={f'{loss_delta:.4f}' if np.isfinite(loss_delta) else 'NaN'}")
 
 

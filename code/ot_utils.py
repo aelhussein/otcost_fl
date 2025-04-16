@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import ot
 import numpy as np
 import warnings
-from typing import Optional, Tuple, Dict, Any, Union
+from typing import Optional, Tuple, Dict, Any, Union, List
 from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
 
@@ -190,6 +190,126 @@ def compute_anchors(
     y: Optional[torch.Tensor],
     num_classes: int,
     params: Dict[str, Any]
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Computes fixed anchors Z per class.
+    Returns a list of dictionaries, each containing:
+        {'anchor': torch.Tensor, 'class_label': int, 'cluster_size': int}
+
+    - If method='kmeans', runs KMeans per class. 'num_anchors' specifies k per class.
+      'cluster_size' is the number of points assigned to that anchor's cluster.
+    - If method='class_means', computes the mean per class.
+      'cluster_size' is the total number of points in that class.
+    """
+    # ... (Initial checks for h, y remain the same) ...
+    if h is None or y is None or h.shape[0] != y.shape[0] or h.ndim != 2 or y.ndim != 1:
+        warnings.warn("Invalid input for anchor computation.")
+        return None
+    if h.shape[0] == 0: return None
+    method = params.get('anchor_method', 'kmeans')
+    k_per_class = params.get('num_anchors', 5) # k per class for kmeans
+    kmeans_max_iter = params.get('kmeans_max_iter', 100)
+    verbose = params.get('verbose', False)
+
+    all_anchor_info = []
+    h_cpu = h.detach().cpu()
+    y_cpu = y.detach().cpu()
+
+    for c in range(num_classes):
+        class_mask = (y_cpu == c)
+        h_class = h_cpu[class_mask]
+        n_class = h_class.shape[0]
+
+        if n_class == 0:
+            if verbose: warnings.warn(f"Class {c}: No samples. Skipping anchors.")
+            continue
+
+        class_anchors_data = [] # List to store dicts for this class
+
+        if method == 'kmeans':
+            current_k = k_per_class
+            use_fallback = False
+            if n_class < current_k:
+                warnings.warn(f"Class {c}: Samples ({n_class}) < k ({current_k}). Using class mean.")
+                use_fallback = True
+
+            if use_fallback:
+                 anchor_mean = h_class.mean(dim=0, keepdim=True).float()
+                 class_anchors_data.append({'anchor': anchor_mean.squeeze(0), 'class_label': c, 'cluster_size': n_class})
+            else:
+                try:
+                    h_class_np = h_class.numpy()
+                    kmeans = KMeans(n_clusters=current_k, n_init='auto',
+                                    max_iter=kmeans_max_iter, random_state=42)
+                    # Get cluster assignments (labels_) and centers (cluster_centers_)
+                    cluster_assignments = kmeans.fit_predict(h_class_np)
+                    cluster_centers = kmeans.cluster_centers_
+
+                    for cluster_idx in range(current_k):
+                        center_coord = torch.from_numpy(cluster_centers[cluster_idx]).float()
+                        # Count points assigned to this cluster
+                        points_in_cluster = np.sum(cluster_assignments == cluster_idx)
+                        if points_in_cluster > 0: # Only add anchor if it represents points
+                             class_anchors_data.append({
+                                 'anchor': center_coord,
+                                 'class_label': c,
+                                 'cluster_size': int(points_in_cluster)
+                             })
+                        elif verbose:
+                             warnings.warn(f"Class {c}, K-Means cluster {cluster_idx} has 0 points assigned.")
+
+                    if verbose: print(f"    Class {c}: Computed {len(class_anchors_data)} k-Means anchors.")
+
+                except Exception as e:
+                    warnings.warn(f"KMeans failed for class {c}: {e}. Using class mean fallback.")
+                    anchor_mean = h_class.mean(dim=0, keepdim=True).float()
+                    class_anchors_data.append({'anchor': anchor_mean.squeeze(0), 'class_label': c, 'cluster_size': n_class})
+
+        elif method == 'class_means':
+            if n_class > 0:
+                 anchor_mean = h_class.mean(dim=0, keepdim=True).float()
+                 class_anchors_data.append({'anchor': anchor_mean.squeeze(0), 'class_label': c, 'cluster_size': n_class})
+                 if verbose: print(f"    Class {c}: Computed class mean anchor.")
+
+        else: # Unknown method
+            warnings.warn(f"Unknown anchor method: {method}")
+            return None
+
+        all_anchor_info.extend(class_anchors_data)
+
+    if not all_anchor_info:
+        warnings.warn("No anchors computed across any classes.")
+        return None
+
+    if verbose: print(f"  Total computed anchor info entries: {len(all_anchor_info)}")
+    return all_anchor_info # Return list of dicts
+
+def calculate_sample_loss(p_prob: Optional[torch.Tensor], y: Optional[torch.Tensor], num_classes: int, loss_eps: float = DEFAULT_EPS) -> Optional[torch.Tensor]:
+    """Calculates per-sample cross-entropy loss, handling validation."""
+    if p_prob is None or y is None: return None
+    if not isinstance(p_prob, torch.Tensor): p_prob = torch.tensor(p_prob)
+    if not isinstance(y, torch.Tensor): y = torch.tensor(y)
+
+    try:
+        p_prob = p_prob.float().clamp(min=loss_eps, max=1.0 - loss_eps)
+        y = y.long()
+        if y.shape[0] != p_prob.shape[0] or p_prob.ndim != 2 or p_prob.shape[1] != num_classes:
+            warnings.warn(f"Loss calculation shape mismatch/invalid: P({p_prob.shape}), Y({y.shape}), K={num_classes}")
+            return None
+
+        true_class_prob = p_prob.gather(1, y.view(-1, 1)).squeeze()
+        loss = -torch.log(true_class_prob.clamp(min=loss_eps))
+    except Exception as e:
+        warnings.warn(f"Error during loss calculation (gather/log): {e}. Shapes: P={p_prob.shape}, Y={y.shape}")
+        return None
+
+    return torch.relu(loss) # Ensure non-negative loss
+
+def compute_anchors(
+    h: Optional[torch.Tensor],
+    y: Optional[torch.Tensor],
+    num_classes: int,
+    params: Dict[str, Any]
 ) -> Optional[torch.Tensor]:
     """ Computes fixed anchors Z based on method specified in params. """
     if h is None or h.shape[0] == 0:
@@ -250,27 +370,3 @@ def compute_anchors(
     else:
         warnings.warn(f"Unknown anchor method: {method}")
         return None
-
-# Add other necessary utilities like set_global_seeds, create_seeded_generator,
-# _calculate_sample_loss, _process_client_data (maybe refactored), etc.
-
-def calculate_sample_loss(p_prob: Optional[torch.Tensor], y: Optional[torch.Tensor], num_classes: int, loss_eps: float = DEFAULT_EPS) -> Optional[torch.Tensor]:
-    """Calculates per-sample cross-entropy loss, handling validation."""
-    if p_prob is None or y is None: return None
-    if not isinstance(p_prob, torch.Tensor): p_prob = torch.tensor(p_prob)
-    if not isinstance(y, torch.Tensor): y = torch.tensor(y)
-
-    try:
-        p_prob = p_prob.float().clamp(min=loss_eps, max=1.0 - loss_eps)
-        y = y.long()
-        if y.shape[0] != p_prob.shape[0] or p_prob.ndim != 2 or p_prob.shape[1] != num_classes:
-            warnings.warn(f"Loss calculation shape mismatch/invalid: P({p_prob.shape}), Y({y.shape}), K={num_classes}")
-            return None
-
-        true_class_prob = p_prob.gather(1, y.view(-1, 1)).squeeze()
-        loss = -torch.log(true_class_prob.clamp(min=loss_eps))
-    except Exception as e:
-        warnings.warn(f"Error during loss calculation (gather/log): {e}. Shapes: P={p_prob.shape}, Y={y.shape}")
-        return None
-
-    return torch.relu(loss) # Ensure non-negative loss
