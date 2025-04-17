@@ -11,21 +11,6 @@ import argparse
 import os
 import sys
 
-# Define the set of 'cost' or heterogeneity parameters to iterate over for each dataset.
-# The *meaning* of these values (e.g., alpha, 1/alpha, file key) is determined downstream
-# by the dataset's configuration in configs.py and the pipeline's cost translation logic.
-DATASET_COSTS = {
-    'IXITiny': [0.08, 0.28, 0.30, 'all'], # Interpreted as site mapping keys
-    'ISIC': [0.06, 0.15, 0.19, 0.25, 0.3, 'all'], # Interpreted as site mapping keys
-    # For Dirichlet partitioned datasets, these are intended as direct alpha values:
-    'EMNIST': [0.1, 0.5, 1.0, 5.0, 10.0],  # Direct alpha values (low alpha = high non-IID)
-    'CIFAR': [0.1, 0.5, 1.0, 5.0, 10.0],   # Direct alpha values
-    # For others, interpreted as file suffixes:
-    'Synthetic': [0.01, 0.03, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.69],
-    'Credit': [0.12, 0.16, 0.22, 0.23, 0.27, 0.3, 0.34, 0.4],
-    'Weather': [0.11, 0.19, 0.3, 0.4, 0.48],
-    'Heart': [1,2,3,4,5,6] # Example: Interpreted as file suffix by config
-}
 
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
@@ -33,7 +18,7 @@ sys.path.insert(0, _PROJECT_ROOT)
 sys.path.insert(0, _CURRENT_DIR)
 
 # --- Import Project Modules ---
-from configs import DATASETS, RESULTS_DIR, DEFAULT_PARAMS
+from configs import DATASETS, RESULTS_DIR, DEFAULT_PARAMS, DATASET_COSTS
 from pipeline import ExperimentType, ExperimentConfig, Experiment
 
 

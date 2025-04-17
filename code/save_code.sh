@@ -2,7 +2,8 @@
 
 # List of target Python files
 #files=("run.py" "pipeline.py" "data_processing.py" "configs.py")
-files=("run.py" "pipeline.py" "servers.py" "clients.py" "data_processing.py" "helper.py" "configs.py")
+#files=("run.py" "pipeline.py" "servers.py" "clients.py" "data_processing.py" "helper.py" "configs.py")
+files=("ot_results_analysis.py" "ot_pipeline_runner.py" "ot_caclulators.py" "ot_data_manager.py" "ot_utils.py")
 
 # Output file
 output_file="combined_output.txt"

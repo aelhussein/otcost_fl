@@ -5,6 +5,11 @@ import os
 import pickle
 import warnings
 from typing import Dict, Any, Optional, Tuple, Union
+from configs import *
+from ot_utils import calculate_sample_loss, DEFAULT_EPS
+# Import ResultsManager to load performance data correctly
+from pipeline import ResultsManager, ExperimentType # Need ResultsManager for loading
+
 
 # Assume activation extraction function is available (e.g., from ot_utils or model_utils)
 # from ot_utils import get_acts_for_similarity # Or wherever it lives
@@ -30,24 +35,47 @@ RESULTS_DIR = "./results" # Example path
 from ot_utils import calculate_sample_loss, DEFAULT_EPS
 
 class DataManager:
-    """ Handles loading, caching, generation, and processing of activations and performance results. """
-    def __init__(self, activation_dir: str = ACTIVATION_DIR, results_dir: str = RESULTS_DIR, loss_eps: float = DEFAULT_EPS):
+    """
+    Handles loading, caching, generation, and processing of activations
+    and performance results for specific experiment configurations (including num_clients).
+    """
+    # MODIFIED: Init accepts num_clients used for performance file loading
+    def __init__(self,
+                 num_clients: int,
+                 activation_dir: str = ACTIVATION_DIR,
+                 results_dir: str = RESULTS_DIR, # Base results dir
+                 loss_eps: float = DEFAULT_EPS):
+        """
+        Initializes the DataManager.
+
+        Args:
+            num_clients (int): The target number of clients used in the FL run (used for loading performance files).
+            activation_dir (str): Directory for storing/loading activation caches.
+            results_dir (str): Base directory where experiment results are stored.
+            loss_eps (float): Epsilon for numerical stability in loss calculations.
+        """
+        if not isinstance(num_clients, int) or num_clients <= 0:
+             raise ValueError("DataManager requires a valid positive integer for num_clients.")
+        self.num_clients = num_clients # Store the target client count for result file lookup
         self.activation_dir = activation_dir
         self.results_dir = results_dir
         self.loss_eps = loss_eps
         os.makedirs(self.activation_dir, exist_ok=True)
-        # Ensure results base dir exists if needed for loading
-        # os.makedirs(self.results_dir, exist_ok=True)
+        print(f"DataManager initialized targeting results for {self.num_clients} clients.")
 
+    # MODIFIED: Added num_clients parameter for consistency, path includes it
     def _get_activation_cache_path(
-        self, dataset_name: str, cost: float, rounds: int, seed: int,
-        client_id_1: Union[str, int], client_id_2: Union[str, int], loader_type: str
+        self, dataset_name: str, cost: Any, rounds: int, seed: int,
+        client_id_1: Union[str, int], client_id_2: Union[str, int],
+        loader_type: str, num_clients: int
     ) -> str:
-        """Constructs the standardized path for activation cache files."""
+        """Constructs the standardized path for activation cache files, including num_clients."""
         c1_str = str(client_id_1); c2_str = str(client_id_2)
         dataset_cache_dir = os.path.join(self.activation_dir, dataset_name)
         os.makedirs(dataset_cache_dir, exist_ok=True)
-        filename = f"activations_{dataset_name}_cost{cost:.4f}_r{rounds}_seed{seed}_c{c1_str}v{c2_str}_{loader_type}.pt"
+        cost_str = f"{float(cost):.4f}" if isinstance(cost, (int, float)) else str(cost)
+        # Filename includes num_clients associated with the run
+        filename = f"activations_{dataset_name}_nc{num_clients}_cost{cost_str}_r{rounds}_seed{seed}_c{c1_str}v{c2_str}_{loader_type}.pt"
         return os.path.join(dataset_cache_dir, filename)
 
     def _load_activations_from_cache(self, path: str) -> Optional[Tuple]:
@@ -83,8 +111,9 @@ class DataManager:
             warnings.warn(f"Failed saving activations to cache {path}: {e}")
 
     def _generate_activations(
-        self, dataset: str, cost: float, rounds: int, seed: int,
-        client_id_1: Union[str, int], client_id_2: Union[str, int], loader_type: str
+        self, dataset: str, cost: Any, rounds: int, seed: int,
+        client_id_1: Union[str, int], client_id_2: Union[str, int],
+        num_clients: int, loader_type: str # Pass num_clients
     ) -> Optional[Tuple]:
         """
         Triggers the experiment run to generate activations.
@@ -97,11 +126,16 @@ class DataManager:
             _, _, activations_tuple, _, _ = run_experiment_get_activations(
                  dataset=dataset,
                  cost=cost,
-                 client_id_1=client_id_1,
-                 client_id_2=client_id_2,
+                 num_clients=num_clients,
                  loader_type=loader_type,
                  rounds=rounds,
-                 base_seed=seed
+                 base_seed=seed,
+                 activation_config={
+                     'save': True,
+                     'client_ids': [str(client_id_1), str(client_id_2)],
+                     'loader_type': loader_type,
+                     'round': rounds
+                 }
             )
             # Basic validation of generated activations
             if isinstance(activations_tuple, tuple) and len(activations_tuple) == 6 and \
@@ -189,79 +223,84 @@ class DataManager:
 
 
     def get_activations(
-        self, dataset_name: str, cost: float, rounds: int, seed: int,
-        client_id_1: Union[str, int], client_id_2: Union[str, int],
-        num_classes: int, loader_type: str = 'val',
+        self, dataset_name: str, cost: Any, rounds: int, seed: int,
+        client_id_1: Union[str, int], client_id_2: Union[str, int], # The specific pair
+        num_clients: int, # The total # clients in the run (for path/generation)
+        num_classes: int,
+        loader_type: str = 'val',
         force_regenerate: bool = False
     ) -> Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]]:
         """
-        Gets processed activations for two clients, using cache if possible.
-
-        Args:
-            dataset_name, cost, rounds, seed, client_id_1, client_id_2, loader_type: Config params.
-            num_classes: Number of classes in the dataset.
-            force_regenerate: If True, bypass cache and generate new activations.
-
-        Returns:
-            A dictionary {'client_id_1': processed_data_dict_1, 'client_id_2': processed_data_dict_2}
-            or None if loading/generation/processing fails.
-            processed_data_dict contains keys like 'h', 'p_prob', 'y', 'loss', 'weights'.
+        Gets processed activations for a specific client pair from a run involving num_clients.
         """
         cid1_str = str(client_id_1)
         cid2_str = str(client_id_2)
-        cache_path = self._get_activation_cache_path(dataset_name, cost, rounds, seed, cid1_str, cid2_str, loader_type)
+        # Cache path now uses num_clients
+        cache_path = self._get_activation_cache_path(dataset_name, cost, rounds, seed, cid1_str, cid2_str, loader_type, num_clients)
 
         raw_activations = None
         if not force_regenerate:
             raw_activations = self._load_activations_from_cache(cache_path)
+            # if raw_activations: print(f"  Loaded activations from cache: {os.path.basename(cache_path)}") # Optional verbose log
 
         if raw_activations is None:
-            raw_activations = self._generate_activations(dataset_name, cost, rounds, seed, cid1_str, cid2_str, loader_type)
+            print(f"  Activation cache miss or regen forced: {os.path.basename(cache_path)}")
+            # Generate activations for the specific pair within the context of num_clients run
+            raw_activations = self._generate_activations(dataset_name, cost, rounds, seed, cid1_str, cid2_str, num_clients, loader_type)
             if raw_activations is not None:
                 self._save_activations_to_cache(raw_activations, cache_path)
             else:
-                warnings.warn(f"Failed to obtain raw activations for config: D={dataset_name}, C={cost}, R={rounds}, S={seed}")
+                warnings.warn(f"Failed to obtain raw activations for config: D={dataset_name}, NC={num_clients}, C={cost}, R={rounds}, S={seed}, Pair=({cid1_str},{cid2_str})")
                 return None
 
-        # Unpack raw activations
+        # ... (Unpack and process activations as before) ...
         h1_raw, p1_raw, y1_raw, h2_raw, p2_raw, y2_raw = raw_activations
-
-        # Process data for each client
+        print(f"  Processing activations for pair ({cid1_str}, {cid2_str})...")
         processed_data1 = self._process_client_data(h1_raw, p1_raw, y1_raw, cid1_str, num_classes)
         processed_data2 = self._process_client_data(h2_raw, p2_raw, y2_raw, cid2_str, num_classes)
 
         if processed_data1 is None or processed_data2 is None:
-            warnings.warn("Failed to process raw activations for one or both clients.")
-            return None
+             warnings.warn(f"Failed to process raw activations for one or both clients in pair ({cid1_str}, {cid2_str}).")
+             return None
 
         return {cid1_str: processed_data1, cid2_str: processed_data2}
 
 
     def get_performance(
-        self, dataset_name: str, cost: float, aggregation_method: str = 'mean'
+        self, dataset_name: str, cost: Any, aggregation_method: str = 'mean'
         ) -> Tuple[float, float]:
-        """Loads final performance (e.g., loss) from standard pickle file path."""
+        """Loads final performance using ResultsManager for the num_clients specified during DataManager init."""
         final_local_score = np.nan
         final_fedavg_score = np.nan
 
-        # Construct path using convention
-        pickle_path = os.path.join(self.results_dir, "evaluation", f"{dataset_name}_evaluation.pkl")
-
-        if not os.path.isfile(pickle_path):
-            warnings.warn(f"Performance results pickle file not found: {pickle_path}")
-            return final_local_score, final_fedavg_score
-
         try:
-            with open(pickle_path, 'rb') as f:
-                results_dict = pickle.load(f)
+            # Instantiate a ResultsManager for the specific dataset and target client count
+            results_manager = ResultsManager(
+                root_dir=ROOT_DIR,
+                dataset=dataset_name,
+                experiment_type=ExperimentType.EVALUATION,
+                num_clients=self.num_clients # Use the count stored during DataManager init
+            )
+            results, metadata = results_manager.load_results(ExperimentType.EVALUATION)
+            if results is None:
+                warnings.warn(f"No performance results found via ResultsManager for {dataset_name}, {self.num_clients} clients, evaluation.")
+                return np.nan, np.nan
 
-            if cost not in results_dict:
-                warnings.warn(f"Cost {cost} not found in results dictionary: {pickle_path}")
-                return final_local_score, final_fedavg_score
+            # Optional: Verify client count consistency
+            if metadata and metadata.get('client_count_used') is not None:
+                 actual_clients_in_file = metadata['client_count_used']
+                 # Allow for slight mismatch if filename uses target but metadata uses actual (e.g., from ISIC 'all')
+                 # if actual_clients_in_file != self.num_clients:
+                 #      print(f"Info: Loaded performance file client count ({actual_clients_in_file}) "
+                 #            f"differs slightly from target ({self.num_clients}). File: {results_manager._get_results_path(ExperimentType.EVALUATION)}")
 
-            cost_data = results_dict[cost]
+            if cost not in results:
+                warnings.warn(f"Cost {cost} not found in loaded results dictionary for {dataset_name}.")
+                return np.nan, np.nan
 
-            # --- Process Scores (simplified parsing from original) ---
+            cost_data = results[cost]
+
+            # --- Process Scores ---
             def _extract_agg_score(scores_list):
                 # Expecting list of lists like [[score1], [score2], ...]
                 scores = [item[0] for item in scores_list if isinstance(item, list) and len(item)>0 and np.isfinite(item[0])]
@@ -270,20 +309,12 @@ class DataManager:
                 elif aggregation_method.lower() == 'median': return np.median(scores)
                 else: warnings.warn(f"Invalid agg method '{aggregation_method}'. Using mean."); return np.mean(scores)
 
-            # Process 'local' scores
-            try:
-                final_local_score = _extract_agg_score(cost_data.get('local', {}).get('global', {}).get('losses', []))
-                if np.isnan(final_local_score): warnings.warn(f"No valid 'local' scores found for cost {cost} in {pickle_path}")
-            except Exception as e: warnings.warn(f"Error parsing 'local' scores for cost {cost} in {pickle_path}: {e}")
 
-            # Process 'fedavg' scores
-            try:
-                final_fedavg_score = _extract_agg_score(cost_data.get('fedavg', {}).get('global', {}).get('losses', []))
-                if np.isnan(final_fedavg_score): warnings.warn(f"No valid 'fedavg' scores found for cost {cost} in {pickle_path}")
-            except Exception as e: warnings.warn(f"Error parsing 'fedavg' scores for cost {cost} in {pickle_path}: {e}")
+            final_local_score = _extract_agg_score(cost_data.get('local', {}).get('global', {}).get('losses', []))
+            final_fedavg_score = _extract_agg_score(cost_data.get('fedavg', {}).get('global', {}).get('losses', []))
+            # Add warnings if NaN as before...
 
-        except FileNotFoundError: warnings.warn(f"Performance results pickle file not found: {pickle_path}")
-        except (pickle.UnpicklingError, EOFError) as e: warnings.warn(f"Error unpickling performance results file {pickle_path}: {e}")
-        except Exception as e: warnings.warn(f"An unexpected error occurred loading performance results from {pickle_path}: {e}")
-
+        except Exception as e:
+            warnings.warn(f"An unexpected error occurred loading performance results: {e}")
+            traceback.print_exc()
         return final_local_score, final_fedavg_score
