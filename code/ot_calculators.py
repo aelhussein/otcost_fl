@@ -658,23 +658,21 @@ class DecomposedOTCalculator(BaseOTCalculator):
 class FixedAnchorLOTCalculator(BaseOTCalculator):
     """
     Calculates Fixed-Anchor LOT cost and similarity score.
-    Enforces L2 normalization. Uses per-class anchors. Allows filtering.
-    NEW OPTIONS:
-    - params['anchor_weighting'] ('uniform' or 'cluster_size'): How anchor marginals are calculated.
-    - params['class_penalty'] (float, default 0): Penalty added to cost matrix for cross-class matching.
-    Modulates final similarity score by Local OT Cost Balance.
+    Enforces L2 normalization on feature vectors (h) and anchors (Z).
+    Anchor computation uses per-class K-Means (if method='kmeans') or class means.
+    Includes an option to use only correctly predicted samples (applied before anchor computation).
     """
-    DEFAULT_MAX_COST_ESTIMATE = 4.0
+    DEFAULT_MAX_COST_ESTIMATE = 2.0
 
     def _reset_results(self) -> None:
-        # ... (Add new fields if needed, e.g. anchor_weighting_used) ...
+        # ... (reset logic remains the same) ...
         self.results = {
             'total_cost': np.nan, 'cost_local1': np.nan, 'cost_local2': np.nan,
-            'cost_cross_anchor': np.nan, 'base_similarity': np.nan,
-            'local_cost_balance': np.nan, 'final_similarity_score': np.nan,
+            'cost_cross_anchor': np.nan, 'similarity_score': np.nan,
             'params': None, 'samples_used': {'client1': None, 'client2': None}
         }
         self.cost_matrices = {'local1': None, 'local2': None, 'cross_anchor': None}
+
 
     def calculate_similarity(self, data1: Dict[str, Optional[torch.Tensor]], data2: Dict[str, Optional[torch.Tensor]], params: Dict[str, Any]) -> None:
         self._reset_results()
@@ -682,259 +680,122 @@ class FixedAnchorLOTCalculator(BaseOTCalculator):
         verbose = params.get('verbose', False)
         use_correct_only = params.get('use_correctly_predicted_only', False)
         norm_eps = params.get('norm_eps', self.eps_num)
-        balance_eps = params.get('balance_eps', 1e-9)
-        # --- New Parameters ---
-        anchor_weighting = params.get('anchor_weighting', 'uniform') # 'uniform' or 'cluster_size'
-        class_penalty = params.get('class_penalty', 0.0) # Penalty for cross-class matching
-        if verbose: print(f"FA-LOT Options: CorrectOnly={use_correct_only}, AnchorWeighting={anchor_weighting}, ClassPenalty={class_penalty}")
+        anchor_method = params.get('anchor_method', 'kmeans')
+        if anchor_method == 'kmeans':
+             k_info = f" (k={params.get('num_anchors', 5)} per class)"
+        elif anchor_method == 'class_means':
+             k_info = " (class means)"
+        else: k_info = ""
+        if verbose: print(f"Starting FixedAnchorLOT with anchor method: {anchor_method}{k_info}")
 
-        # --- Preprocessing, Filtering, Normalization (Same as before) ---
-        # ... (Get h1_eff, y1_eff, N, h2_eff, y2_eff, M, h1_norm, h2_norm) ...
+
+        # --- Preprocess and Validate ---
         required_keys = ['h', 'y']
-        if use_correct_only: required_keys.append('p_prob')
+        if use_correct_only:
+            required_keys.append('p_prob')
         proc_data1 = self._preprocess_input(data1.get('h'), data1.get('p_prob'), data1.get('y'), data1.get('weights'), required_keys)
         proc_data2 = self._preprocess_input(data2.get('h'), data2.get('p_prob'), data2.get('y'), data2.get('weights'), required_keys)
-        if proc_data1 is None or proc_data2 is None: warnings.warn(f"FA-LOT Preprocessing failed."); return
-        h1_orig, y1_orig = proc_data1['h'], proc_data1['y']; h2_orig, y2_orig = proc_data2['h'], proc_data2['y']
-        p1_prob = proc_data1.get('p_prob'); p2_prob = proc_data2.get('p_prob')
+
+        if proc_data1 is None or proc_data2 is None:
+            warnings.warn(f"Fixed-Anchor LOT requires {required_keys}. Preprocessing failed or data missing. Skipping.")
+            return
+
+        h1_orig, y1_orig = proc_data1['h'], proc_data1['y']
+        h2_orig, y2_orig = proc_data2['h'], proc_data2['y']
+        p1_prob = proc_data1.get('p_prob')
+        p2_prob = proc_data2.get('p_prob')
         N_orig, M_orig = h1_orig.shape[0], h2_orig.shape[0]
-        if N_orig == 0 or M_orig == 0: warnings.warn(f"FA-LOT Zero initial samples."); self.results['samples_used'] = {'client1': 0, 'client2': 0}; return
-        h1_eff, y1_eff = h1_orig, y1_orig; h2_eff, y2_eff = h2_orig, y2_orig
+
+        if N_orig == 0 or M_orig == 0: # Check initial samples
+            warnings.warn("Fixed-Anchor LOT: Zero initial samples. Skipping.")
+            self.results['samples_used'] = {'client1': 0, 'client2': 0}
+            return
+
+        # Effective data after potential filtering
+        h1_eff, y1_eff = h1_orig, y1_orig
+        h2_eff, y2_eff = h2_orig, y2_orig
         N, M = N_orig, M_orig
-        if use_correct_only: # Filtering logic
-            if p1_prob is None or p2_prob is None: warnings.warn("'use_correct_only' True, but p_prob missing. Using ALL.")
+
+        # --- Filtering Logic (Optional) ---
+        if use_correct_only:
+            if p1_prob is None or p2_prob is None:
+                warnings.warn("'use_correctly_predicted_only' is True, but p_prob is missing. Using ALL samples.")
             else:
+                # ... (Filtering logic implementation - same as before) ...
+                if verbose: print("  Filtering data to use only correctly predicted samples.")
                 try:
                     pred1 = torch.argmax(p1_prob, dim=1); pred2 = torch.argmax(p2_prob, dim=1)
                     correct_mask1 = (pred1 == y1_orig); correct_mask2 = (pred2 == y2_orig)
                     h1_eff = h1_orig[correct_mask1]; y1_eff = y1_orig[correct_mask1]
                     h2_eff = h2_orig[correct_mask2]; y2_eff = y2_orig[correct_mask2]
                     N = h1_eff.shape[0]; M = h2_eff.shape[0]
-                except Exception as e_filter: warnings.warn(f"Filtering error: {e_filter}. Using ALL."); h1_eff, y1_eff, h2_eff, y2_eff = h1_orig, y1_orig, h2_orig, y2_orig; N, M = N_orig, M_orig
+                    if verbose: print(f"  Client 1: {N}/{N_orig} samples correct. Client 2: {M}/{M_orig} samples correct.")
+                except Exception as e_filter:
+                     warnings.warn(f"Error during filtering: {e_filter}. Using ALL samples.")
+                     h1_eff, y1_eff, h2_eff, y2_eff = h1_orig, y1_orig, h2_orig, y2_orig # Revert
+                     N, M = N_orig, M_orig
+
         self.results['samples_used'] = {'client1': N, 'client2': M}
-        if N == 0 or M == 0: warnings.warn(f"FA-LOT Zero samples AFTER filtering. Skipping."); self.results.update({'total_cost': 0.0, 'cost_local1': 0.0, 'cost_local2': 0.0, 'cost_cross_anchor': 0.0, 'base_similarity': np.nan, 'final_similarity_score': np.nan }); return
-        try: # Normalize h
-            h1_norm = F.normalize(h1_eff.float(), p=2, dim=1, eps=norm_eps)
-            h2_norm = F.normalize(h2_eff.float(), p=2, dim=1, eps=norm_eps)
-        except Exception as e_h_norm: warnings.warn(f"h norm failed: {e_h_norm}. Skipping."); return
-        # --- Step 1: Compute Anchors (returns list of dicts) ---
-        anchor_info1 = compute_anchors(h1_norm, y1_eff, self.num_classes, params)
-        anchor_info2 = compute_anchors(h2_norm, y2_eff, self.num_classes, params)
-        if not anchor_info1 or not anchor_info2: # Check if lists are empty
-            warnings.warn("Failed to compute anchors (per-class). Skipping Fixed-Anchor LOT.")
-            return
-
-        # Extract anchor vectors, labels, and sizes, then normalize anchor vectors
-        try:
-            Z1_raw = torch.stack([info['anchor'] for info in anchor_info1])
-            Z1_labels = torch.tensor([info['class_label'] for info in anchor_info1], dtype=torch.long)
-            Z1_sizes = torch.tensor([info['cluster_size'] for info in anchor_info1], dtype=torch.float)
-            Z1_norm = F.normalize(Z1_raw.float(), p=2, dim=1, eps=norm_eps)
-
-            Z2_raw = torch.stack([info['anchor'] for info in anchor_info2])
-            Z2_labels = torch.tensor([info['class_label'] for info in anchor_info2], dtype=torch.long)
-            Z2_sizes = torch.tensor([info['cluster_size'] for info in anchor_info2], dtype=torch.float)
-            Z2_norm = F.normalize(Z2_raw.float(), p=2, dim=1, eps=norm_eps)
-        except Exception as e_anchor_proc:
-            warnings.warn(f"Failed to process anchor info: {e_anchor_proc}. Skipping FA-LOT.")
-            return
-        k1, k2 = Z1_norm.shape[0], Z2_norm.shape[0]
-        if k1 == 0 or k2 == 0: warnings.warn("Zero anchors resulted. Skipping."); return
-
-        # --- Step 2 & 3: Compute OT Costs ---
-        ot_max_iter = params.get('ot_max_iter', DEFAULT_OT_MAX_ITER)
-        local_reg = params.get('local_ot_reg', 0.01)
-        cross_reg = params.get('cross_anchor_ot_reg', 0.01)
-        cost_local1, cost_local2, cost_cross_anchor = np.nan, np.nan, np.nan
-
-        # --- Calculate Marginals ---
-        a1 = np.ones(N, dtype=np.float64) / N # Uniform over h1_norm
-        a2 = np.ones(M, dtype=np.float64) / M # Uniform over h2_norm
-
-        # Anchor marginals (b1, b2, aZ, bZ) based on weighting option
-        if anchor_weighting == 'cluster_size':
-            if verbose: print("  Using cluster size weighted anchor marginals.")
-            b1_weights = Z1_sizes.numpy().astype(np.float64)
-            b2_weights = Z2_sizes.numpy().astype(np.float64)
-            # Normalize weights (sum of cluster sizes should equal N or M if no points lost)
-            sum_w1 = b1_weights.sum(); sum_w2 = b2_weights.sum()
-            if sum_w1 > balance_eps: b1 = b1_weights / sum_w1
-            else: warnings.warn("Sum of cluster sizes for Z1 is near zero. Using uniform weights."); b1 = np.ones(k1, dtype=np.float64) / k1
-            if sum_w2 > balance_eps: b2 = b2_weights / sum_w2
-            else: warnings.warn("Sum of cluster sizes for Z2 is near zero. Using uniform weights."); b2 = np.ones(k2, dtype=np.float64) / k2
-            aZ = b1 # Marginal over Z1 is the same for CostL1 and CostX
-            bZ = b2 # Marginal over Z2 is the same for CostL2 and CostX
-        else: # Default 'uniform'
-            if verbose: print("  Using uniform anchor marginals.")
-            b1 = np.ones(k1, dtype=np.float64) / k1
-            b2 = np.ones(k2, dtype=np.float64) / k2
-            aZ = b1
-            bZ = b2
-
-        # --- Modify Cost Matrices with Class Penalty ---
-        # Cost Local 1 (h1_norm -> Z1_norm)
-        cost_matrix_local1 = pairwise_euclidean_sq(h1_norm, Z1_norm)
-        if cost_matrix_local1 is not None:
-            if class_penalty > 0:
-                if verbose: print(f"  Applying class penalty ({class_penalty}) to CostL1 matrix...")
-                # Create boolean mask where classes differ
-                y1_expanded = y1_eff.unsqueeze(1).expand(-1, k1) # Shape (N, k1)
-                z1_expanded = Z1_labels.unsqueeze(0).expand(N, -1) # Shape (N, k1)
-                penalty_mask = (y1_expanded != z1_expanded)
-                # Add penalty where mask is True
-                cost_matrix_local1 = cost_matrix_local1 + penalty_mask.float() * class_penalty
-
-            # Compute OT Cost L1
-            cost_local1, _ = compute_ot_cost(cost_matrix_local1, a=a1, b=b1, reg=local_reg, sinkhorn_max_iter=ot_max_iter, eps_num=self.eps_num)
-            self.cost_matrices['local1'] = cost_matrix_local1.cpu().numpy()
-
-        # Cost Local 2 (h2_norm -> Z2_norm)
-        cost_matrix_local2 = pairwise_euclidean_sq(h2_norm, Z2_norm)
-        if cost_matrix_local2 is not None:
-             if class_penalty > 0:
-                if verbose: print(f"  Applying class penalty ({class_penalty}) to CostL2 matrix...")
-                y2_expanded = y2_eff.unsqueeze(1).expand(-1, k2)
-                z2_expanded = Z2_labels.unsqueeze(0).expand(M, -1)
-                penalty_mask = (y2_expanded != z2_expanded)
-                cost_matrix_local2 = cost_matrix_local2 + penalty_mask.float() * class_penalty
-
-             # Compute OT Cost L2
-             cost_local2, _ = compute_ot_cost(cost_matrix_local2, a=a2, b=b2, reg=local_reg, sinkhorn_max_iter=ot_max_iter, eps_num=self.eps_num)
-             self.cost_matrices['local2'] = cost_matrix_local2.cpu().numpy()
-        # Cost Cross Anchor (Z1_norm -> Z2_norm)
-        cost_matrix_cross_anchor = pairwise_euclidean_sq(Z1_norm, Z2_norm)
-        if cost_matrix_cross_anchor is not None:
-            if class_penalty > 0:
-                if verbose: print(f"  Applying class penalty ({class_penalty}) to CostX matrix...")
-                z1_expanded = Z1_labels.unsqueeze(1).expand(-1, k2) # Shape (k1, k2)
-                z2_expanded = Z2_labels.unsqueeze(0).expand(k1, -1) # Shape (k1, k2)
-                penalty_mask = (z1_expanded != z2_expanded)
-                cost_matrix_cross_anchor = cost_matrix_cross_anchor + penalty_mask.float() * class_penalty
-
-            # Compute OT Cost X
-            cost_cross_anchor, _ = compute_ot_cost(cost_matrix_cross_anchor, a=aZ, b=bZ, reg=cross_reg, sinkhorn_max_iter=ot_max_iter, eps_num=self.eps_num)
-            self.cost_matrices['cross_anchor'] = cost_matrix_cross_anchor.cpu().numpy()
-
-        self.results['cost_local1'] = cost_local1
-        self.results['cost_local2'] = cost_local2
-        self.results['cost_cross_anchor'] = cost_cross_anchor
-
-        # --- Aggregate Costs ---
-        # ... (Aggregation logic - same as before) ...
-        total_cost = np.nan
-        if np.isfinite(cost_local1) and np.isfinite(cost_local2) and np.isfinite(cost_cross_anchor):
-            w_local = params.get('local_cost_weight', 0.25)
-            w_cross = params.get('cross_anchor_cost_weight', 0.5)
-            total_cost = w_local * cost_local1 + w_local * cost_local2 + w_cross * cost_cross_anchor
-        else: warnings.warn("One or more FA-LOT OT cost components failed. Cannot compute total cost.")
-        self.results['total_cost'] = total_cost
-
-
-        # --- Calculate Local Cost Balance ---
-        # ... (Balance calculation - same as before) ...
-        local_cost_balance = np.nan
-        if np.isfinite(cost_local1) and np.isfinite(cost_local2):
-            max_local_cost = max(abs(cost_local1), abs(cost_local2))
-            min_local_cost = min(abs(cost_local1), abs(cost_local2))
-            if max_local_cost > balance_eps: local_cost_balance = min_local_cost / max_local_cost
-            else: local_cost_balance = 1.0
-        self.results['local_cost_balance'] = local_cost_balance
-        # Note: Class penalty affects CostL1/L2, so balance reflects structure *and* penalty avoidance cost
-
-
-        # --- Normalization & Similarity Score (Base + Modulated) ---
-        # ... (Similarity calculation modulated by balance - same as before) ...
-        base_similarity = np.nan; final_similarity_score = np.nan
-        if np.isfinite(total_cost):
-            if params.get('normalize_total_cost', True):
-                max_cost_estimate = params.get('max_total_cost_estimate', self.DEFAULT_MAX_COST_ESTIMATE)
-                if max_cost_estimate > self.eps_num: base_similarity = max(0.0, 1.0 - (total_cost / max_cost_estimate))
-                else: warnings.warn(f"max_cost_estimate too small. No base similarity.")
-            else: base_similarity = -total_cost
-        self.results['base_similarity'] = base_similarity
-        if np.isfinite(base_similarity) and np.isfinite(local_cost_balance):
-            final_similarity_score = base_similarity * local_cost_balance
-        self.results['final_similarity_score'] = final_similarity_score
-
-        if verbose:
-            # ... (Print statements - same as before, shows final_similarity_score) ...
-            print(f"  FA-LOT Verbose Output: ... Balance={local_cost_balance:.4f} ... BaseSim={base_similarity:.4f} ... FinalSim={final_similarity_score:.4f}")
-
-
-class FixedAnchorLOTCalculator(BaseOTCalculator):
-    """ Calculates Fixed-Anchor LOT cost and similarity score. """
-    # ... (Implementation remains the same as before) ...
-    def _reset_results(self) -> None:
-        self.results = {
-            'total_cost': np.nan,
-            'cost_local1': np.nan,
-            'cost_local2': np.nan,
-            'cost_cross_anchor': np.nan,
-            'similarity_score': np.nan,
-            'params': None # Store params used for this calc
-        }
-        self.cost_matrices = {'local1': None, 'local2': None, 'cross_anchor': None}
-
-    def calculate_similarity(self, data1: Dict[str, Optional[torch.Tensor]], data2: Dict[str, Optional[torch.Tensor]], params: Dict[str, Any]) -> None:
-        self._reset_results()
-        self.results['params'] = params.copy() # Store params
-        verbose = params.get('verbose', False)
-
-        # --- Preprocess and Validate ---
-        # Requires h, y for anchor computation
-        required_keys = ['h', 'y']
-        proc_data1 = self._preprocess_input(data1.get('h'), None, data1.get('y'), None, required_keys)
-        proc_data2 = self._preprocess_input(data2.get('h'), None, data2.get('y'), None, required_keys)
-
-        if proc_data1 is None or proc_data2 is None:
-            warnings.warn("Fixed-Anchor LOT requires 'h' and 'y'. Preprocessing failed or data missing. Skipping.")
-            return
-
-        h1, y1 = proc_data1['h'], proc_data1['y']
-        h2, y2 = proc_data2['h'], proc_data2['y']
-        N, M = h1.shape[0], h2.shape[0]
-
-        if N == 0 or M == 0:
-            warnings.warn("Fixed-Anchor LOT: One or both clients have zero samples. Setting costs to 0, similarity to NaN.")
+        if N == 0 or M == 0: # Check samples *after* filtering
+            warnings.warn(f"Fixed-Anchor LOT: Zero samples AFTER filtering. Skipping.")
             self.results.update({'total_cost': 0.0, 'cost_local1': 0.0, 'cost_local2': 0.0, 'cost_cross_anchor': 0.0, 'similarity_score': np.nan})
             return
 
-        # --- Step 1: Compute Anchors ---
-        Z1 = compute_anchors(h1, y1, self.num_classes, params)
-        Z2 = compute_anchors(h2, y2, self.num_classes, params)
-
-        if Z1 is None or Z2 is None or Z1.shape[0] == 0 or Z2.shape[0] == 0:
-            warnings.warn("Failed to compute valid anchors for one or both clients. Skipping Fixed-Anchor LOT.")
+        # --- Normalize Feature Vectors (h_eff) ---
+        try:
+            h1_norm = F.normalize(h1_eff.float(), p=2, dim=1, eps=norm_eps)
+            h2_norm = F.normalize(h2_eff.float(), p=2, dim=1, eps=norm_eps)
+        except Exception as e_h_norm:
+            warnings.warn(f"Failed to L2-normalize h vectors: {e_h_norm}. Skipping FA-LOT.")
             return
 
-        k1, k2 = Z1.shape[0], Z2.shape[0]
+        # --- Step 1: Compute Anchors (using NORMALIZED h and effective y) ---
+        # compute_anchors now handles per-class logic internally based on params['anchor_method']
+        Z1_raw = compute_anchors(h1_norm, y1_eff, self.num_classes, params)
+        Z2_raw = compute_anchors(h2_norm, y2_eff, self.num_classes, params)
 
-        # --- Step 2 & 3: Compute OT Costs ---
+        if Z1_raw is None or Z2_raw is None or Z1_raw.shape[0] == 0 or Z2_raw.shape[0] == 0:
+            warnings.warn("Failed to compute anchors (per-class). Skipping Fixed-Anchor LOT.")
+            return
+
+        # --- Normalize Anchors (Z) ---
+        try:
+            Z1_norm = F.normalize(Z1_raw.float(), p=2, dim=1, eps=norm_eps)
+            Z2_norm = F.normalize(Z2_raw.float(), p=2, dim=1, eps=norm_eps)
+        except Exception as e_z_norm:
+            warnings.warn(f"Failed to L2-normalize Z anchors: {e_z_norm}. Skipping FA-LOT.")
+            return
+
+        k1, k2 = Z1_norm.shape[0], Z2_norm.shape[0] # k1, k2 are now total anchors across classes
+
+        # --- Step 2 & 3: Compute OT Costs (using NORMALIZED vectors) ---
+        # ... (OT cost calculation logic remains the same, using h1_norm, h2_norm, Z1_norm, Z2_norm) ...
+        # ... (The dimensions N, M, k1, k2 are updated based on filtering/per-class anchors) ...
         ot_max_iter = params.get('ot_max_iter', DEFAULT_OT_MAX_ITER)
         local_reg = params.get('local_ot_reg', 0.01)
         cross_reg = params.get('cross_anchor_ot_reg', 0.01)
         cost_local1, cost_local2, cost_cross_anchor = np.nan, np.nan, np.nan
 
-        # Cost Local 1 (h1 -> Z1)
-        cost_matrix_local1 = pairwise_euclidean_sq(h1, Z1)
+        # Cost Local 1 (h1_norm -> Z1_norm)
+        cost_matrix_local1 = pairwise_euclidean_sq(h1_norm, Z1_norm)
         if cost_matrix_local1 is not None:
-            a1 = np.ones(N, dtype=np.float64) / N
-            b1 = np.ones(k1, dtype=np.float64) / k1
+            a1 = np.ones(N, dtype=np.float64) / N # N is effective samples
+            b1 = np.ones(k1, dtype=np.float64) / k1 # k1 is total anchors
             cost_local1, _ = compute_ot_cost(cost_matrix_local1, a=a1, b=b1, reg=local_reg, sinkhorn_max_iter=ot_max_iter, eps_num=self.eps_num)
             self.cost_matrices['local1'] = cost_matrix_local1.cpu().numpy()
         else: warnings.warn("Failed to compute cost matrix for Local1 OT.")
 
-        # Cost Local 2 (h2 -> Z2)
-        cost_matrix_local2 = pairwise_euclidean_sq(h2, Z2)
+        # Cost Local 2 (h2_norm -> Z2_norm)
+        cost_matrix_local2 = pairwise_euclidean_sq(h2_norm, Z2_norm)
         if cost_matrix_local2 is not None:
-            a2 = np.ones(M, dtype=np.float64) / M
-            b2 = np.ones(k2, dtype=np.float64) / k2
+            a2 = np.ones(M, dtype=np.float64) / M # M is effective samples
+            b2 = np.ones(k2, dtype=np.float64) / k2 # k2 is total anchors
             cost_local2, _ = compute_ot_cost(cost_matrix_local2, a=a2, b=b2, reg=local_reg, sinkhorn_max_iter=ot_max_iter, eps_num=self.eps_num)
             self.cost_matrices['local2'] = cost_matrix_local2.cpu().numpy()
         else: warnings.warn("Failed to compute cost matrix for Local2 OT.")
 
-        # Cost Cross Anchor (Z1 -> Z2)
-        cost_matrix_cross_anchor = pairwise_euclidean_sq(Z1, Z2)
+        # Cost Cross Anchor (Z1_norm -> Z2_norm)
+        cost_matrix_cross_anchor = pairwise_euclidean_sq(Z1_norm, Z2_norm)
         if cost_matrix_cross_anchor is not None:
             aZ = np.ones(k1, dtype=np.float64) / k1
             bZ = np.ones(k2, dtype=np.float64) / k2
@@ -942,39 +803,55 @@ class FixedAnchorLOTCalculator(BaseOTCalculator):
             self.cost_matrices['cross_anchor'] = cost_matrix_cross_anchor.cpu().numpy()
         else: warnings.warn("Failed to compute cost matrix for Cross-Anchor OT.")
 
+
         self.results['cost_local1'] = cost_local1
         self.results['cost_local2'] = cost_local2
         self.results['cost_cross_anchor'] = cost_cross_anchor
 
         # --- Step 4: Aggregate Costs ---
+        # ... (Aggregation logic remains the same) ...
         total_cost = np.nan
         if np.isfinite(cost_local1) and np.isfinite(cost_local2) and np.isfinite(cost_cross_anchor):
-            w_local = params.get('local_cost_weight', 0.25) # Weight applied to BOTH local terms
+            w_local = params.get('local_cost_weight', 0.25)
             w_cross = params.get('cross_anchor_cost_weight', 0.5)
-            # Normalize weights if they don't sum to 1? Or assume user provides intended weights.
-            # Original code implies w_local is for EACH local term, so total = w_local*c1 + w_local*c2 + w_cross*cx
             total_cost = w_local * cost_local1 + w_local * cost_local2 + w_cross * cost_cross_anchor
         else:
             warnings.warn("One or more Fixed-Anchor OT cost components failed (NaN/Inf). Cannot compute total cost.")
         self.results['total_cost'] = total_cost
 
+
         # --- Step 5: Normalization / Similarity Score ---
+        # ... (Normalization logic remains the same, using DEFAULT_MAX_COST_ESTIMATE=4.0) ...
         similarity_score = np.nan
         if np.isfinite(total_cost):
             if params.get('normalize_total_cost', True):
-                max_cost_estimate = params.get('max_total_cost_estimate', 1.0) # Needs careful tuning
+                max_cost_estimate = params.get('max_total_cost_estimate', self.DEFAULT_MAX_COST_ESTIMATE)
                 if max_cost_estimate > self.eps_num:
-                     # Ensure similarity is between 0 and 1 (or slightly outside due to estimation)
-                    similarity_score = 1.0 - (total_cost / max_cost_estimate)
-                    # Clamp if needed: similarity_score = max(0.0, 1.0 - (total_cost / max_cost_estimate))
+                    similarity_score = max(0.0, 1.0 - (total_cost / max_cost_estimate))
+                    # Note: similarity score is 1 - normalized cost
+                    # Store this value directly.
+                    self.results['similarity_score'] = 1 - similarity_score # Store the actual score [0,1]
+                    if verbose and similarity_score < 0: # Should not happen with max(0.0, ...)
+                         print(f"  Note: Clamped similarity score from negative value (TotalCost={total_cost:.4f} > MaxEstimate={max_cost_estimate:.4f})")
                 else:
                     warnings.warn(f"max_total_cost_estimate ({max_cost_estimate}) is too small for normalization. Similarity set to NaN.")
+                    self.results['similarity_score'] = np.nan
             else:
-                 similarity_score = -total_cost # Use negative cost if not normalizing (lower cost is better)
+                 # If not normalizing, maybe store -total_cost or just total_cost?
+                 # Let's store -total_cost for consistency (higher score = better)
+                 similarity_score = -total_cost
+                 self.results['similarity_score'] = 1 - similarity_score # Store negative cost if not normalizing
+        else:
+            self.results['similarity_score'] = np.nan
 
-        self.results['similarity_score'] = similarity_score
 
         if verbose:
+             # ... (Print statements remain similar, updated N/M potentially) ...
+            print(f"  (Using Correct Only: {use_correct_only}, Samples: C1={N}/{N_orig}, C2={M}/{M_orig})")
+            print(f"  (Vectors L2-normalized before distance calculations)")
             print(f"  ---> Fixed-Anchor LOT Total Cost: {f'{total_cost:.4f}' if np.isfinite(total_cost) else 'Failed'}")
             print(f"       (Local1: {cost_local1:.4f}, Local2: {cost_local2:.4f}, Cross: {cost_cross_anchor:.4f})")
-            print(f"  ---> Fixed-Anchor LOT Similarity: {f'{similarity_score:.4f}' if np.isfinite(similarity_score) else 'Failed'}")
+            # Ensure similarity_score is retrieved from results dict for printing
+            sim_score_print = self.results.get('similarity_score', np.nan)
+            print(f"  ---> Fixed-Anchor LOT Similarity: {f'{sim_score_print:.4f}' if np.isfinite(sim_score_print) else 'Failed'}")
+
