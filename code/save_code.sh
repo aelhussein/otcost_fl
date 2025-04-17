@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # List of target Python files
-files=("run.py" "pipeline.py" "data_processing.py" "configs.py")
-#files=("run.py" "pipeline.py" "servers.py" "clients.py" "data_processing.py" "helper.py" "configs.py")
+#files=("run.py" "pipeline.py" "data_processing.py" "configs.py")
+files=("run.py" "pipeline.py" "servers.py" "clients.py" "data_processing.py" "helper.py" "configs.py")
 
 # Output file
 output_file="combined_output.txt"
