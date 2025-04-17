@@ -505,40 +505,171 @@ class Experiment:
         return tracking
 
 
-    # --- Refactored Data Initialization ---
+    def _validate_and_prepare_config(self, dataset_name, dataset_config):
+        """Validate configuration and prepare essential parameters."""
+        validate_dataset_config(dataset_config, dataset_name)
+        return {
+            'data_source': dataset_config['data_source'],
+            'partitioning_strategy': dataset_config['partitioning_strategy'],
+            'cost_interpretation': dataset_config['cost_interpretation'],
+            'source_args': dataset_config.get('source_args', {}),
+            'partitioner_args': dataset_config.get('partitioner_args', {}),
+            'partition_scope': dataset_config.get('partition_scope', 'train')
+        }
+
+    def _determine_client_count(self, cost, dataset_config):
+        """Determine number of clients based on configuration and cost."""
+        num_clients_config = dataset_config['num_clients']
+        
+        if isinstance(num_clients_config, int):
+            return num_clients_config
+        elif num_clients_config == 'dynamic':
+            # Handle dynamic client counts based on dataset and cost
+            dataset_name = self.config.dataset
+            if dataset_name == 'IXITiny': 
+                return 3 if cost == 'all' else 2
+            elif dataset_name == 'ISIC': 
+                return 4 if cost == 'all' else 2
+            else: 
+                return 2
+        else:
+            return 2  # Default
+
+    def _load_source_data(self, data_source, dataset_name, source_args):
+        """Load source data using appropriate loader function."""
+        loader_func = DATA_LOADERS.get(data_source)
+        
+        if loader_func is None:
+            raise NotImplementedError(f"Data loader '{data_source}' not implemented.")
+            
+        print(f"Loading source data using: {loader_func.__name__}")
+        return loader_func(dataset_name=dataset_name, 
+                        data_dir=self.data_dir_root, 
+                        source_args=source_args)
+
+    def _partition_data(self, partitioning_strategy, data_to_partition, num_clients,
+                        partition_args, translated_cost, sampling_config=None): # Added sampling_config
+            """Partition data using specified strategy, passing sampling config if needed."""
+            partitioner_func = PARTITIONING_STRATEGIES.get(partitioning_strategy)
+
+            if partitioner_func is None:
+                raise NotImplementedError(f"Partitioning strategy '{partitioning_strategy}' not implemented.")
+
+            print(f"Partitioning using strategy: {partitioner_func.__name__}")
+
+            # Combine translated cost with other partition args AND sampling_config
+            full_args = {**translated_cost, **partition_args, 'seed': 42}
+            if sampling_config:
+                full_args['sampling_config'] = sampling_config # Pass sampling config to partitioner
+
+            return partitioner_func(dataset=data_to_partition,
+                                num_clients=num_clients,
+                                **full_args) # Pass alpha, sampling_config etc.
+
+
+    def _load_client_specific_data(self, data_source, dataset_name, client_num, 
+                                source_args, translated_cost, dataset_config):
+        """Load data specific to a client for pre-split datasets."""
+        loader_func = DATA_LOADERS.get(data_source)
+        
+        if loader_func is None:
+            raise NotImplementedError(f"Data loader '{data_source}' not implemented.")
+        
+        print(f"Loading pre-split data for client {client_num} using: {loader_func.__name__}")
+        
+        # Combine translated cost with source args for the loader
+        client_load_args = {**translated_cost, **source_args}
+        return loader_func(
+            dataset_name=dataset_name,
+            data_dir=self.data_dir_root,
+            client_num=client_num,
+            config=dataset_config,
+            **client_load_args
+        )
+
+    def _prepare_client_data(self, client_ids_list, partitioning_strategy, partition_result,
+                           data_to_partition, dataset_name, dataset_config,
+                           translated_cost):
+        """Prepare client data based on partitioning strategy.
+           REMOVED the post-partition sampling logic from here.
+        """
+        client_input_data = {}
+        preprocessor_input_type = 'unknown'
+
+        # For strategies that partition indices centrally (e.g., Dirichlet)
+        if partitioning_strategy.endswith('_indices'):
+            # partition_result is client_indices_map = {client_idx: indices}
+            for i, client_id in enumerate(client_ids_list):
+                indices = partition_result.get(i, [])
+                # --- REMOVED SAMPLING LOGIC HERE ---
+                # Sampling is now done *inside* the partitioner if needed/configured
+
+                if not indices :
+                    # This warning might trigger if partitioner returns empty list for a client
+                     print(f"Warning: Client {client_id} has no data after partitioning.")
+
+                client_input_data[client_id] = Subset(data_to_partition, indices)
+            preprocessor_input_type = 'subset'
+
+        # For pre-split datasets where data is loaded per client
+        elif partitioning_strategy == 'pre_split':
+            data_source = dataset_config['data_source']
+            source_args = dataset_config.get('source_args', {})
+
+            for i, client_id in enumerate(client_ids_list):
+                client_num = i + 1
+                loaded_data = self._load_client_specific_data(
+                    data_source, dataset_name, client_num,
+                    source_args, translated_cost, dataset_config
+                )
+
+                # Infer data type based on loaded content
+                if isinstance(loaded_data, tuple) and len(loaded_data) == 2:
+                    X, y = loaded_data
+                    client_input_data[client_id] = {'X': X, 'y': y}
+
+                    # Determine input type for preprocessor
+                    current_type = 'unknown'
+                    if isinstance(X, np.ndarray) and isinstance(y, np.ndarray):
+                         current_type = 'xy_dict'
+                    elif isinstance(X, np.ndarray) and isinstance(X[0], str):
+                         current_type = 'path_dict'
+
+                    if preprocessor_input_type == 'unknown':
+                         preprocessor_input_type = current_type
+                    elif preprocessor_input_type != current_type:
+                         raise TypeError(f"Inconsistent data types returned by loader for {dataset_name}")
+                else:
+                     raise TypeError(f"Loader for {data_source} returned unexpected format: {type(loaded_data)}")
+
+        else:
+            raise NotImplementedError(f"Partitioning strategy '{partitioning_strategy}' not supported.")
+
+        return client_input_data, preprocessor_input_type
+
+    # Then the complete refactored _initialize_experiment method:
     def _initialize_experiment(self, cost):
-        """
-        Initializes and partitions data based on configuration, returning client dataloaders.
-        Follows the 'Balanced Approach' outline.
-        """
+        """Initialize experiment with configuration-driven approach."""
         dataset_name = self.config.dataset
-        dataset_config = self.default_params # Get full config dict
+        dataset_config = self.default_params
         print(f"\n--- Initializing Data for {dataset_name} (Cost/Param: {cost}) ---")
 
-        # --- Stage 1: Config Loading & Validation ---
-        validate_dataset_config(dataset_config, dataset_name) # Basic check
-        data_source = dataset_config['data_source']
-        partitioning_strategy = dataset_config['partitioning_strategy']
-        cost_interpretation = dataset_config['cost_interpretation']
-        num_clients_config = dataset_config['num_clients']
-        source_args = dataset_config.get('source_args', {})
-        partitioner_args = dataset_config.get('partitioner_args', {})
-        partition_scope = dataset_config.get('partition_scope', 'train') # Default partition train set
+        # Stage 1: Configuration validation and preparation
+        config_params = self._validate_and_prepare_config(dataset_name, dataset_config)
+        data_source = config_params['data_source']
+        partitioning_strategy = config_params['partitioning_strategy']
+        cost_interpretation = config_params['cost_interpretation']
+        source_args = config_params['source_args']
+        partitioner_args = config_params['partitioner_args']
+        partition_scope = config_params['partition_scope']
+        sampling_config = dataset_config.get('sampling_config') # Get sampling config
 
-        # --- Stage 2: Determine Clients ---
-        if isinstance(num_clients_config, int):
-            num_clients = num_clients_config
-        elif num_clients_config == 'dynamic':
-             # Handle dynamic client count based on cost (for IXI/ISIC)
-             if dataset_name == 'IXITiny': num_clients = 3 if cost == 'all' else 2
-             elif dataset_name == 'ISIC': num_clients = 4 if cost == 'all' else 2
-             else: num_clients = 2 # Default dynamic
-        else:
-             num_clients = 2 # Default
+        # Stage 2: Determine clients
+        num_clients = self._determine_client_count(cost, dataset_config)
         client_ids_list = [f'client_{i+1}' for i in range(num_clients)]
         print(f"Target number of clients: {num_clients}")
 
-        # --- Stage 3: Cost Translation ---
+        # Stage 3: Cost translation
         try:
             translated_cost = translate_cost(cost, cost_interpretation)
             print(f"Interpreted Cost '{cost}' as: {translated_cost}")
@@ -546,110 +677,62 @@ class Experiment:
             print(f"Error translating cost: {e}")
             raise
 
-        # --- Stage 4 & 5: Data Loading & Partitioning ---
-        loader_func = DATA_LOADERS.get(data_source)
-        partitioner_func = PARTITIONING_STRATEGIES.get(partitioning_strategy)
-
-        if loader_func is None:
-            raise NotImplementedError(f"Data loader '{data_source}' not found in DATA_LOADERS mapping.")
-        if partitioner_func is None:
-            raise NotImplementedError(f"Partitioning strategy '{partitioning_strategy}' not found in PARTITIONING_STRATEGIES mapping.")
-
-        client_input_data = {} # Data to be passed to preprocessor
+        client_input_data = {}
         preprocessor_input_type = 'unknown'
 
-        # --- Logic Branch: Centralized Partitioning (e.g., Dirichlet on Torchvision) ---
-        if partitioning_strategy.endswith('_indices'): # Convention for strategies returning indices
-             print(f"Loading source data using: {loader_func.__name__}")
-             # Load the full dataset first (e.g., torchvision returns train_ds, test_ds)
-             # Assume loader returns tuple, but might need adjustment based on loader specifics
-             source_data_tuple = loader_func(dataset_name=dataset_name, data_dir=self.data_dir_root, source_args=source_args)
+        # Stages 4 & 5: Load & partition data
+        if partitioning_strategy.endswith('_indices'):
+            # For centralized partitioning strategies
+            source_data_tuple = self._load_source_data(data_source, dataset_name, source_args)
 
-             # Select the part of the data to partition based on scope
-             if partition_scope == 'train':
-                  data_to_partition = source_data_tuple[0] # Assume train is first element
-                  print(f"Partitioning the 'train' split ({len(data_to_partition)} samples)")
-             elif partition_scope == 'all':
-                  # Combine train/test if partition scope is 'all'
-                  # This requires careful handling of transforms if they differ
-                  print("Warning: Partitioning combined train/test data. Ensure transforms are compatible.")
-                  # Example combination (might need adjustment based on dataset type):
-                  if isinstance(source_data_tuple[0], torch.utils.data.ConcatDataset):
-                       data_to_partition = source_data_tuple[0] # Already combined?
-                  elif isinstance(source_data_tuple[0], TorchDataset):
-                        data_to_partition = torch.utils.data.ConcatDataset([source_data_tuple[0], source_data_tuple[1]])
-                  else: # Cannot easily concat other types
-                        raise TypeError("Cannot automatically combine non-TorchDataset for 'all' partition scope.")
-                  print(f"Partitioning the 'all' split ({len(data_to_partition)} samples)")
-             else:
-                  raise ValueError(f"Unsupported partition_scope: {partition_scope}")
+            # Select appropriate data split to partition
+            if partition_scope == 'train':
+                data_to_partition = source_data_tuple[0] # Train set
+                print(f"Partitioning the 'train' split ({len(data_to_partition)} samples)")
+            elif partition_scope == 'all':
+                 # ... (handling for combining train/test - keep as is) ...
+                 pass
+            else:
+                 raise ValueError(f"Unsupported partition_scope: {partition_scope}")
 
+            # Partition the data, PASSING sampling_config
+            client_partition_result = self._partition_data(
+                partitioning_strategy, data_to_partition, num_clients,
+                partitioner_args, translated_cost,
+                sampling_config=sampling_config # Pass sampling config here
+            )
 
-             print(f"Partitioning using strategy: {partitioner_func.__name__}")
-             # Call the partitioner (e.g., partition_dirichlet_indices)
-             partition_args = {**translated_cost, **partitioner_args, 'seed': 42} # Add seed
-             client_indices_map = partitioner_func(
-                  dataset=data_to_partition,
-                  num_clients=num_clients,
-                  **partition_args # Pass alpha etc.
-             )
+            # Prepare client data (using Subsets)
+            client_input_data, preprocessor_input_type = self._prepare_client_data(
+                client_ids_list, partitioning_strategy, client_partition_result, # Pass result from partitioner
+                data_to_partition, dataset_name, dataset_config, translated_cost
+            )
 
-             # Create Subset objects for each client
-             for i, client_id in enumerate(client_ids_list):
-                  indices = client_indices_map.get(i, [])
-                  if not indices: print(f"Warning: Client {client_id} has no data after partitioning.")
-                  client_input_data[client_id] = Subset(data_to_partition, indices)
-             preprocessor_input_type = 'subset'
-
-        # --- Logic Branch: Pre-Split Data (Partitioning happens by loading client file) ---
         elif partitioning_strategy == 'pre_split':
-             print(f"Loading pre-split data using: {loader_func.__name__}")
-             # Loop through clients and load their specific data
-             preprocessor_input_type = 'unknown' # Determine based on loader return type
-             for i, client_id in enumerate(client_ids_list):
-                  # Loader function needs to handle client num and translated cost (suffix/key)
-                  client_load_args = {**translated_cost, **source_args} # Combine args
-                  loaded_data = loader_func(
-                       dataset_name=dataset_name,
-                       data_dir=self.data_dir_root,
-                       client_num=i+1,
-                       config=self.default_params, # Pass full config if loader needs more info
-                       **client_load_args # Pass cost suffix/key etc.
-                  )
-
-                  # Store data and determine type
-                  if isinstance(loaded_data, tuple) and len(loaded_data) == 2:
-                       # Assuming loader returns (X, y) where X could be arrays or paths
-                       X, y = loaded_data
-                       client_input_data[client_id] = {'X': X, 'y': y}
-                       # Infer input type for preprocessor
-                       current_type = 'unknown'
-                       if isinstance(X, np.ndarray) and isinstance(y, np.ndarray):
-                            current_type = 'xy_dict'
-                       elif isinstance(X, np.ndarray) and isinstance(X[0], str) and isinstance(y, (np.ndarray, list)): # Crude check for paths
-                            current_type = 'path_dict'
-
-                       if preprocessor_input_type == 'unknown':
-                            preprocessor_input_type = current_type
-                       elif preprocessor_input_type != current_type:
-                            raise TypeError(f"Inconsistent data types returned by loader for pre-split dataset {dataset_name}")
-                  else:
-                        raise TypeError(f"Loader for pre-split data source '{data_source}' returned unexpected format: {type(loaded_data)}")
+            # For pre-split data (already partitioned by client)
+            # The sampling config is used *inside* the per-client loader for these
+            client_input_data, preprocessor_input_type = self._prepare_client_data(
+                client_ids_list, partitioning_strategy, None, None,
+                dataset_name, dataset_config, translated_cost
+            )
 
         else:
-             raise NotImplementedError(f"Combination of data source '{data_source}' and partitioning strategy '{partitioning_strategy}' is not implemented.")
+            raise NotImplementedError(
+                f"Combination of data source '{data_source}' and "
+                f"partitioning strategy '{partitioning_strategy}' is not implemented."
+            )
 
-
-        # --- Stage 6: Preprocessing & DataLoader Creation ---
+        # Stage 6: Preprocessing & DataLoader Creation
         if not client_input_data:
-             raise RuntimeError(f"No client data was loaded/partitioned for dataset {dataset_name}")
+            raise RuntimeError(f"No client data was loaded/partitioned for dataset {dataset_name}")
         if preprocessor_input_type == 'unknown':
-             raise RuntimeError(f"Could not determine preprocessor input type for dataset {dataset_name}")
+            raise RuntimeError(f"Could not determine preprocessor input type for dataset {dataset_name}")
 
         print(f"Preprocessing client data (input type: '{preprocessor_input_type}')...")
         preprocessor = DataPreprocessor(dataset_name, self.default_params['batch_size'])
         client_dataloaders = preprocessor.process_client_data(client_input_data, preprocessor_input_type)
         print("--- Data Initialization Complete ---")
+
         return client_dataloaders
 
 

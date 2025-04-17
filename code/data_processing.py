@@ -18,52 +18,64 @@ def align_image_label_files(image_files, label_files):
     common_keys = sorted(set(labels_dict.keys()) & set(images_dict.keys()))
     return [images_dict[key] for key in common_keys], [labels_dict[key] for key in common_keys]
 
-def dirichlet_partition(X, y, num_clients, alpha, seed=42):
+def partition_dirichlet_indices(dataset: TorchDataset,
+                                num_clients: int,
+                                alpha: float,
+                                seed: int = 42,
+                                **kwargs) -> Dict[int, List[int]]:
     """
-    Partition data according to a Dirichlet distribution over classes.
-    
-    Args:
-        X: Feature data
-        y: Labels
-        num_clients: Number of clients to partition for
-        alpha: Dirichlet concentration parameter (smaller alpha = more non-IID)
-        seed: Random seed for reproducibility
-        
-    Returns:
-        List of (X, y) tuples for each client
+    Partition indices so each client has the same total number of samples,
+    but class proportions differ according to Dirichlet(alpha).
     """
     np.random.seed(seed)
-    
-    # Get class distribution
-    n_classes = len(np.unique(y))
-    client_data = {i: [] for i in range(num_clients)}
-    
-    # For each class, distribute indices according to Dirichlet
-    for k in range(n_classes):
-        # Get indices of samples from this class
-        class_indices = np.where(y == k)[0]
-        np.random.shuffle(class_indices)
-        
-        # Sample from Dirichlet distribution
-        proportions = np.random.dirichlet(np.repeat(alpha, num_clients))
-        
-        # Calculate number of samples per client
-        proportions = proportions / proportions.sum()
-        samples_per_client = (np.cumsum(proportions) * len(class_indices)).astype(int)
-        samples_per_client = np.insert(samples_per_client, 0, 0)
-        
-        # Distribute samples to clients
-        for i in range(num_clients):
-            start, end = samples_per_client[i], samples_per_client[i+1]
-            client_data[i].extend(class_indices[start:end])
-    
-    # Create client datasets
-    client_datasets = []
-    for i in range(num_clients):
-        indices = client_data[i]
-        client_datasets.append((X[indices], y[indices]))
-    
-    return client_datasets
+
+    # 1) get labels array
+    try:
+        labels = np.array(dataset.targets)
+    except AttributeError:
+        labels = np.array([dataset[i][1] for i in range(len(dataset))])
+
+    n = len(dataset)
+    classes = np.unique(labels)
+    n_classes = len(classes)
+
+    # 2) build index pools per class
+    idx_by_class = {c: np.where(labels == c)[0].tolist() for c in classes}
+    for c in classes:
+        np.random.shuffle(idx_by_class[c])
+
+    # 3) draw Dirichlet class‐weights for each client
+    #    proportions[client, class]
+    proportions = np.random.dirichlet([alpha]*n_classes, size=num_clients)
+
+    # 4) decide how many total samples per client
+    base_quota = n // num_clients
+    quotas = [base_quota + (1 if i < (n % num_clients) else 0)
+              for i in range(num_clients)]
+
+    # 5) for each client, assign samples
+    client_indices = {i: [] for i in range(num_clients)}
+    for client_id in range(num_clients):
+        p = proportions[client_id]
+        # compute how many from each class
+        counts = (p * quotas[client_id]).astype(int)
+        # adjust rounding error on the last class
+        counts[-1] = quotas[client_id] - counts[:-1].sum()
+
+        for cls_idx, cls in enumerate(classes):
+            take = counts[cls_idx]
+            pool = idx_by_class[cls]
+            if take > len(pool):
+                # if you run out, just take what’s left
+                take = len(pool)
+            client_indices[client_id].extend(pool[:take])
+            idx_by_class[cls] = pool[take:]
+
+    # 6) shuffle each client’s list
+    for i in client_indices:
+        np.random.shuffle(client_indices[i])
+
+    return client_indices
 
 def validate_dataset_config(config: Dict, dataset_name: str):
     """Basic validation for required config keys."""

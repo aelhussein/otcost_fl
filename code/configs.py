@@ -152,6 +152,7 @@ DEFAULT_PARAMS = {
         'source_args': {'dataset_name': 'CIFAR10', 'data_dir': os.path.join(DATA_DIR, 'CIFAR')},
         'partitioner_args': {},
         'partition_scope': 'train', # Only partition the training set
+        'sampling_config': {'type': 'fixed_total', 'size': 1000, 'replace': False}, # sizes_per_client
         # Standard Params
         'learning_rates_try': [5e-3, 1e-3, 5e-4], 'default_lr': 1e-3,
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3], 'default_reg_param': 1e-1, # Example regs
@@ -169,6 +170,7 @@ DEFAULT_PARAMS = {
         'source_args': {'dataset_name': 'EMNIST', 'data_dir': os.path.join(DATA_DIR, 'EMNIST'), 'split': 'digits'}, # Specify digits split
         'partitioner_args': {},
         'partition_scope': 'train',
+        'sampling_config': {'type': 'fixed_total', 'size': 1000, 'replace': False}, # sizes_per_client
         # Standard Params
         'learning_rates_try': [5e-3, 1e-3, 5e-4, 1e-4], 'default_lr': 1e-3,
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3], 'default_reg_param': 1e-1,
