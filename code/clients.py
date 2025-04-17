@@ -164,8 +164,10 @@ class Client:
                 batch_y = move_to_device(batch_y, self.device)
                 state.optimizer.zero_grad()
                 outputs = model(batch_x)
-                if self.config.dataset_name in SQUEEZE:
+                if batch_y.ndim == 2 and batch_y.shape[1] == 1:
                     batch_y = batch_y.squeeze(1).long()
+                else:
+                    batch_y = batch_y.long()
                 loss = state.criterion(outputs, batch_y)
                 loss.backward()
                 
@@ -202,8 +204,10 @@ class Client:
                     batch_x = move_to_device(batch_x, self.device)
                     batch_y = move_to_device(batch_y, self.device)
                     outputs = model(batch_x)
-                    if self.config.dataset_name in SQUEEZE:
+                    if batch_y.ndim == 2 and batch_y.shape[1] == 1:
                         batch_y = batch_y.squeeze(1).long()
+                    else:
+                        batch_y = batch_y.long()
                     loss = state.criterion(outputs, batch_y)
                     total_loss += loss.item()
                     
@@ -308,8 +312,10 @@ class FedProxClient(Client):
                 state.optimizer.zero_grad()
                 outputs = model(batch_x)
                 # Calculate the primary task loss (e.g., CrossEntropy)
-                if self.config.dataset_name in SQUEEZE:
+                if batch_y.ndim == 2 and batch_y.shape[1] == 1:
                     batch_y = batch_y.squeeze(1).long()
+                else:
+                    batch_y = batch_y.long()
                 loss = state.criterion(outputs, batch_y)
 
                 # Calculate the FedProx proximal term
@@ -379,8 +385,10 @@ class PFedMeClient(Client):
                 
                 state.optimizer.zero_grad()
                 outputs = model(batch_x)
-                if LONG:
+                if batch_y.ndim == 2 and batch_y.shape[1] == 1:
                     batch_y = batch_y.squeeze(1).long()
+                else:
+                    batch_y = batch_y.long()
                 loss = state.criterion(outputs, batch_y)
                 
                 proximal_term = self.compute_proximal_term(
@@ -438,8 +446,10 @@ class DittoClient(Client):
                     
                     state.optimizer.zero_grad()
                     outputs = model(batch_x)
-                    if LONG:
+                    if batch_y.ndim == 2 and batch_y.shape[1] == 1:
                         batch_y = batch_y.squeeze(1).long()
+                    else:
+                        batch_y = batch_y.long()
                     loss = state.criterion(outputs, batch_y)
                     loss.backward()
                     

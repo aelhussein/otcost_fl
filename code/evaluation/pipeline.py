@@ -27,487 +27,572 @@ class ExperimentType:
     EVALUATION = 'evaluation'
     DIVERSITY = 'diversity'
 
-class ExperimentConfig:
-    def __init__(self, dataset, experiment_type, params_to_try=None):
+class ExperimentConfig: # MODIFIED: Added num_clients
+    def __init__(self, dataset, experiment_type, num_clients=None):
         self.dataset = dataset
         self.experiment_type = experiment_type
-        self.params_to_try = self._get_params_test()
+        self.num_clients = num_clients # Store the override (can be None)
 
-    def _get_params_test(self):
-        if self.experiment_type == ExperimentType.LEARNING_RATE:
-            return get_parameters_for_dataset(self.dataset)['learning_rates_try']
-        elif self.experiment_type == ExperimentType.REG_PARAM:
-            return get_parameters_for_dataset(self.dataset)['reg_param_try']
-        else:
-            return None
-
+# MODIFIED: Updated save_results and load_results for metadata handling
 class ResultsManager:
-    def __init__(self, root_dir, dataset, experiment_type):
+    def __init__(self, root_dir, dataset, experiment_type, num_clients: int): # ADDED num_clients
+        """
+        Initializes ResultsManager.
+
+        Args:
+            root_dir (str): Root directory for results.
+            dataset (str): Name of the dataset.
+            experiment_type (str): Type of experiment.
+            num_clients (int): The target number of clients for this experiment run (used for filename).
+        """
         self.root_dir = root_dir
         self.dataset = dataset
         self.experiment_type = experiment_type
-        self.results_structure = {
-            ExperimentType.LEARNING_RATE: {
-                'directory': 'lr_tuning',
-                'filename_template': f'{dataset}_lr_tuning.pkl',
-            },
-            ExperimentType.REG_PARAM: {
-                'directory': 'reg_param_tuning',
-                'filename_template': f'{dataset}_reg_tuning.pkl',
-            },
-            ExperimentType.EVALUATION: {
-                'directory': 'evaluation',
-                'filename_template': f'{dataset}_evaluation.pkl'
-            },
-            ExperimentType.DIVERSITY: {
-                'directory': 'diversity',
-                'filename_template': f'{dataset}_diversity.pkl'
-            }
-        }
+        self.num_clients = num_clients # Store target client count for filenames
+
+        # Dynamically create filename templates including client count
+        self.results_structure = {}
+        for exp_type_key, info in {
+            ExperimentType.LEARNING_RATE: {'directory': 'lr_tuning', 'suffix': 'lr_tuning'},
+            ExperimentType.REG_PARAM: {'directory': 'reg_param_tuning', 'suffix': 'reg_tuning'},
+            ExperimentType.EVALUATION: {'directory': 'evaluation', 'suffix': 'evaluation'},
+            ExperimentType.DIVERSITY: {'directory': 'diversity', 'suffix': 'diversity'}
+        }.items():
+             self.results_structure[exp_type_key] = {
+                 'directory': info['directory'],
+                 # MODIFIED FILENAME TEMPLATE
+                 'filename_template': f'{dataset}_{num_clients}clients_{info["suffix"]}.pkl'
+             }
 
     def _get_results_path(self, experiment_type):
-        experiment_info = self.results_structure[experiment_type]
-        return os.path.join(self.root_dir,'results', 
-                            experiment_info['directory'], 
-                            experiment_info['filename_template'])
+        """Gets the results path based on the dynamically created template."""
+        experiment_info = self.results_structure.get(experiment_type)
+        if not experiment_info:
+             raise ValueError(f"Unknown experiment type for results path: {experiment_type}")
+        # The template already includes num_clients now
+        return os.path.join(self.root_dir,'results',
+                            experiment_info['directory'],
+                            experiment_info['filename_template']) # Use the generated template
 
     def load_results(self, experiment_type):
+        """Loads results, handling both old and new format (with metadata)."""
+        # This path now implicitly includes the num_clients set during __init__
         path = self._get_results_path(experiment_type)
-
         if os.path.exists(path):
-            with open(path, 'rb') as f:
-                return pickle.load(f)
-        return None
+            try:
+                with open(path, 'rb') as f:
+                    loaded_data = pickle.load(f)
+                if isinstance(loaded_data, dict) and 'results' in loaded_data and 'metadata' in loaded_data:
+                     print(f"Loaded results from {path} with metadata: {loaded_data['metadata']}")
+                     return loaded_data['results'], loaded_data['metadata']
+                else:
+                     print(f"Loaded results from {path} (assuming old format without metadata).")
+                     return loaded_data, None
+            except Exception as e:
+                 print(f"Error loading results from {path}: {e}. Returning None, None.")
+                 return None, None
+        print(f"Results file not found at: {path}")
+        return None, None
 
-    def save_results(self, results, experiment_type):
+    # save_results signature already correct, accepts actual client_count for metadata
+    def save_results(self, results, experiment_type, client_count=None, run_metadata=None):
+        """Save results with metadata including actual client count used."""
+        # Path determined by num_clients passed during __init__
         path = self._get_results_path(experiment_type)
-        with open(path, 'wb') as f:
-            pickle.dump(results, f)
+        if run_metadata is None: run_metadata = {}
+
+        metadata = {
+            'timestamp': datetime.now().isoformat(),
+            'dataset': self.dataset,
+            'experiment_type': experiment_type,
+            'client_count_used': client_count, # Actual count used for this specific run/cost
+            'filename_target_clients': self.num_clients, # Target count used in filename
+            **run_metadata
+        }
+        final_data_to_save = {'results': results, 'metadata': metadata}
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                pickle.dump(final_data_to_save, f)
+            print(f"Results saved to {path} with metadata (Actual Clients Used: {client_count})")
+        except Exception as e:
+            print(f"Error saving results to {path}: {e}")
 
     def append_or_create_metric_lists(self, existing_dict, new_dict):
+        # ... (Implementation from your previous code - assumed correct) ...
         if existing_dict is None:
-            return {k: [v] if not isinstance(v, dict) else 
-                   self.append_or_create_metric_lists(None, v)
-                   for k, v in new_dict.items()}
-        
+             # Create lists for leaf nodes
+             return {k: [v] if not isinstance(v, dict) else self.append_or_create_metric_lists(None, v)
+                    for k, v in new_dict.items()}
+
         for key, new_value in new_dict.items():
-            if isinstance(new_value, dict):
-                if key not in existing_dict:
-                    existing_dict[key] = {}
-                existing_dict[key] = self.append_or_create_metric_lists(
-                    existing_dict[key], new_value)
-            else:
-                if key not in existing_dict:
-                    existing_dict[key] = []
-                existing_dict[key].append(new_value)
-        
+             if isinstance(new_value, dict):
+                 # Recursively process nested dictionaries
+                 if key not in existing_dict or not isinstance(existing_dict[key], dict):
+                      existing_dict[key] = {} # Initialize if key is new or not a dict
+                 existing_dict[key] = self.append_or_create_metric_lists(existing_dict[key], new_value)
+             else:
+                  # Append leaf values to lists
+                  if key not in existing_dict:
+                       existing_dict[key] = []
+                  # Ensure it's a list before appending
+                  if not isinstance(existing_dict[key], list):
+                      existing_dict[key] = [existing_dict[key]] # Convert scalar to list if needed
+                  existing_dict[key].append(new_value)
         return existing_dict
 
     def get_best_parameters(self, param_type, server_type, cost):
-        """Get best hyperparameter value for given server type and cost."""
-        results = self.load_results(param_type)
-        if results is None or cost not in results:
-            return None
-        
-        cost_results = results[cost]  # Now gives us lr-level dict
-        
-        # Collect metrics across all learning rates for this server
+        # ... (Implementation from your previous code - assumed correct) ...
+        # Note: load_results implicitly uses the num_clients from __init__
+        results, _ = self.load_results(param_type)
+        if results is None or cost not in results: return None
+        cost_results = results[cost]
         server_metrics = {}
-        for lr in cost_results.keys():
-            if server_type not in cost_results[lr]:
-                continue
-            server_metrics[lr] = cost_results[lr][server_type]
-        
-        if not server_metrics:
-            return None
-
+        if isinstance(cost_results, dict):
+            for param_val, server_data in cost_results.items():
+                if isinstance(server_data, dict) and server_type in server_data:
+                    server_metrics[param_val] = server_data[server_type]
+        else: return None
+        if not server_metrics: return None
         return self._select_best_hyperparameter(server_metrics)
 
-    def _select_best_hyperparameter(self, lr_results):
-        """Select best hyperparameter based on minimum loss."""
-        best_loss = float('inf')
-        best_param = None
-        
-        for lr, metrics in lr_results.items():
-            avg_loss = np.median(metrics['global']['losses'])
-                
-            if avg_loss < best_loss:
-                best_loss = avg_loss
-                best_param = lr
-                
-        return best_param
+
+    def _select_best_hyperparameter(self, param_results):
+        # ... (Implementation from your previous code - assumed correct) ...
+         best_loss = float('inf')
+         best_param = None
+         for param_val, metrics in param_results.items():
+             if isinstance(metrics, dict) and 'global' in metrics and 'val_losses' in metrics['global'] and metrics['global']['val_losses']:
+                  run_median_losses = []
+                  # Handle list of lists (multiple runs) vs single list (one run)
+                  first_loss_val = metrics['global']['val_losses'][0]
+                  is_multi_run = isinstance(first_loss_val, list)
+
+                  if is_multi_run:
+                       for run_losses in metrics['global']['val_losses']:
+                           if run_losses: run_median_losses.append(np.median(run_losses))
+                  elif metrics['global']['val_losses']: # Single run, list of floats
+                       run_median_losses.append(np.median(metrics['global']['val_losses']))
+
+                  if run_median_losses:
+                      avg_median_loss = np.mean(run_median_losses)
+                      if avg_median_loss < best_loss:
+                          best_loss = avg_median_loss
+                          best_param = param_val
+                  # else: print warning handled previously or omit
+             # else: print warning handled previously or omit
+         if best_param is None: print("Warning: Could not determine best hyperparameter.")
+         return best_param
+
 
 class Experiment:
     def __init__(self, config: ExperimentConfig):
         self.config = config
-        self.results_manager = ResultsManager(root_dir=ROOT_DIR, dataset=self.config.dataset, experiment_type = self.config.experiment_type)
-        self.default_params = get_parameters_for_dataset(self.config.dataset) # Get full config
-        # self.data_dir = f'{DATA_DIR}/{self.config.dataset}' # Base data dir from global config
-        self.data_dir_root = DATA_DIR # Use global root data dir
+        self.default_params = get_parameters_for_dataset(self.config.dataset)
+        self.data_dir_root = DATA_DIR
 
+        # Determine the initial target client count for filenames/ResultsManager
+        # This uses the CLI override or the default value from the config
+        initial_target_num_clients = self.config.num_clients
+        if initial_target_num_clients is None:
+            initial_target_num_clients = self.default_params.get('default_num_clients')
+            if initial_target_num_clients is None:
+                print("Warning: 'default_num_clients' not found in config, defaulting to 2 for filename.")
+                initial_target_num_clients = 2
+        # Validate before passing
+        if not isinstance(initial_target_num_clients, int) or initial_target_num_clients <= 0:
+             raise ValueError(f"Invalid initial target client count for ResultsManager: {initial_target_num_clients}")
+
+        print(f"Initializing ResultsManager for {initial_target_num_clients} target clients (used for filename).")
+        self.results_manager = ResultsManager(
+            root_dir=ROOT_DIR,
+            dataset=self.config.dataset,
+            experiment_type=self.config.experiment_type,
+            num_clients=initial_target_num_clients # Pass target count for filename generation
+        )
+        # This stores the *actual* client count used in a specific initialization, can vary per cost
+        self.num_clients_for_run = None
 
     def run_experiment(self, costs):
-        # Keep existing run_experiment logic
         if self.config.experiment_type == ExperimentType.EVALUATION:
             return self._run_final_evaluation(costs)
         elif self.config.experiment_type in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM]:
-             return self._run_hyperparam_tuning(costs)
+            return self._run_hyperparam_tuning(costs)
         else:
-             raise ValueError(f"Unsupported experiment type: {self.config.experiment_type}")
-
+            raise ValueError(f"Unsupported experiment type: {self.config.experiment_type}")
 
     def _check_existing_results(self, costs):
-        # Keep existing _check_existing_results logic
-        results = self.results_manager.load_results(self.config.experiment_type)
+        # Load results, ignore metadata for checking runs
+        results, _ = self.results_manager.load_results(self.config.experiment_type)
         runs_key = 'runs_tune' if self.config.experiment_type != ExperimentType.EVALUATION else 'runs'
-        target_runs = self.default_params.get(runs_key, 1) # Default to 1 if key not found
-        remaining_costs = list(costs) # Copy
+        target_runs = self.default_params.get(runs_key, 1)
+        remaining_costs = list(costs)
         completed_runs = 0
 
         if results is not None:
             completed_costs = set(results.keys())
-            # Filter remaining_costs based on completed ones
             remaining_costs = [c for c in costs if c not in completed_costs]
 
             if completed_costs:
-                # Check number of runs completed for the *first* completed cost
                 first_cost = next(iter(completed_costs))
-                # Need to navigate the results structure carefully
-                if first_cost in results and results[first_cost]:
-                     first_param = next(iter(results[first_cost].keys()))
-                     if first_param in results[first_cost] and results[first_cost][first_param]:
-                          first_server = next(iter(results[first_cost][first_param].keys()))
-                          if first_server in results[first_cost][first_param] and \
-                             'global' in results[first_cost][first_param][first_server] and \
-                             'val_losses' in results[first_cost][first_param][first_server]['global']:
-                              # Use val_losses as the indicator for runs
-                              completed_runs = len(results[first_cost][first_param][first_server]['global']['val_losses'])
-                          else:
-                               print(f"Warning: Could not determine completed runs from results structure for cost {first_cost}.")
-                     else:
-                          print(f"Warning: No param data found for cost {first_cost} in results.")
-                else:
-                     print(f"Warning: No data found for first completed cost {first_cost} in results.")
-
+                try:
+                     # Navigate results structure carefully to find the list representing runs
+                     first_param = next(iter(results[first_cost]))
+                     first_server = next(iter(results[first_cost][first_param]))
+                     # Determine which loss key indicates runs based on experiment type
+                     loss_key = 'val_losses' # Default for tuning
+                     if self.config.experiment_type == ExperimentType.EVALUATION:
+                          loss_key = 'test_losses'
+                     # Access the list and get its length
+                     completed_runs = len(results[first_cost][first_param][first_server]['global'][loss_key])
+                except (StopIteration, KeyError, IndexError, TypeError, AttributeError) as e: # Catch more potential issues
+                     print(f"Warning: Could not reliably determine completed runs from results structure (cost={first_cost}). Error: {e}. Assuming 0.")
+                     completed_runs = 0
 
             print(f"Found {completed_runs}/{target_runs} completed runs in existing results.")
-
-            # If enough runs are completed for all costs, nothing remains
-            if completed_runs >= target_runs:
-                 remaining_costs = []
-            else:
-                 # If runs are incomplete, need to redo all costs for the missing runs
-                 remaining_costs = list(costs) # Rerun all costs
-                 print(f"Runs incomplete ({completed_runs}/{target_runs}). Rerunning for all costs.")
-
-        else: # No results file found
+            # Decide if rerunning is needed
+            if completed_runs >= target_runs and not remaining_costs:
+                 remaining_costs = [] # All costs done, sufficient runs
+            elif completed_runs < target_runs: # Runs incomplete, redo all costs
+                 remaining_costs = list(costs)
+                 print(f"Runs incomplete ({completed_runs}/{target_runs}). Will run for all specified costs.")
+            # Else: Runs complete, but some costs were missing (remaining_costs already set)
+        else:
              print("No existing results found.")
              remaining_costs = list(costs)
 
         print(f"Remaining costs to process: {remaining_costs}")
         return results, remaining_costs, completed_runs
 
+
     def _run_hyperparam_tuning(self, costs):
-        # Keep most of _run_hyperparam_tuning logic
         results, remaining_costs, completed_runs = self._check_existing_results(costs)
         runs_tune = self.default_params.get('runs_tune', 1)
 
         if not remaining_costs and completed_runs >= runs_tune:
-             print("All hyperparameter tuning runs are already completed.")
-             return results
+            print("All hyperparameter tuning runs are already completed.")
+            # results were loaded by check_existing_results if they existed
+            return results if results is not None else {}
 
         remaining_runs_count = runs_tune - completed_runs
         if remaining_runs_count <= 0 and remaining_costs:
-             # This case happens if some costs were missing but runs were complete for others
              print(f"Runs complete, but costs {remaining_costs} were missing. Rerunning missing costs for {runs_tune} runs.")
              remaining_runs_count = runs_tune
-             completed_runs = 0 # Reset completed runs as we start over for these costs
+             completed_runs = 0
         elif remaining_runs_count <= 0:
-            print("Error state: No remaining costs and no remaining runs needed, should have exited earlier.")
-            return results # Should not happen if _check_existing_results is correct
-
+             print("Error state: No remaining costs and no remaining runs needed?") # Should have exited
+             return results if results is not None else {}
 
         print(f"Starting {remaining_runs_count} hyperparameter tuning run(s)...")
-
-        # Ensure results is a dict even if loaded as None
         if results is None: results = {}
+        num_clients_metadata = None # Store representative client count for metadata
 
         for run_idx in range(remaining_runs_count):
             current_run_total = completed_runs + run_idx + 1
             print(f"--- Starting Run {current_run_total}/{runs_tune} ---")
-            # results_this_run = {} # Accumulate results for the current run only
+            run_meta = {'run_number': current_run_total}
+            cost_client_counts = {} # Store actual clients used per cost for this run's metadata
 
             for cost in remaining_costs:
                 print(f"--- Processing Cost: {cost} (Run {current_run_total}) ---")
-                cost_tracking_for_run = {} # Track results for this cost in this specific run
+                try:
+                    # Determine num_clients for this specific cost before tuning loop
+                    num_clients_this_cost = self._get_final_client_count(self.default_params, cost)
+                    cost_client_counts[cost] = num_clients_this_cost
+                    if num_clients_metadata is None: num_clients_metadata = num_clients_this_cost
+                except Exception as e:
+                    print(f"Error determining client count for cost {cost}: {e}. Skipping cost.")
+                    continue
 
                 # Determine params to try based on experiment type
+                # (Simplified - assumes REG_PARAM added to ExperimentType choices in run.py)
                 if self.config.experiment_type == ExperimentType.LEARNING_RATE:
-                    server_types_to_tune = ['local', 'fedavg'] # Add others if needed: 'pfedme', 'ditto'
-                    param_key = 'learning_rate'
-                    fixed_param_key = 'reg_param'
-                    fixed_param_value = get_default_reg(self.config.dataset)
-                    params_to_try_values = self.config.params_to_try or self.default_params.get('learning_rates_try', [])
+                     server_types_to_tune = self.default_params.get('servers_tune_lr', ['local', 'fedavg'])
+                     param_key, fixed_param_key = 'learning_rate', 'reg_param'
+                     fixed_param_value = get_default_reg(self.config.dataset)
+                     params_to_try_values = self.default_params.get('learning_rates_try', [])
                 elif self.config.experiment_type == ExperimentType.REG_PARAM:
-                    server_types_to_tune = [] # Tune only relevant algos: 'pfedme', 'ditto'
-                    param_key = 'reg_param'
-                    fixed_param_key = 'learning_rate'
-                    fixed_param_value = get_default_lr(self.config.dataset)
-                    params_to_try_values = self.config.params_to_try or self.default_params.get('reg_params_try', [])
+                     server_types_to_tune = self.default_params.get('servers_tune_reg', []) # e.g., ['pfedme', 'ditto']
+                     param_key, fixed_param_key = 'reg_param', 'learning_rate'
+                     fixed_param_value = get_default_lr(self.config.dataset)
+                     params_to_try_values = self.default_params.get('reg_params_try', [])
                 else:
-                     raise ValueError(f"Unsupported experiment type for tuning: {self.config.experiment_type}")
+                      raise ValueError(f"Unsupported tuning type: {self.config.experiment_type}")
 
                 if not params_to_try_values:
-                     print(f"Warning: No parameters to try for {self.config.experiment_type} on {self.config.dataset}. Skipping cost {cost}.")
+                     print(f"Warning: No parameters to try for {self.config.experiment_type}, {self.config.dataset}. Skipping cost {cost}.")
                      continue
 
-                # Prepare hyperparameter combinations
-                hyperparams_list = []
-                for p_val in params_to_try_values:
-                     hp = {param_key: p_val, fixed_param_key: fixed_param_value}
-                     hyperparams_list.append(hp)
+                hyperparams_list = [{param_key: p_val, fixed_param_key: fixed_param_value} for p_val in params_to_try_values]
+                tuning_results_for_cost = {}
 
-                # Perform tuning for the list of hyperparameters
-                tuning_results_for_cost = {} # {param_value: {server_type: metrics}}
                 for hyperparams in hyperparams_list:
                     param_value_being_tuned = hyperparams[param_key]
                     print(f"--- Tuning Param: {param_key}={param_value_being_tuned} ---")
-                    # Pass cost, current hyperparams, and relevant servers
-                    # _hyperparameter_tuning returns {server_type: metrics} for this param set
+                    # Pass cost, hyperparams, server types. _hyperparameter_tuning calls _initialize_experiment
+                    # which uses the correct num_clients internally.
                     server_metrics = self._hyperparameter_tuning(cost, hyperparams, server_types_to_tune)
                     tuning_results_for_cost[param_value_being_tuned] = server_metrics
 
-                cost_tracking_for_run = tuning_results_for_cost # Store results for this cost for this run
-
-                # --- Append results for this cost immediately ---
-                # Ensure the cost key exists in the main results dict
-                if cost not in results:
-                     results[cost] = {}
-
-                # Append the results of this run to the main results structure
-                # Need to merge results_this_run_cost into results[cost] correctly
-                for param_val, server_data in cost_tracking_for_run.items():
-                     if param_val not in results[cost]:
-                          results[cost][param_val] = {}
-                     for server_type, metrics in server_data.items():
-                           # Use append_or_create_metric_lists to handle list creation/appending
-                           if server_type not in results[cost][param_val]:
-                                results[cost][param_val][server_type] = None # Ensure key exists before appending
-                           results[cost][param_val][server_type] = self.results_manager.append_or_create_metric_lists(
-                                results[cost][param_val][server_type], metrics
-                           )
+                # Append results for this cost immediately
+                if cost not in results: results[cost] = {}
+                for param_val, server_data in tuning_results_for_cost.items():
+                    if param_val not in results[cost]: results[cost][param_val] = {}
+                    for server_type, metrics in server_data.items():
+                        if server_type not in results[cost][param_val]: results[cost][param_val][server_type] = None
+                        results[cost][param_val][server_type] = self.results_manager.append_or_create_metric_lists(
+                            results[cost][param_val][server_type], metrics
+                        )
 
             # Save results after each completed run across all costs
             print(f"--- Completed Run {current_run_total}/{runs_tune} ---")
-            self.results_manager.save_results(results, self.config.experiment_type)
-
+            run_meta['cost_specific_client_counts'] = cost_client_counts # Store detailed counts
+            self.results_manager.save_results(
+                results, self.config.experiment_type,
+                client_count=num_clients_metadata, # Pass representative count for primary metadata field
+                run_metadata=run_meta
+            )
         return results
 
-
+    # REMOVED num_clients_for_cost parameter
     def _hyperparameter_tuning(self, cost, hyperparams, server_types):
         """Run ONE set of hyperparameters for specified server types."""
-        # Initialize data loaders ONCE for this cost value
-        # Note: Seeding might need careful handling if called multiple times across runs
         try:
+            # Initialization now determines client count internally and sets self.num_clients_for_run
             client_dataloaders = self._initialize_experiment(cost)
+            if not client_dataloaders: # Handle case where init returns empty dict
+                 print(f"Warning: No client dataloaders initialized for cost {cost}. Skipping hyperparameter set.")
+                 return {}
+            # self.num_clients_for_run is now set based on len(client_dataloaders)
         except Exception as e:
             print(f"ERROR: Failed to initialize data for cost {cost}. Skipping hyperparameter set. Error: {e}")
             traceback.print_exc()
-            return {} # Return empty results for this hyperparam set
+            return {}
 
-        tracking = {} # {server_type: metrics} for this hyperparam set
-
+        tracking = {}
         for server_type in server_types:
-            lr = hyperparams.get('learning_rate')
-            reg_param_val = None # Default for algos not needing it
-            if server_type in ['pfedme', 'ditto']: # Add other algos needing reg_param here
-                 reg_param_val = hyperparams.get('reg_param') # This should be the actual value
+             lr = hyperparams.get('learning_rate')
+             reg_param_val = None
+             algo_params_dict = {}
+             if server_type in ['pfedme', 'ditto']: # Check specific algorithms needing reg_param
+                 reg_param_val = hyperparams.get('reg_param')
+                 if reg_param_val is not None: algo_params_dict['reg_param'] = reg_param_val
+             trainer_config = self._create_trainer_config(server_type, lr, algo_params_dict)
 
-            # Pass reg_param value directly to algorithm_params if needed by TrainerConfig/Client
-            algo_params_dict = {}
-            if reg_param_val is not None:
-                 # Use a consistent key, e.g., 'reg_lambda' or 'mu' depending on algo needs
-                 # Check how PFedMeClient/DittoClient expect it in TrainerConfig.algorithm_params
-                 algo_params_dict['reg_param'] = reg_param_val # Assuming client expects 'reg_param'
+             print(f"..... Tuning Server: {server_type}, LR: {lr}, Reg: {reg_param_val} .....")
+             server = None
+             try:
+                 server = self._create_server_instance(cost, server_type, trainer_config, tuning=True)
+                 # Add the actual number of clients initialized
+                 self._add_clients_to_server(server, client_dataloaders)
+                 if not server.clients:
+                      print(f"Warning: No clients added to server {server_type} for cost {cost}. Skipping training.")
+                      tracking[server_type] = {'error': 'No clients added'}
+                      continue
 
-            trainer_config = self._create_trainer_config(server_type, lr, algo_params_dict)
-
-            print(f"..... Tuning Server: {server_type}, LR: {lr}, Reg: {reg_param_val} .....")
-            server = None # Ensure server is reset
-            try:
-                # Create and run server for this specific config
-                server = self._create_server_instance(cost, server_type, trainer_config, tuning=True)
-                self._add_clients_to_server(server, client_dataloaders)
-                # Train for fewer rounds during tuning? Use config maybe. Using full rounds for now.
-                num_tuning_rounds = self.default_params.get('rounds_tune_inner', self.default_params['rounds'])
-                metrics = self._train_and_evaluate(server, num_tuning_rounds) # Use tuning=True
-                tracking[server_type] = metrics
-            except Exception as e:
-                 print(f"ERROR during tuning for server {server_type}, cost {cost}, params {hyperparams}: {e}")
+                 # Determine number of rounds for tuning run
+                 num_tuning_rounds = self.default_params.get('rounds_tune_inner', self.default_params['rounds'])
+                 metrics = self._train_and_evaluate(server, num_tuning_rounds) # tuning=True passed via server instance
+                 tracking[server_type] = metrics
+             except Exception as e:
+                 print(f"ERROR during tuning run for server {server_type}, cost {cost}, params {hyperparams}: {e}")
                  traceback.print_exc()
-                 tracking[server_type] = {'error': str(e)} # Log error
-            finally:
-                if server: del server # Explicitly delete server
-                cleanup_gpu() # Clean GPU memory after each server run
+                 tracking[server_type] = {'error': str(e)}
+             finally:
+                if server: del server
+                cleanup_gpu()
 
         return tracking
 
-
+    # MODIFIED: Updated save_results call
     def _run_final_evaluation(self, costs):
-         """Run final evaluation with multiple runs using best params."""
-         results = {}
-         diversities = {} # Separate dict for diversity metrics
+        results, _, completed_runs = self._check_existing_results(costs)
+        target_runs = self.default_params.get('runs', 1)
 
-         # Load existing results if any (mainly to check completed runs)
-         # Note: We don't reuse results here, we always rerun final evals if runs < target
-         existing_results = self.results_manager.load_results(ExperimentType.EVALUATION)
-         existing_diversities = self.results_manager.load_results(ExperimentType.DIVERSITY)
-         completed_runs = 0
-         target_runs = self.default_params.get('runs', 1)
+        if results is not None and completed_runs >= target_runs:
+             print(f"Final evaluation already completed with {completed_runs} runs.")
+             existing_diversities, _ = self.results_manager.load_results(ExperimentType.DIVERSITY)
+             return results, existing_diversities
 
-         if existing_results:
-              # Check completed runs (similar logic to _check_existing_results)
-              try:
-                   first_cost = next(iter(existing_results.keys()))
-                   first_server = next(iter(existing_results[first_cost].keys()))
-                   completed_runs = len(existing_results[first_cost][first_server]['global']['test_losses']) # Use test_losses
-                   print(f"Found {completed_runs}/{target_runs} completed final evaluation runs.")
-              except (StopIteration, KeyError, IndexError, TypeError) as e:
-                   print(f"Warning: Could not determine completed runs from existing final eval results. Error: {e}. Starting from run 1.")
-                   completed_runs = 0
-         else:
-              print("No existing final evaluation results found.")
+        remaining_runs_count = target_runs - completed_runs
+        print(f"Starting {remaining_runs_count} final evaluation run(s)...")
 
+        if results is None: results = {}
+        diversities, _ = self.results_manager.load_results(ExperimentType.DIVERSITY)
+        if diversities is None: diversities = {}
 
-         if completed_runs >= target_runs:
-              print(f"Final evaluation already completed with {completed_runs} runs.")
-              return existing_results, existing_diversities # Return loaded results
+        num_clients_metadata = None # Store representative client count for metadata
 
-         # Calculate remaining runs
-         remaining_runs_count = target_runs - completed_runs
-         print(f"Starting {remaining_runs_count} final evaluation run(s)...")
+        for run_idx in range(remaining_runs_count):
+            current_run_total = completed_runs + run_idx + 1
+            print(f"--- Starting Final Evaluation Run {current_run_total}/{target_runs} ---")
+            results_this_run = {}
+            diversities_this_run = {}
+            run_meta = {'run_number': current_run_total}
+            cost_client_counts = {} # Store actual clients used per cost
 
-         # Use loaded results/diversities as starting point if runs were partially complete
-         results = existing_results if existing_results is not None else {}
-         diversities = existing_diversities if existing_diversities is not None else {}
+            for cost in costs:
+                print(f"--- Evaluating Cost: {cost} (Run {current_run_total}) ---")
+                try:
+                    # Determine client count *before* calling _final_evaluation for metadata consistency
+                    num_clients_this_cost = self._get_final_client_count(self.default_params, cost)
+                    cost_client_counts[cost] = num_clients_this_cost
+                    if num_clients_metadata is None: num_clients_metadata = num_clients_this_cost
 
-         for run_idx in range(remaining_runs_count):
-             current_run_total = completed_runs + run_idx + 1
-             print(f"--- Starting Final Evaluation Run {current_run_total}/{target_runs} ---")
-             results_this_run = {} # Accumulate results for the current run
-             diversities_this_run = {}
+                    # _final_evaluation calls _initialize_experiment internally
+                    experiment_results_for_cost = self._final_evaluation(cost)
 
-             for cost in costs:
-                 print(f"--- Evaluating Cost: {cost} (Run {current_run_total}) ---")
-                 try:
-                      # _final_evaluation performs evaluation for ALL servers for ONE cost
-                      # It returns {server_type: metrics} and potentially 'weight_metrics'
-                      experiment_results_for_cost = self._final_evaluation(cost)
+                    if 'weight_metrics' in experiment_results_for_cost:
+                         diversities_this_run[cost] = experiment_results_for_cost.pop('weight_metrics')
+                    results_this_run[cost] = experiment_results_for_cost
 
-                      # Separate diversity metrics if present
-                      if 'weight_metrics' in experiment_results_for_cost:
-                           diversities_this_run[cost] = experiment_results_for_cost.pop('weight_metrics')
+                except Exception as e:
+                    print(f"ERROR during final evaluation for cost {cost}, run {current_run_total}: {e}")
+                    traceback.print_exc()
+                    results_this_run[cost] = {'error': str(e)}
 
-                      results_this_run[cost] = experiment_results_for_cost # Store server metrics
+            # Append results
+            results = self.results_manager.append_or_create_metric_lists(results, results_this_run)
+            diversities = self.results_manager.append_or_create_metric_lists(diversities, diversities_this_run)
 
-                 except Exception as e:
-                      print(f"ERROR during final evaluation for cost {cost}, run {current_run_total}: {e}")
-                      traceback.print_exc()
-                      # Store error marker? Decide how to handle partial run failures.
-                      results_this_run[cost] = {'error': str(e)}
+            # Save results after each completed run
+            print(f"--- Completed Final Evaluation Run {current_run_total}/{target_runs} ---")
+            run_meta['cost_specific_client_counts'] = cost_client_counts # Add detailed counts
+            self.results_manager.save_results(results, ExperimentType.EVALUATION, client_count=num_clients_metadata, run_metadata=run_meta)
+            self.results_manager.save_results(diversities, ExperimentType.DIVERSITY, client_count=num_clients_metadata, run_metadata=run_meta)
 
-
-             # Append results of this run to the main results dictionaries
-             results = self.results_manager.append_or_create_metric_lists(results, results_this_run)
-             diversities = self.results_manager.append_or_create_metric_lists(diversities, diversities_this_run)
-
-             # Save results after each completed run
-             print(f"--- Completed Final Evaluation Run {current_run_total}/{target_runs} ---")
-             self.results_manager.save_results(results, ExperimentType.EVALUATION)
-             self.results_manager.save_results(diversities, ExperimentType.DIVERSITY)
-
-
-         return results, diversities
+        return results, diversities
 
 
     def _final_evaluation(self, cost):
         """Runs final evaluation for ONE cost value across all servers."""
-        tracking = {} # {server_type: metrics}
-        weight_metrics_acc = {} # Accumulate weight metrics if applicable
+        tracking = {}
+        weight_metrics_acc = {}
 
-        # Initialize data loaders ONCE for this cost value
         try:
-             client_dataloaders = self._initialize_experiment(cost)
+            client_dataloaders = self._initialize_experiment(cost)
+            # Store the actual number of clients used for this cost/run
+            self.num_clients_for_run = len(client_dataloaders) # Based on actual loaded data
+            if self.num_clients_for_run == 0:
+                 print(f"Warning: No clients initialized for cost {cost}. Skipping evaluation.")
+                 return {'error': "No clients initialized."}
         except Exception as e:
-             print(f"ERROR: Failed to initialize data for cost {cost}. Skipping final evaluation for this cost. Error: {e}")
-             traceback.print_exc()
-             return {'error': f"Data initialization failed: {e}"}
+            print(f"ERROR: Failed to initialize data for cost {cost}. Skipping final evaluation. Error: {e}")
+            traceback.print_exc()
+            return {'error': f"Data initialization failed: {e}"}
 
-        # Evaluate each algorithm using its best found hyperparameters
-        for server_type in ALGORITHMS: # Use globally defined ALGORITHMS
+        for server_type in ALGORITHMS:
             print(f"..... Evaluating Server: {server_type} for Cost: {cost} .....")
-
-            # Find best LR from tuning results
+            # --- Get Best Hyperparameters ---
             best_lr = self.results_manager.get_best_parameters(
                  ExperimentType.LEARNING_RATE, server_type, cost
             )
             if best_lr is None:
-                 print(f"Warning: Best LR not found for {server_type}, cost {cost}. Using default: {get_default_lr(self.config.dataset)}")
-                 best_lr = get_default_lr(self.config.dataset)
+                 default_lr = get_default_lr(self.config.dataset)
+                 print(f"Warning: Best LR not found for {server_type}, cost {cost}. Using default: {default_lr}")
+                 best_lr = default_lr
 
-            # Find best Reg Param if applicable
-            best_reg_param = None
             algo_params_dict = {}
-            if server_type in ['pfedme', 'ditto']: # Add other algos needing reg param here
+            if server_type in ['pfedme', 'ditto']: # Add other relevant algos
                  best_reg_param = self.results_manager.get_best_parameters(
                       ExperimentType.REG_PARAM, server_type, cost
                  )
                  if best_reg_param is None:
-                      print(f"Warning: Best Reg Param not found for {server_type}, cost {cost}. Using default: {get_default_reg(self.config.dataset)}")
-                      best_reg_param = get_default_reg(self.config.dataset)
+                      default_reg = get_default_reg(self.config.dataset)
+                      print(f"Warning: Best Reg Param not found for {server_type}, cost {cost}. Using default: {default_reg}")
+                      best_reg_param = default_reg
+                 if best_reg_param is not None: # Ensure it's not None before adding
+                      algo_params_dict['reg_param'] = best_reg_param
 
-                 if best_reg_param is not None:
-                       # Use a consistent key expected by the client/config
-                       algo_params_dict['reg_param'] = best_reg_param
-
-
-            # Create configuration for the final run
+            # --- Run Evaluation ---
             trainer_config = self._create_trainer_config(server_type, best_lr, algo_params_dict)
-
-            server = None # Ensure server is reset
+            server = None
             try:
-                # Create and run server for final evaluation (tuning=False)
                 server = self._create_server_instance(cost, server_type, trainer_config, tuning=False)
                 self._add_clients_to_server(server, client_dataloaders)
-                # Train for the full number of rounds specified in config
-                metrics = self._train_and_evaluate(server, trainer_config.rounds) # Use tuning=False
+                if not server.clients: # Double check clients were added
+                     print(f"Warning: No clients added to server {server_type} for evaluation. Skipping.")
+                     tracking[server_type] = {'error': 'No clients added'}
+                     continue
+
+                metrics = self._train_and_evaluate(server, trainer_config.rounds)
                 tracking[server_type] = metrics
-
-                # Collect diversity metrics if available (e.g., from FedAvgServer)
                 if hasattr(server, 'diversity_metrics') and server.diversity_metrics:
-                     # Store diversity metrics separately, maybe keyed by server type if others calc it too
-                     # For now, assuming only FedAvg calculates it and storing under a general key
-                     weight_metrics_acc = server.diversity_metrics # Overwrites if multiple servers calc this
-
+                     weight_metrics_acc = server.diversity_metrics
 
             except Exception as e:
-                 print(f"ERROR during final evaluation run for server {server_type}, cost {cost}: {e}")
-                 traceback.print_exc()
-                 tracking[server_type] = {'error': str(e)} # Log error
+                print(f"ERROR during final evaluation run for server {server_type}, cost {cost}: {e}")
+                traceback.print_exc()
+                tracking[server_type] = {'error': str(e)}
             finally:
                 if server: del server
                 cleanup_gpu()
 
-        # Add collected diversity metrics to the results for this cost
         if weight_metrics_acc:
-             tracking['weight_metrics'] = weight_metrics_acc
-
+            tracking['weight_metrics'] = weight_metrics_acc
         return tracking
+
+    # ADDED: New helper method for determining final client count
+    def _get_final_client_count(self, dataset_config, cost):
+        """Determines the final client count based on CLI override, defaults, and dataset constraints."""
+        cli_override = self.config.num_clients # From ExperimentConfig (passed from run.py)
+
+        # 1. Start with CLI override if provided
+        num_clients = cli_override
+
+        # 2. Fall back to default if no override
+        if num_clients is None:
+            num_clients = dataset_config.get('default_num_clients')
+            if num_clients is None: # Needs a default if not in config
+                 print("Warning: 'default_num_clients' not found in config, defaulting to 2.")
+                 num_clients = 2
+
+        # Ensure num_clients is integer at this point before max check
+        if not isinstance(num_clients, int):
+             raise TypeError(f"Client count must be an integer, but got {num_clients} (from CLI or default).")
+
+        # 3. Check against max limit defined in config
+        max_clients = dataset_config.get('max_clients')
+        if max_clients is not None and num_clients > max_clients:
+            print(f"Warning: Requested/Default {num_clients} clients exceeds maximum of {max_clients} for {self.config.dataset}. Using {max_clients}.")
+            num_clients = max_clients
+
+        # 4. Apply dataset-specific constraints based on cost (for pre-split strategies primarily)
+        partitioning_strategy = dataset_config.get('partitioning_strategy')
+        if partitioning_strategy == 'pre_split':
+             # Example for ISIC/IXI - requires site_mappings in config's source_args
+             if self.config.dataset in ['ISIC', 'IXITiny']:
+                  site_mappings = dataset_config.get('source_args', {}).get('site_mappings')
+                  if site_mappings:
+                      if cost in site_mappings:
+                          available_for_cost = len(site_mappings[cost])
+                          if num_clients > available_for_cost:
+                              print(f"Warning: Client count {num_clients} exceeds available sites ({available_for_cost}) for cost '{cost}'. Using {available_for_cost}.")
+                              num_clients = available_for_cost
+                      else:
+                          print(f"Warning: Cost key '{cost}' not found in site_mappings for {self.config.dataset}. Using determined client count {num_clients}.")
+                  else:
+                       print(f"Warning: 'site_mappings' not found in source_args for pre-split dataset {self.config.dataset}. Cannot apply cost-specific client count limit.")
+        # Add checks for other pre-split datasets if their client count depends on cost/files
+
+        # Final sanity check
+        if not isinstance(num_clients, int) or num_clients <= 0:
+             raise ValueError(f"Calculated invalid number of clients: {num_clients}")
+
+        return num_clients
 
 
     def _validate_and_prepare_config(self, dataset_name, dataset_config):
         """Validate configuration and prepare essential parameters."""
+        # Call the validation function defined in data_processing
         validate_dataset_config(dataset_config, dataset_name)
+        # Extract parameters needed by the pipeline stages
+        required_pipeline_keys = ['data_source', 'partitioning_strategy', 'cost_interpretation']
+        missing_keys = [k for k in required_pipeline_keys if k not in dataset_config]
+        if missing_keys:
+             raise ValueError(f"Config for {dataset_name} missing essential pipeline keys: {missing_keys}")
+
         return {
             'data_source': dataset_config['data_source'],
             'partitioning_strategy': dataset_config['partitioning_strategy'],
@@ -517,144 +602,137 @@ class Experiment:
             'partition_scope': dataset_config.get('partition_scope', 'train')
         }
 
-    def _determine_client_count(self, cost, dataset_config):
-        """Determine number of clients based on configuration and cost."""
-        num_clients_config = dataset_config['num_clients']
-        
-        if isinstance(num_clients_config, int):
-            return num_clients_config
-        elif num_clients_config == 'dynamic':
-            # Handle dynamic client counts based on dataset and cost
-            dataset_name = self.config.dataset
-            if dataset_name == 'IXITiny': 
-                return 3 if cost == 'all' else 2
-            elif dataset_name == 'ISIC': 
-                return 4 if cost == 'all' else 2
-            else: 
-                return 2
-        else:
-            return 2  # Default
+    # REMOVED: _determine_client_count
 
     def _load_source_data(self, data_source, dataset_name, source_args):
         """Load source data using appropriate loader function."""
         loader_func = DATA_LOADERS.get(data_source)
-        
         if loader_func is None:
-            raise NotImplementedError(f"Data loader '{data_source}' not implemented.")
-            
+            raise NotImplementedError(f"Data loader '{data_source}' not found in DATA_LOADERS.")
+
         print(f"Loading source data using: {loader_func.__name__}")
-        return loader_func(dataset_name=dataset_name, 
-                        data_dir=self.data_dir_root, 
-                        source_args=source_args)
+        # Pass dataset_name and data_dir_root, pass source_args explicitly
+        return loader_func(dataset_name=dataset_name, data_dir=self.data_dir_root, source_args=source_args)
+
 
     def _partition_data(self, partitioning_strategy, data_to_partition, num_clients,
-                        partition_args, translated_cost, sampling_config=None): # Added sampling_config
-            """Partition data using specified strategy, passing sampling config if needed."""
-            partitioner_func = PARTITIONING_STRATEGIES.get(partitioning_strategy)
+                       partition_args, translated_cost, sampling_config=None):
+        """Partition data using specified strategy, passing sampling config if needed."""
+        partitioner_func = PARTITIONING_STRATEGIES.get(partitioning_strategy)
+        if partitioner_func is None:
+            raise NotImplementedError(f"Partitioning strategy '{partitioning_strategy}' not found in PARTITIONING_STRATEGIES.")
 
-            if partitioner_func is None:
-                raise NotImplementedError(f"Partitioning strategy '{partitioning_strategy}' not implemented.")
+        print(f"Partitioning using strategy: {partitioner_func.__name__}")
 
-            print(f"Partitioning using strategy: {partitioner_func.__name__}")
+        full_args = {**translated_cost, **partition_args, 'seed': 42}
+        if sampling_config:
+            full_args['sampling_config'] = sampling_config # Pass sampling config
 
-            # Combine translated cost with other partition args AND sampling_config
-            full_args = {**translated_cost, **partition_args, 'seed': 42}
-            if sampling_config:
-                full_args['sampling_config'] = sampling_config # Pass sampling config to partitioner
-
+        if partitioning_strategy == 'pre_split':
+             # For pre_split, partitioning is done implicitly by loading per client.
+             # Return None to indicate no central partition result.
+             return None
+        else:
+            # Call partitioners that expect the dataset object
             return partitioner_func(dataset=data_to_partition,
-                                num_clients=num_clients,
-                                **full_args) # Pass alpha, sampling_config etc.
+                                  num_clients=num_clients,
+                                  **full_args)
 
 
-    def _load_client_specific_data(self, data_source, dataset_name, client_num, 
-                                source_args, translated_cost, dataset_config):
+    def _load_client_specific_data(self, data_source, dataset_name, client_num,
+                                  source_args, translated_cost, dataset_config):
         """Load data specific to a client for pre-split datasets."""
         loader_func = DATA_LOADERS.get(data_source)
-        
         if loader_func is None:
-            raise NotImplementedError(f"Data loader '{data_source}' not implemented.")
-        
+            raise NotImplementedError(f"Data loader '{data_source}' not found in DATA_LOADERS.")
+
         print(f"Loading pre-split data for client {client_num} using: {loader_func.__name__}")
-        
-        # Combine translated cost with source args for the loader
-        client_load_args = {**translated_cost, **source_args}
+        # Loader needs the specific cost key/suffix from translated_cost
+        specific_cost_arg = None
+        if 'key' in translated_cost: specific_cost_arg = translated_cost['key']
+        elif 'suffix' in translated_cost: specific_cost_arg = translated_cost['suffix']
+        else: raise ValueError("Missing cost key/suffix in translated_cost for pre_split loader")
+
         return loader_func(
             dataset_name=dataset_name,
             data_dir=self.data_dir_root,
             client_num=client_num,
-            config=dataset_config,
-            **client_load_args
+            cost_key_or_suffix=specific_cost_arg,
+            config=dataset_config # Pass full config for access to sampling_config etc.
         )
 
     def _prepare_client_data(self, client_ids_list, partitioning_strategy, partition_result,
                            data_to_partition, dataset_name, dataset_config,
                            translated_cost):
-        """Prepare client data based on partitioning strategy.
-           REMOVED the post-partition sampling logic from here.
-        """
+        """Prepare client data dict for DataPreprocessor based on partitioning strategy."""
         client_input_data = {}
         preprocessor_input_type = 'unknown'
+        num_clients = len(client_ids_list)
 
-        # For strategies that partition indices centrally (e.g., Dirichlet)
         if partitioning_strategy.endswith('_indices'):
-            # partition_result is client_indices_map = {client_idx: indices}
+            if partition_result is None: raise ValueError("partition_result cannot be None for index-based partitioning")
             for i, client_id in enumerate(client_ids_list):
                 indices = partition_result.get(i, [])
-                # --- REMOVED SAMPLING LOGIC HERE ---
-                # Sampling is now done *inside* the partitioner if needed/configured
-
-                if not indices :
-                    # This warning might trigger if partitioner returns empty list for a client
-                     print(f"Warning: Client {client_id} has no data after partitioning.")
-
+                if not indices : print(f"Warning: Client {client_id} has no data after partitioning.")
+                # Ensure data_to_partition is the original dataset object for Subset
                 client_input_data[client_id] = Subset(data_to_partition, indices)
             preprocessor_input_type = 'subset'
 
-        # For pre-split datasets where data is loaded per client
         elif partitioning_strategy == 'pre_split':
             data_source = dataset_config['data_source']
             source_args = dataset_config.get('source_args', {})
+            loaded_data_types = set() # Track types returned by loader
 
             for i, client_id in enumerate(client_ids_list):
                 client_num = i + 1
-                loaded_data = self._load_client_specific_data(
-                    data_source, dataset_name, client_num,
-                    source_args, translated_cost, dataset_config
-                )
+                try:
+                     loaded_data = self._load_client_specific_data(
+                         data_source, dataset_name, client_num,
+                         source_args, translated_cost, dataset_config
+                     )
+                     if isinstance(loaded_data, tuple) and len(loaded_data) == 2:
+                         X, y = loaded_data
+                         client_input_data[client_id] = {'X': X, 'y': y}
+                         # Determine input type based on first successful load
+                         if preprocessor_input_type == 'unknown':
+                              if isinstance(X, np.ndarray) and isinstance(y, np.ndarray): current_type = 'xy_dict'
+                              elif isinstance(X, (list, np.ndarray)) and len(X)>0 and isinstance(X[0], str): current_type = 'path_dict'
+                              else: current_type = 'unknown'
+                              preprocessor_input_type = current_type
+                     else:
+                          raise TypeError(f"Loader for {data_source} returned unexpected format: {type(loaded_data)}")
 
-                # Infer data type based on loaded content
-                if isinstance(loaded_data, tuple) and len(loaded_data) == 2:
-                    X, y = loaded_data
-                    client_input_data[client_id] = {'X': X, 'y': y}
+                except FileNotFoundError as e:
+                      print(f"Error loading data for client {client_id}: {e}. Skipping client.")
+                      client_input_data[client_id] = None # Mark as failed/empty
+                except Exception as e:
+                     print(f"Unexpected error loading data for client {client_id}: {e}. Skipping client.")
+                     traceback.print_exc()
+                     client_input_data[client_id] = None
 
-                    # Determine input type for preprocessor
-                    current_type = 'unknown'
-                    if isinstance(X, np.ndarray) and isinstance(y, np.ndarray):
-                         current_type = 'xy_dict'
-                    elif isinstance(X, np.ndarray) and isinstance(X[0], str):
-                         current_type = 'path_dict'
-
-                    if preprocessor_input_type == 'unknown':
-                         preprocessor_input_type = current_type
-                    elif preprocessor_input_type != current_type:
-                         raise TypeError(f"Inconsistent data types returned by loader for {dataset_name}")
-                else:
-                     raise TypeError(f"Loader for {data_source} returned unexpected format: {type(loaded_data)}")
+            # Filter out clients that failed loading
+            client_input_data = {cid: data for cid, data in client_input_data.items() if data is not None}
+            if not client_input_data:
+                 print(f"Warning: Failed to load data for any clients for pre-split dataset {dataset_name}, cost {translated_cost}. Returning empty data.")
+                 return {}, 'unknown' # Return empty dict if all fail
+            # Ensure input type was determined
+            if preprocessor_input_type == 'unknown':
+                 raise RuntimeError("Could not determine preprocessor input type for loaded pre-split data.")
 
         else:
             raise NotImplementedError(f"Partitioning strategy '{partitioning_strategy}' not supported.")
 
         return client_input_data, preprocessor_input_type
 
-    # Then the complete refactored _initialize_experiment method:
+
+    # --- Main Initialization Method ---
     def _initialize_experiment(self, cost):
         """Initialize experiment with configuration-driven approach."""
         dataset_name = self.config.dataset
         dataset_config = self.default_params
         print(f"\n--- Initializing Data for {dataset_name} (Cost/Param: {cost}) ---")
 
-        # Stage 1: Configuration validation and preparation
+        # Stage 1: Config validation and prep
         config_params = self._validate_and_prepare_config(dataset_name, dataset_config)
         data_source = config_params['data_source']
         partitioning_strategy = config_params['partitioning_strategy']
@@ -662,78 +740,61 @@ class Experiment:
         source_args = config_params['source_args']
         partitioner_args = config_params['partitioner_args']
         partition_scope = config_params['partition_scope']
-        sampling_config = dataset_config.get('sampling_config') # Get sampling config
+        sampling_config = dataset_config.get('sampling_config')
 
-        # Stage 2: Determine clients
-        num_clients = self._determine_client_count(cost, dataset_config)
+        # Stage 2: Determine FINAL client count for this specific cost/run
+        num_clients = self._get_final_client_count(dataset_config, cost)
         client_ids_list = [f'client_{i+1}' for i in range(num_clients)]
-        print(f"Target number of clients: {num_clients}")
+        self.num_clients_for_run = num_clients # Store actual count used
+        print(f"Determined {num_clients} clients for this run (Cost: {cost}).")
 
         # Stage 3: Cost translation
-        try:
-            translated_cost = translate_cost(cost, cost_interpretation)
-            print(f"Interpreted Cost '{cost}' as: {translated_cost}")
-        except ValueError as e:
-            print(f"Error translating cost: {e}")
-            raise
+        translated_cost = translate_cost(cost, cost_interpretation)
+        print(f"Interpreted Cost '{cost}' as: {translated_cost}")
 
+        # Stages 4 & 5: Load & Partition Data
         client_input_data = {}
         preprocessor_input_type = 'unknown'
+        data_to_partition = None # Used by index-based partitioners
 
-        # Stages 4 & 5: Load & partition data
         if partitioning_strategy.endswith('_indices'):
-            # For centralized partitioning strategies
             source_data_tuple = self._load_source_data(data_source, dataset_name, source_args)
-
-            # Select appropriate data split to partition
-            if partition_scope == 'train':
-                data_to_partition = source_data_tuple[0] # Train set
-                print(f"Partitioning the 'train' split ({len(data_to_partition)} samples)")
+            if partition_scope == 'train': data_to_partition = source_data_tuple[0]
             elif partition_scope == 'all':
-                 # ... (handling for combining train/test - keep as is) ...
-                 pass
-            else:
-                 raise ValueError(f"Unsupported partition_scope: {partition_scope}")
+                 # ... (handle combining train/test if needed) ...
+                 data_to_partition = torch.utils.data.ConcatDataset([source_data_tuple[0], source_data_tuple[1]])
+            else: raise ValueError(f"Unsupported partition_scope: {partition_scope}")
 
-            # Partition the data, PASSING sampling_config
             client_partition_result = self._partition_data(
                 partitioning_strategy, data_to_partition, num_clients,
-                partitioner_args, translated_cost,
-                sampling_config=sampling_config # Pass sampling config here
+                partitioner_args, translated_cost, sampling_config
             )
-
-            # Prepare client data (using Subsets)
+            # Prepare client data (Subsets)
             client_input_data, preprocessor_input_type = self._prepare_client_data(
-                client_ids_list, partitioning_strategy, client_partition_result, # Pass result from partitioner
+                client_ids_list, partitioning_strategy, client_partition_result,
                 data_to_partition, dataset_name, dataset_config, translated_cost
             )
 
         elif partitioning_strategy == 'pre_split':
-            # For pre-split data (already partitioned by client)
-            # The sampling config is used *inside* the per-client loader for these
+            # _prepare_client_data handles loop and loading for pre_split
             client_input_data, preprocessor_input_type = self._prepare_client_data(
                 client_ids_list, partitioning_strategy, None, None,
                 dataset_name, dataset_config, translated_cost
             )
-
         else:
-            raise NotImplementedError(
-                f"Combination of data source '{data_source}' and "
-                f"partitioning strategy '{partitioning_strategy}' is not implemented."
-            )
+            raise NotImplementedError(f"Partitioning strategy '{partitioning_strategy}' not implemented.")
 
         # Stage 6: Preprocessing & DataLoader Creation
         if not client_input_data:
-            raise RuntimeError(f"No client data was loaded/partitioned for dataset {dataset_name}")
-        if preprocessor_input_type == 'unknown':
-            raise RuntimeError(f"Could not determine preprocessor input type for dataset {dataset_name}")
+            print(f"Warning: client_input_data is empty after loading/partitioning for {dataset_name}, cost {cost}.")
+            return {} # Return empty dict if no clients have data
 
         print(f"Preprocessing client data (input type: '{preprocessor_input_type}')...")
         preprocessor = DataPreprocessor(dataset_name, self.default_params['batch_size'])
         client_dataloaders = preprocessor.process_client_data(client_input_data, preprocessor_input_type)
         print("--- Data Initialization Complete ---")
-
         return client_dataloaders
+
 
 
     def _create_trainer_config(self, server_type, learning_rate, algorithm_params = None):
@@ -766,27 +827,7 @@ class Experiment:
         if not hasattr(ms, model_name):
              raise ValueError(f"Model class '{model_name}' not found in models.py module.")
         model_class = getattr(ms, model_name)
-
-        # Instantiate model - check if it needs 'classes' argument
-        try:
-             if fixed_classes is not None:
-                  # Try instantiating with classes argument
-                  model = model_class(classes=fixed_classes)
-             else:
-                  # Try instantiating without classes argument
-                  model = model_class()
-        except TypeError as e:
-             # Handle potential mismatch (e.g., model needs classes but not provided, or vice versa)
-             print(f"TypeError during model instantiation for {model_name}: {e}")
-             print(" -> Check if 'fixed_classes' in configs.py matches the model's __init__ signature.")
-             # As a fallback, try the other way if one failed
-             try:
-                  if fixed_classes is not None: model = model_class()
-                  else:
-                       # Maybe try to infer classes? Risky. Better to require config.
-                       raise ValueError(f"Model {model_name} likely requires 'classes' argument, but 'fixed_classes' is not set in config.")
-             except Exception as e2:
-                    raise ValueError(f"Failed to instantiate model {model_name} with or without 'classes' argument. Config/Model mismatch? Original error: {e}, Fallback error: {e2}") from e
+        model = model_class()
 
         # --- Criterion ---
         criterion_map = { # Can also move this map to configs.py if preferred

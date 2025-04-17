@@ -24,7 +24,7 @@ DATASET_COSTS = {
     'Synthetic': [0.01, 0.03, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.69],
     'Credit': [0.12, 0.16, 0.22, 0.23, 0.27, 0.3, 0.34, 0.4],
     'Weather': [0.11, 0.19, 0.3, 0.4, 0.48],
-    'Heart': [1,2,3,4,5,6] # Example: Might be interpreted differently (e.g., number of features?)
+    'Heart': [1,2,3,4,5,6] # Example: Interpreted as file suffix by config
 }
 
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,27 +33,26 @@ sys.path.insert(0, _PROJECT_ROOT)
 sys.path.insert(0, _CURRENT_DIR)
 
 # --- Import Project Modules ---
-# Make sure DATASETS is imported correctly if used in main() choices
-from configs import DATASETS, RESULTS_DIR, DEFAULT_PARAMS # Import DEFAULT_PARAMS if needed for validation
+from configs import DATASETS, RESULTS_DIR, DEFAULT_PARAMS
 from pipeline import ExperimentType, ExperimentConfig, Experiment
 
 
-def run_experiments(dataset: str, experiment_type: str):
+def run_experiments(dataset: str, experiment_type: str, num_clients_override: int = None): # MODIFIED: Added num_clients_override
     """
     Initializes and runs a federated learning experiment.
 
     Args:
-        dataset (str): The name of the dataset to use (must be in `configs.DATASETS`).
-        experiment_type (str): The type of experiment to run ('learning_rate' or 'evaluation').
-                                Corresponds to `ExperimentType` enum values.
-
-    Returns:
-        Dict: The results dictionary returned by the `Experiment.run_experiment()` method.
-              Can be large and complex depending on the experiment.
+        dataset (str): The name of the dataset to use.
+        experiment_type (str): The type of experiment to run.
+        num_clients_override (int, optional): Number of clients to use, overriding config default. Defaults to None.
     """
-    print(f"Preparing to run experiment: Dataset='{dataset}', Type='{experiment_type}'")
-    # Create an ExperimentConfig object
-    config = ExperimentConfig(dataset=dataset, experiment_type=experiment_type)
+    print(f"Preparing to run experiment: Dataset='{dataset}', Type='{experiment_type}', Client Override={num_clients_override}")
+    # Create an ExperimentConfig object, passing the override
+    config = ExperimentConfig(
+        dataset=dataset,
+        experiment_type=experiment_type,
+        num_clients=num_clients_override # MODIFIED: Pass override to config
+        )
     # Instantiate the Experiment class
     experiment_runner = Experiment(config)
     # Execute the experiment, passing the list of cost/heterogeneity parameters
@@ -63,7 +62,7 @@ def run_experiments(dataset: str, experiment_type: str):
         return None
 
     print(f"Running experiment for {dataset} with parameters: {costs_to_run}")
-    results = experiment_runner.run_experiment(costs_to_run)
+    results = experiment_runner.run_experiment(costs_to_run) # run_experiment internally uses config.num_clients
     print(f"Experiment completed: Dataset='{dataset}', Type='{experiment_type}'")
     return results
 
@@ -73,39 +72,41 @@ def main():
     """
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(
-        description='Run Federated Learning experiments.' # Simplified description
+        description='Run Federated Learning experiments.'
     )
     parser.add_argument(
         "-ds", "--dataset",
         required=True,
-        # Use keys from DEFAULT_PARAMS as the canonical list of supported datasets
         choices=list(DEFAULT_PARAMS.keys()),
         help="Select the dataset for the experiment."
     )
     parser.add_argument(
         "-exp", "--experiment_type",
         required=True,
-        choices=[ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION], # Use enum values
-        help="Select the type of experiment: 'learning_rate' for tuning or 'evaluation' for final runs."
+        choices=[ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION, ExperimentType.REG_PARAM], # Added REG_PARAM choice
+        help="Select the type of experiment: 'learning_rate', 'reg_param', or 'evaluation'."
     )
+    # --- MODIFICATION START: Add num_clients argument ---
+    parser.add_argument(
+        "-nc", "--num_clients",
+        type=int,
+        default=None, # Default is None, meaning use config default
+        help="Override the default number of clients specified in configs.py."
+    )
+    # --- MODIFICATION END ---
 
     args = parser.parse_args()
 
     # --- Directory Setup ---
-    # Ensure necessary results directories exist before starting
     try:
-        # Base results directory
         os.makedirs(RESULTS_DIR, exist_ok=True)
-        # Subdirectories for specific experiment types
-        # Consider creating these dynamically based on ExperimentType enum members
         for exp_type_val in [ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION, ExperimentType.REG_PARAM, ExperimentType.DIVERSITY]:
-             # Get the directory name from ResultsManager structure if possible, or map manually
-             dir_name = exp_type_val # Simple mapping for now
-             if exp_type_val == ExperimentType.LEARNING_RATE: dir_name = 'lr_tuning'
-             if exp_type_val == ExperimentType.EVALUATION: dir_name = 'evaluation'
-             # Add mappings for REG_PARAM, DIVERSITY if needed
-             os.makedirs(os.path.join(RESULTS_DIR, dir_name), exist_ok=True)
-
+            dir_name = exp_type_val # Default name
+            if exp_type_val == ExperimentType.LEARNING_RATE: dir_name = 'lr_tuning'
+            if exp_type_val == ExperimentType.EVALUATION: dir_name = 'evaluation'
+            if exp_type_val == ExperimentType.REG_PARAM: dir_name = 'reg_param_tuning'
+            if exp_type_val == ExperimentType.DIVERSITY: dir_name = 'diversity'
+            os.makedirs(os.path.join(RESULTS_DIR, dir_name), exist_ok=True)
         print(f"Results will be saved in subdirectories under: {RESULTS_DIR}")
     except OSError as e:
         print(f"Error creating results directories: {e}", file=sys.stderr)
@@ -114,21 +115,22 @@ def main():
 
     # --- Run Experiment ---
     try:
-        run_experiments(args.dataset, args.experiment_type)
+        # Pass the num_clients argument from CLI to run_experiments
+        run_experiments(args.dataset, args.experiment_type, args.num_clients) # MODIFIED: Pass args.num_clients
     except ValueError as ve:
         print(f"Configuration or Value Error: {ve}", file=sys.stderr)
+        traceback.print_exc()
         sys.exit(1)
     except NotImplementedError as nie:
         print(f"Functionality Error: {nie}", file=sys.stderr)
+        traceback.print_exc()
         sys.exit(1)
     except FileNotFoundError as fnf:
         print(f"File Not Found Error: {fnf}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        # Catch any other unexpected errors during the experiment run
         print(f"An unexpected error occurred during the experiment: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc() # Print full traceback for debugging
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":

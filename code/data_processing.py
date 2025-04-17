@@ -79,11 +79,16 @@ def partition_dirichlet_indices(dataset: TorchDataset,
 
 def validate_dataset_config(config: Dict, dataset_name: str):
     """Basic validation for required config keys."""
-    required_keys = ['data_source', 'partitioning_strategy', 'cost_interpretation', 'dataset_class', 'num_clients']
+    required_keys = ['data_source', 'partitioning_strategy', 'cost_interpretation',
+                     'dataset_class', 'default_num_clients']
     missing_keys = [key for key in required_keys if key not in config]
     if missing_keys:
         raise ValueError(f"Dataset config for '{dataset_name}' missing required keys: {missing_keys}")
-    # Add more specific validation logic here as needed
+    # Add specific checks, e.g., for site_mappings if needed by strategy
+    if config['partitioning_strategy'] == 'pre_split' and dataset_name in ['ISIC', 'IXITiny']:
+         if 'site_mappings' not in config.get('source_args', {}):
+             print(f"Warning: 'site_mappings' potentially missing in source_args for pre-split {dataset_name}.")
+
 
 # --- Data Source Loaders ---
 
@@ -172,43 +177,40 @@ def load_pre_split_csv_client(dataset_name: str, data_dir: str, client_num: int,
     X = X_df.iloc[:, :-1].values
     return X, y
 
-def load_ixi_client_paths(dataset_name: str, data_dir: str, client_num: int, cost_key, config: Dict):
-    """Loads file paths for one IXI client based on cost key."""
+def load_ixi_client_paths(dataset_name: str, data_dir: str, client_num: int, cost_key_or_suffix, config: Dict):
+    """Loads file paths for one IXI client based on cost key using config."""
     source_args = config.get('source_args', {})
     root_dir = source_args.get('data_dir', os.path.join(data_dir, dataset_name))
+    sites_map = source_args.get('site_mappings')
+    cost_key = cost_key_or_suffix # Assume the key is passed directly
 
-    # Mapping from cost_key to list of site lists (index client_num-1 selects the list for the client)
-    sites_map = {
-         0.08: [['Guys'], ['HH']], 0.28: [['IOP'], ['Guys']],
-         0.30: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']]
-    } # This could also be moved to config['source_args']
-
+    if not sites_map:
+         raise ValueError(f"Missing 'site_mappings' in 'source_args' for {dataset_name} config.")
     if cost_key not in sites_map:
-        raise ValueError(f"Invalid cost key '{cost_key}' for IXITiny. Available: {list(sites_map.keys())}")
-    if client_num > len(sites_map[cost_key]):
-         raise ValueError(f"Client number {client_num} out of range for cost key '{cost_key}' in IXITiny (max={len(sites_map[cost_key])})")
+        raise ValueError(f"Invalid cost key '{cost_key}' for IXITiny site mapping in config. Available: {list(sites_map.keys())}")
 
-    site_names_for_client = sites_map[cost_key][client_num - 1]
+    available_clients_for_cost = len(sites_map[cost_key])
+    if client_num > available_clients_for_cost:
+         raise ValueError(f"Client number {client_num} out of range ({available_clients_for_cost} available) for cost key '{cost_key}' in IXITiny mapping.")
+
+    site_names_for_client = sites_map[cost_key][client_num - 1] # Get list of site names for this client
     print(f"Loading IXI paths for client {client_num}, sites: {site_names_for_client} (cost_key={cost_key})")
 
     image_files, label_files = [], []
-    # Adjust paths to match typical structure if data is under DATA_DIR/IXITiny/
-    image_dir = os.path.join(root_dir, 'flamby/image')
+    image_dir = os.path.join(root_dir, 'flamby/image') # Standard flamby structure assumed
     label_dir = os.path.join(root_dir, 'flamby/label')
 
     if not os.path.isdir(image_dir) or not os.path.isdir(label_dir):
          raise FileNotFoundError(f"IXI data directories not found at {image_dir} or {label_dir}")
 
-    # Use glob to find files matching site names
     for name_part in site_names_for_client:
         image_files.extend(glob.glob(os.path.join(image_dir, f'*{name_part}*.nii.gz')))
         label_files.extend(glob.glob(os.path.join(label_dir, f'*{name_part}*.nii.gz')))
 
-    # Align files based on common ID part (e.g., IXI???HH????-Guys-?)
-    # Assuming format like 'IXI002HH1234-Guys-0768_image.nii.gz' -> ID '002HH1234-Guys-0768'
     def get_ixi_id(path):
          base = os.path.basename(path)
-         return base.split('_')[0] # Extracts 'IXI...'' part
+         parts = base.split('_') # Expecting format like IXI..._image.nii.gz or IXI..._label.nii.gz
+         return parts[0]
 
     labels_dict = {get_ixi_id(path): path for path in label_files}
     images_dict = {get_ixi_id(path): path for path in image_files}
@@ -223,114 +225,190 @@ def load_ixi_client_paths(dataset_name: str, data_dir: str, client_num: int, cos
     return np.array(aligned_image_files), np.array(aligned_label_files)
 
 
-def load_isic_client_paths(dataset_name: str, data_dir: str, client_num: int, cost_key, config: Dict):
-    """Loads image paths and labels for one ISIC client based on cost key."""
+# MODIFIED: Uses site_mappings from config['source_args']
+def load_isic_client_paths(dataset_name: str, data_dir: str, client_num: int, cost_key_or_suffix, config: Dict):
+    """Loads image paths and labels for one ISIC client based on cost key using config."""
     source_args = config.get('source_args', {})
     root_dir = source_args.get('data_dir', os.path.join(data_dir, dataset_name))
+    site_map = source_args.get('site_mappings')
+    cost_key = cost_key_or_suffix
 
-    # Mapping from cost_key to tuple of site indices (0-3)
-    # Client_num selects which site index from the tuple to load
-    site_map = {
-         0.06: (2, 2), 0.15: (2, 0), 0.19: (2, 3), 0.25: (2, 1),
-         0.3: (1, 3), 'all': (0, 1, 2, 3)
-    } # This could also be in config['source_args']
-
+    if not site_map:
+         raise ValueError(f"Missing 'site_mappings' in 'source_args' for {dataset_name} config.")
     if cost_key not in site_map:
-         raise ValueError(f"Invalid cost key '{cost_key}' for ISIC. Available: {list(site_map.keys())}")
-    if client_num > len(site_map[cost_key]):
-         raise ValueError(f"Client number {client_num} out of range for cost key '{cost_key}' in ISIC (max={len(site_map[cost_key])})")
+         raise ValueError(f"Invalid cost key '{cost_key}' for ISIC site mapping in config. Available: {list(site_map.keys())}")
 
-    site_index = site_map[cost_key][client_num - 1]
+    available_clients_for_cost = len(site_map[cost_key])
+    if client_num > available_clients_for_cost:
+         raise ValueError(f"Client number {client_num} out of range ({available_clients_for_cost} available) for cost key '{cost_key}' in ISIC mapping.")
+
+    site_index = site_map[cost_key][client_num - 1] # Get the site index (0-3)
     print(f"Loading ISIC paths for client {client_num}, site index: {site_index} (cost_key={cost_key})")
 
-    # File containing image names and labels for the site
     site_csv_path = os.path.join(root_dir, f'site_{site_index}_files_used.csv')
     if not os.path.exists(site_csv_path):
          raise FileNotFoundError(f"ISIC site file not found: {site_csv_path}")
 
-    # Load the CSV, potentially sampling
+    # Load the CSV, potentially sampling using main config's sampling_config
     sampling_config = config.get('sampling_config')
-    nrows = sampling_config.get('size') if sampling_config and sampling_config.get('type') == 'fixed_total' else None
+    nrows = None
+    if sampling_config and sampling_config.get('type') == 'fixed_total':
+         nrows = sampling_config.get('size')
+         print(f"Sampling ISIC client {client_num} (site {site_index}) down to {nrows} rows")
 
     files_df = pd.read_csv(site_csv_path, nrows=nrows)
-    if nrows:
-         print(f"Sampled ISIC client {client_num} data down to {len(files_df)} rows")
 
     # Construct full image paths
-    image_dir = os.path.join(root_dir, 'ISIC_2019_Training_Input_preprocessed') # Assuming this structure
+    image_dir = os.path.join(root_dir, 'ISIC_2019_Training_Input_preprocessed')
     if not os.path.isdir(image_dir):
-        # Try one level up in case root_dir IS the ISIC dir
-        image_dir_alt = os.path.join(os.path.dirname(root_dir), 'ISIC_2019_Training_Input_preprocessed')
-        if os.path.isdir(image_dir_alt):
-             image_dir = image_dir_alt
-        else:
-             raise FileNotFoundError(f"ISIC preprocessed image directory not found near {root_dir}")
-
+          raise FileNotFoundError(f"ISIC preprocessed image directory not found: {image_dir}")
 
     image_files = [os.path.join(image_dir, f"{file_stem}.jpg") for file_stem in files_df['image']]
     labels = files_df['label'].values
-
-    # Basic check if images exist (optional, can be slow)
-    # if image_files and not os.path.exists(image_files[0]):
-    #      print(f"Warning: First image file not found: {image_files[0]}")
 
     return np.array(image_files), labels
 
 
 # --- Partitioning Strategies ---
 
-def partition_dirichlet_indices(dataset: TorchDataset, num_clients: int, alpha: float, seed: int = 42, **kwargs):
+# MODIFIED: Incorporates sampling_config for size balancing
+def partition_dirichlet_indices(dataset: TorchDataset,
+                                num_clients: int,
+                                alpha: float,
+                                sampling_config: Dict = None, # Accept sampling_config
+                                seed: int = 42,
+                                **kwargs) -> Dict[int, List[int]]:
     """
-    Partitions dataset indices based on labels using Dirichlet distribution.
-    (Identical to the function defined in the previous planning step)
-
-    Returns:
-        Dict[int, List[int]]: Dictionary mapping client index (0 to N-1) to list of sample indices.
+    Partitions dataset indices based on labels using Dirichlet distribution for
+    label proportions, aiming for a fixed total number of samples per client
+    as specified in sampling_config OR balancing based on total data size.
     """
     np.random.seed(seed)
+
+    # 1) Get labels array
     try:
-        labels = np.array(dataset.targets) # Common attribute
+        labels = np.array(dataset.targets)
     except AttributeError:
         try:
-            labels = np.array([dataset[i][1] for i in range(len(dataset))])
+             labels = np.array([dataset[i][1] for i in range(len(dataset))])
         except Exception as e:
-             raise AttributeError(f"Dataset {type(dataset)} needs labels accessible via .targets or iteration.") from e
+              raise AttributeError(f"Dataset {type(dataset)} needs labels accessible via .targets or iteration.") from e
 
-    n_classes = len(np.unique(labels))
-    n_samples = len(dataset)
-    if n_samples == 0: return {i: [] for i in range(num_clients)}
+    n_original = len(dataset)
+    if n_original == 0:
+        print("Warning: Input dataset for partitioning is empty.")
+        return {i: [] for i in range(num_clients)}
 
-    idx_by_class = [np.where(labels == i)[0] for i in range(n_classes)]
+    classes = np.unique(labels)
+    n_classes = len(classes)
+    all_original_indices = np.arange(n_original)
+
+    # --- Determine target size (quota) per client ---
+    target_samples_per_client = -1
+    n_to_distribute = n_original
+
+    if sampling_config and \
+       sampling_config.get('type') == 'fixed_total' and \
+       isinstance(sampling_config.get('size'), int) and \
+       sampling_config.get('size') > 0:
+
+        target_samples_per_client = sampling_config['size']
+        n_to_distribute = target_samples_per_client * num_clients
+        print(f"Using sampling_config: Targeting fixed size = {target_samples_per_client} samples per client.")
+
+        if n_to_distribute > n_original:
+            print(f"Warning: Total target samples ({n_to_distribute}) exceeds dataset size ({n_original}). "
+                  f"Partitioning will use all {n_original} samples, client sizes will be balanced based on n_original.")
+            target_samples_per_client = -1
+            n_to_distribute = n_original
+        elif n_to_distribute < n_original:
+             print(f"Warning: Total target samples ({n_to_distribute}) is less than dataset size ({n_original}). "
+                   f"Only {n_to_distribute} samples will be partitioned.")
+             # Select a subset of indices to partition
+             indices_to_partition = np.random.choice(all_original_indices, size=n_to_distribute, replace=False)
+             labels = labels[indices_to_partition]
+             all_original_indices = indices_to_partition
+
+    else:
+        print("No valid fixed_total sampling config found or type != 'fixed_total'. Balancing based on total available samples.")
+        target_samples_per_client = -1
+        n_to_distribute = n_original
+
+    # Calculate exact quotas per client based on n_to_distribute
+    base_quota = n_to_distribute // num_clients
+    quotas = [base_quota + (1 if i < (n_to_distribute % num_clients) else 0)
+              for i in range(num_clients)]
+    print(f"Final client quotas: {quotas} (Sum: {sum(quotas)})")
+
+    # 2) Build index pools per class from the (potentially subsetted) indices
+    idx_by_class = {c: all_original_indices[labels == c].tolist() for c in np.unique(labels)} # Use unique labels from subset
+    classes = list(idx_by_class.keys())
+    n_classes = len(classes)
+    if n_classes == 0:
+         print("Warning: No classes found in the data selected for partitioning.")
+         return {i: [] for i in range(num_clients)}
+
+    for c in classes:
+        np.random.shuffle(idx_by_class[c])
+
+    # 3) Draw Dirichlet class‐weights for each client (only over available classes)
+    proportions = np.random.dirichlet([alpha]*n_classes, size=num_clients)
+
+    # 5) Assign samples to each client to meet quotas
     client_indices = {i: [] for i in range(num_clients)}
+    available_class_indices = {c: list(idx) for c, idx in idx_by_class.items()} # Copy pools
+    globally_assigned = set()
 
-    for k in range(n_classes):
-        class_indices = idx_by_class[k]
-        if len(class_indices) == 0: continue
-        np.random.shuffle(class_indices)
-        proportions = np.random.dirichlet(np.repeat(alpha, num_clients))
-        proportions = (proportions / proportions.sum()) * len(class_indices) # Distribute count
-        proportions = np.cumsum(proportions).astype(int)
+    for client_id in range(num_clients):
+        quota = quotas[client_id]
+        if quota == 0: continue
 
-        start_idx = 0
-        for i in range(num_clients):
-             end_idx = proportions[i]
-             client_indices[i].extend(class_indices[start_idx:end_idx].tolist())
-             start_idx = end_idx
+        p = proportions[client_id] # Target label proportions for this client over available classes
+        target_class_counts = (p * quota).astype(int)
+        # Adjust rounding error over available classes
+        if n_classes > 0:
+             target_class_counts[-1] = quota - target_class_counts[:-1].sum()
+        target_class_counts = np.maximum(0, target_class_counts)
 
+        assigned_count_this_client = 0
+        for cls_idx, cls in enumerate(classes): # Iterate through available classes
+            num_wanted = target_class_counts[cls_idx]
+            if num_wanted == 0: continue
 
-    # Shuffle indices within each client's list
-    for i in range(num_clients):
+            pool = available_class_indices[cls]
+            actual_take = min(num_wanted, len(pool))
+
+            if actual_take > 0:
+                indices_to_take = []
+                taken_count = 0
+                while taken_count < actual_take and pool:
+                    idx = pool.pop()
+                    if idx not in globally_assigned:
+                        indices_to_take.append(idx)
+                        globally_assigned.add(idx)
+                        taken_count += 1
+                client_indices[client_id].extend(indices_to_take)
+                assigned_count_this_client += len(indices_to_take)
+
+        shortfall = quota - assigned_count_this_client
+        if shortfall > 0:
+            print(f"Warning: Client {client_id+1} shortfall of {shortfall} samples due to class pool exhaustion.")
+
+    # 6) Shuffle final list for each client
+    for i in client_indices:
         np.random.shuffle(client_indices[i])
 
-    # Debug: Print data distribution
-    # print(f"Dirichlet (alpha={alpha}) distribution per client:")
-    # for i in range(num_clients):
-    #      client_labels = labels[client_indices[i]]
-    #      label_counts = np.unique(client_labels, return_counts=True)
-    #      print(f"  Client {i+1} ({len(client_indices[i])} samples): {dict(zip(label_counts[0], label_counts[1]))}")
-
+    # Final Check
+    print("Final client sizes after partitioning:")
+    total_assigned = 0
+    for k in range(num_clients):
+        size = len(client_indices[k])
+        print(f"  Client {k+1}: {size} samples (Quota: {quotas[k]})")
+        total_assigned += size
+    print(f"Total samples assigned: {total_assigned}/{n_to_distribute}")
 
     return client_indices
+
 
 def partition_iid_indices(dataset: TorchDataset, num_clients: int, seed: int = 42, **kwargs):
     """Partitions dataset indices equally and randomly (IID)."""
