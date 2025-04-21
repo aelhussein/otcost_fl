@@ -1,16 +1,5 @@
 # ot_utils.py
 from configs import *
-from helper import cleanup_gpu, set_seeds, get_default_lr
-import torch
-import torch.nn.functional as F
-import ot
-import numpy as np
-import warnings
-from typing import Optional, Tuple, Dict, Any, Union, List
-from scipy.stats import wasserstein_distance
-from sklearn.cluster import KMeans
-from pipeline import Experiment, ExperimentConfig, ExperimentType
-
 
 # --- Constants ---
 DEFAULT_OT_REG = 0.001

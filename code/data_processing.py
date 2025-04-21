@@ -18,64 +18,6 @@ def align_image_label_files(image_files, label_files):
     common_keys = sorted(set(labels_dict.keys()) & set(images_dict.keys()))
     return [images_dict[key] for key in common_keys], [labels_dict[key] for key in common_keys]
 
-def partition_dirichlet_indices(dataset: TorchDataset,
-                                num_clients: int,
-                                alpha: float,
-                                seed: int = 42,
-                                **kwargs) -> Dict[int, List[int]]:
-    """
-    Partition indices so each client has the same total number of samples,
-    but class proportions differ according to Dirichlet(alpha).
-    """
-    np.random.seed(seed)
-
-    # 1) get labels array
-    try:
-        labels = np.array(dataset.targets)
-    except AttributeError:
-        labels = np.array([dataset[i][1] for i in range(len(dataset))])
-
-    n = len(dataset)
-    classes = np.unique(labels)
-    n_classes = len(classes)
-
-    # 2) build index pools per class
-    idx_by_class = {c: np.where(labels == c)[0].tolist() for c in classes}
-    for c in classes:
-        np.random.shuffle(idx_by_class[c])
-
-    # 3) draw Dirichlet class‐weights for each client
-    #    proportions[client, class]
-    proportions = np.random.dirichlet([alpha]*n_classes, size=num_clients)
-
-    # 4) decide how many total samples per client
-    base_quota = n // num_clients
-    quotas = [base_quota + (1 if i < (n % num_clients) else 0)
-              for i in range(num_clients)]
-
-    # 5) for each client, assign samples
-    client_indices = {i: [] for i in range(num_clients)}
-    for client_id in range(num_clients):
-        p = proportions[client_id]
-        # compute how many from each class
-        counts = (p * quotas[client_id]).astype(int)
-        # adjust rounding error on the last class
-        counts[-1] = quotas[client_id] - counts[:-1].sum()
-
-        for cls_idx, cls in enumerate(classes):
-            take = counts[cls_idx]
-            pool = idx_by_class[cls]
-            if take > len(pool):
-                # if you run out, just take what’s left
-                take = len(pool)
-            client_indices[client_id].extend(pool[:take])
-            idx_by_class[cls] = pool[take:]
-
-    # 6) shuffle each client’s list
-    for i in client_indices:
-        np.random.shuffle(client_indices[i])
-
-    return client_indices
 
 def validate_dataset_config(config: Dict, dataset_name: str):
     """Basic validation for required config keys."""
@@ -140,7 +82,7 @@ def load_torchvision_dataset(dataset_name: str, data_dir: str, source_args: Dict
          raise ValueError(f"Torchvision loader not configured for: {tv_dataset_name}")
 
 
-def load_pre_split_csv_client(dataset_name: str, data_dir: str, client_num: int, cost_suffix, config: Dict):
+def load_pre_split_csv_client(dataset_name: str, data_dir: str, client_num: int, cost_key_or_suffix, config: Dict):
     """Loads data for one client from a pre-split CSV."""
     source_args = config.get('source_args', {})
     root_dir = source_args.get('data_dir', os.path.join(data_dir, dataset_name)) # Use specific dir from args or default
@@ -149,19 +91,20 @@ def load_pre_split_csv_client(dataset_name: str, data_dir: str, client_num: int,
          raise ValueError(f"Config for {dataset_name} needs 'source_args' with 'column_count'.")
 
     # Format suffix correctly (assuming numeric cost becomes suffix like _1.00)
-    file_suffix_str = f"_{float(cost_suffix):.2f}" if isinstance(cost_suffix, (int, float)) else f"_{cost_suffix}"
+    # Now uses the local variable 'cost_suffix' which holds the value passed as 'cost_key_or_suffix'
+    file_suffix_str = f"_{float(cost_key_or_suffix):.2f}" if isinstance(cost_key_or_suffix, (int, float)) else f"_{cost_key_or_suffix}"
     file_path = os.path.join(root_dir, f'data_{client_num}{file_suffix_str}.csv')
 
     print(f"Loading pre-split CSV: {file_path}")
     if not os.path.exists(file_path):
         # Try without formatting if suffix was already string like 'all'
-        file_path_alt = os.path.join(root_dir, f'data_{client_num}_{cost_suffix}.csv')
+        file_path_alt = os.path.join(root_dir, f'data_{client_num}_{cost_key_or_suffix}.csv')
         if not os.path.exists(file_path_alt):
              raise FileNotFoundError(f"CSV file not found: {file_path} or {file_path_alt}")
         else:
              file_path = file_path_alt
 
-
+    # --- Rest of the function remains the same ---
     X_df = pd.read_csv(file_path, sep=' ', header=None, names=list(range(column_count)))
 
     # Apply sampling if configured
@@ -176,7 +119,6 @@ def load_pre_split_csv_client(dataset_name: str, data_dir: str, client_num: int,
     y = X_df.iloc[:, -1].values
     X = X_df.iloc[:, :-1].values
     return X, y
-
 def load_ixi_client_paths(dataset_name: str, data_dir: str, client_num: int, cost_key_or_suffix, config: Dict):
     """Loads file paths for one IXI client based on cost key using config."""
     source_args = config.get('source_args', {})
@@ -271,144 +213,77 @@ def load_isic_client_paths(dataset_name: str, data_dir: str, client_num: int, co
 
 # --- Partitioning Strategies ---
 
-# MODIFIED: Incorporates sampling_config for size balancing
 def partition_dirichlet_indices(dataset: TorchDataset,
                                 num_clients: int,
                                 alpha: float,
-                                sampling_config: Dict = None, # Accept sampling_config
                                 seed: int = 42,
                                 **kwargs) -> Dict[int, List[int]]:
     """
-    Partitions dataset indices based on labels using Dirichlet distribution for
-    label proportions, aiming for a fixed total number of samples per client
-    as specified in sampling_config OR balancing based on total data size.
+    Partition indices so each client has the same total number of samples,
+    but class proportions differ according to Dirichlet(alpha).
     """
     np.random.seed(seed)
 
-    # 1) Get labels array
+    # --- 1. Extract labels ---
     try:
         labels = np.array(dataset.targets)
+        print("Labels successfully extracted via .targets.")
     except AttributeError:
-        try:
-             labels = np.array([dataset[i][1] for i in range(len(dataset))])
-        except Exception as e:
-              raise AttributeError(f"Dataset {type(dataset)} needs labels accessible via .targets or iteration.") from e
+        print("No .targets found, falling back to iteration.")
+        labels = np.array([dataset[i][1] for i in range(len(dataset))])
 
-    n_original = len(dataset)
-    if n_original == 0:
-        print("Warning: Input dataset for partitioning is empty.")
-        return {i: [] for i in range(num_clients)}
-
-    classes = np.unique(labels)
+    n = len(dataset)
+    classes, class_counts = np.unique(labels, return_counts=True)
     n_classes = len(classes)
-    all_original_indices = np.arange(n_original)
 
-    # --- Determine target size (quota) per client ---
-    target_samples_per_client = -1
-    n_to_distribute = n_original
+    print(f"Dataset has {n} total samples and {n_classes} classes.")
+    print(f"Class distribution: {dict(zip(classes, class_counts))}")
 
-    if sampling_config and \
-       sampling_config.get('type') == 'fixed_total' and \
-       isinstance(sampling_config.get('size'), int) and \
-       sampling_config.get('size') > 0:
-
-        target_samples_per_client = sampling_config['size']
-        n_to_distribute = target_samples_per_client * num_clients
-        print(f"Using sampling_config: Targeting fixed size = {target_samples_per_client} samples per client.")
-
-        if n_to_distribute > n_original:
-            print(f"Warning: Total target samples ({n_to_distribute}) exceeds dataset size ({n_original}). "
-                  f"Partitioning will use all {n_original} samples, client sizes will be balanced based on n_original.")
-            target_samples_per_client = -1
-            n_to_distribute = n_original
-        elif n_to_distribute < n_original:
-             print(f"Warning: Total target samples ({n_to_distribute}) is less than dataset size ({n_original}). "
-                   f"Only {n_to_distribute} samples will be partitioned.")
-             # Select a subset of indices to partition
-             indices_to_partition = np.random.choice(all_original_indices, size=n_to_distribute, replace=False)
-             labels = labels[indices_to_partition]
-             all_original_indices = indices_to_partition
-
-    else:
-        print("No valid fixed_total sampling config found or type != 'fixed_total'. Balancing based on total available samples.")
-        target_samples_per_client = -1
-        n_to_distribute = n_original
-
-    # Calculate exact quotas per client based on n_to_distribute
-    base_quota = n_to_distribute // num_clients
-    quotas = [base_quota + (1 if i < (n_to_distribute % num_clients) else 0)
-              for i in range(num_clients)]
-    print(f"Final client quotas: {quotas} (Sum: {sum(quotas)})")
-
-    # 2) Build index pools per class from the (potentially subsetted) indices
-    idx_by_class = {c: all_original_indices[labels == c].tolist() for c in np.unique(labels)} # Use unique labels from subset
-    classes = list(idx_by_class.keys())
-    n_classes = len(classes)
-    if n_classes == 0:
-         print("Warning: No classes found in the data selected for partitioning.")
-         return {i: [] for i in range(num_clients)}
-
+    # --- 2. Create per-class pools ---
+    idx_by_class = {c: np.where(labels == c)[0].tolist() for c in classes}
     for c in classes:
         np.random.shuffle(idx_by_class[c])
 
-    # 3) Draw Dirichlet class‐weights for each client (only over available classes)
-    proportions = np.random.dirichlet([alpha]*n_classes, size=num_clients)
+    # --- 3. Generate Dirichlet proportions ---
+    proportions = np.random.dirichlet([alpha] * n_classes, size=num_clients)
+    print(f"Generated Dirichlet proportions with alpha={alpha} for {num_clients} clients.")
 
-    # 5) Assign samples to each client to meet quotas
+    # --- 4. Assign total samples per client ---
+    base_quota = n // num_clients
+    quotas = [base_quota + (1 if i < (n % num_clients) else 0) for i in range(num_clients)]
+    print(f"Per-client quotas: {quotas} (sum = {sum(quotas)})")
+
+    # --- 5. Allocate indices ---
     client_indices = {i: [] for i in range(num_clients)}
-    available_class_indices = {c: list(idx) for c, idx in idx_by_class.items()} # Copy pools
-    globally_assigned = set()
-
     for client_id in range(num_clients):
-        quota = quotas[client_id]
-        if quota == 0: continue
+        p = proportions[client_id]
+        counts = (p * quotas[client_id]).astype(int)
+        counts[-1] = quotas[client_id] - counts[:-1].sum()  # Fix rounding
 
-        p = proportions[client_id] # Target label proportions for this client over available classes
-        target_class_counts = (p * quota).astype(int)
-        # Adjust rounding error over available classes
-        if n_classes > 0:
-             target_class_counts[-1] = quota - target_class_counts[:-1].sum()
-        target_class_counts = np.maximum(0, target_class_counts)
+        print(f"Client {client_id+1}: class-wise target = {counts.tolist()}")
 
-        assigned_count_this_client = 0
-        for cls_idx, cls in enumerate(classes): # Iterate through available classes
-            num_wanted = target_class_counts[cls_idx]
-            if num_wanted == 0: continue
+        for cls_idx, cls in enumerate(classes):
+            take = counts[cls_idx]
+            pool = idx_by_class[cls]
+            if take > len(pool):
+                print(f"Warning: Class {cls} exhausted for client {client_id+1} (wanted {take}, had {len(pool)}). Taking remainder.")
+                take = len(pool)
+            client_indices[client_id].extend(pool[:take])
+            idx_by_class[cls] = pool[take:]
 
-            pool = available_class_indices[cls]
-            actual_take = min(num_wanted, len(pool))
-
-            if actual_take > 0:
-                indices_to_take = []
-                taken_count = 0
-                while taken_count < actual_take and pool:
-                    idx = pool.pop()
-                    if idx not in globally_assigned:
-                        indices_to_take.append(idx)
-                        globally_assigned.add(idx)
-                        taken_count += 1
-                client_indices[client_id].extend(indices_to_take)
-                assigned_count_this_client += len(indices_to_take)
-
-        shortfall = quota - assigned_count_this_client
-        if shortfall > 0:
-            print(f"Warning: Client {client_id+1} shortfall of {shortfall} samples due to class pool exhaustion.")
-
-    # 6) Shuffle final list for each client
-    for i in client_indices:
-        np.random.shuffle(client_indices[i])
-
-    # Final Check
-    print("Final client sizes after partitioning:")
+    # --- 6. Shuffle and print final sizes ---
+    print("Final client sample sizes after partitioning:")
     total_assigned = 0
-    for k in range(num_clients):
-        size = len(client_indices[k])
-        print(f"  Client {k+1}: {size} samples (Quota: {quotas[k]})")
+    for i in range(num_clients):
+        np.random.shuffle(client_indices[i])
+        size = len(client_indices[i])
+        print(f"  Client {i+1}: {size} samples")
         total_assigned += size
-    print(f"Total samples assigned: {total_assigned}/{n_to_distribute}")
+
+    print(f"Total samples assigned: {total_assigned}/{n}")
+    assert total_assigned <= n, "Error: Assigned more samples than exist in dataset."
 
     return client_indices
-
 
 def partition_iid_indices(dataset: TorchDataset, num_clients: int, seed: int = 42, **kwargs):
     """Partitions dataset indices equally and randomly (IID)."""
@@ -437,7 +312,7 @@ class DataPreprocessor:
         # Internal dispatch map
         self._processor_map = {
             'subset': self._process_subset,
-            'xy_dict': self._process_xy_dict,
+            'xy_dict': self._process_xy,
             'path_dict': self._process_path_dict,
         }
 
@@ -494,9 +369,9 @@ class DataPreprocessor:
 
         return train_loader, val_loader, test_loader
 
-    def _process_xy_dict(self, xy_data: Dict):
+    def _process_xy(self, xy_data: Tuple):
         """Process data for a single client when input is {'X': array, 'y': array}."""
-        X, y = xy_data['X'], xy_data['y']
+        X, y = xy_data[0], xy_data[1]
         if len(X) == 0:
              print(f"Warning: Client xy_dict data is empty. Returning empty DataLoaders.")
              empty_loader = DataLoader([])

@@ -48,7 +48,6 @@ class ResultsManager:
         self.dataset = dataset
         self.experiment_type = experiment_type
         self.num_clients = num_clients # Target client count for filenames
-
         # Directory for metrics results
         self.results_base_dir = os.path.join(self.root_dir, 'results')
         # Directory for saved models
@@ -80,7 +79,7 @@ class ResultsManager:
     # --- NEW: Method to get model save path ---
     def _get_model_save_path(self, experiment_type: str, dataset: str,
                              num_clients_run: int, cost: Any, seed: int,
-                             round_num: int, server_type: str, model_type: str) -> str:
+                             server_type: str, model_type: str) -> str:
         """
         Constructs the standardized path for saving model state dictionaries.
 
@@ -111,14 +110,14 @@ class ResultsManager:
         # Filename structure
         filename = (f"{dataset}_{num_clients_run}clients_"
                     f"cost_{cost_str}_seed_{seed}_"
-                    f"r{round_num}_{server_type}_{model_type}_model.pt")
+                    f"{server_type}_{model_type}_model.pt")
 
         return os.path.join(model_dir, filename)
 
     # --- NEW: Method to save model state ---
     def save_model_state(self, model_state_dict: Dict, experiment_type: str,
                          dataset: str, num_clients_run: int, cost: Any, seed: int,
-                         round_num: int, server_type: str, model_type: str):
+                         server_type: str, model_type: str):
         """
         Saves a model's state_dict to a standardized path.
 
@@ -132,7 +131,7 @@ class ResultsManager:
 
         path = self._get_model_save_path(
             experiment_type, dataset, num_clients_run, cost, seed,
-            round_num, server_type, model_type
+            server_type, model_type
         )
         print(f"  Attempting to save {model_type} model state to: {path}")
         try:
@@ -382,7 +381,7 @@ class Experiment:
                  if not server.clients: print(f"Warning: No clients added to {server_type}."); tracking[server_type] = {'error': 'No clients'}; continue
 
                  num_tuning_rounds = self.default_params.get('rounds_tune_inner', self.default_params['rounds'])
-                 metrics = self._train_and_evaluate(server, num_tuning_rounds)
+                 metrics = self._train_and_evaluate(server, num_tuning_rounds, cost, seed=self.base_seed)
                  tracking[server_type] = metrics
              except Exception as e: print(f"ERROR tuning {server_type}: {e}"); traceback.print_exc(); tracking[server_type] = {'error': str(e)}
              finally:
@@ -458,7 +457,7 @@ class Experiment:
                              model_state_dict=fedavg_server.serverstate.model.state_dict(),
                              experiment_type=ExperimentType.EVALUATION, dataset=self.config.dataset,
                              num_clients_run=num_clients_this_cost, cost=cost, seed=current_seed,
-                             round_num=final_round_num, server_type='fedavg', model_type='final'
+                             server_type='fedavg', model_type='final'
                          )
                          # Save Best Model State
                          if fedavg_server.serverstate.best_model:
@@ -466,7 +465,7 @@ class Experiment:
                                   model_state_dict=fedavg_server.serverstate.best_model.state_dict(),
                                   experiment_type=ExperimentType.EVALUATION, dataset=self.config.dataset,
                                   num_clients_run=num_clients_this_cost, cost=cost, seed=current_seed,
-                                  round_num=final_round_num, server_type='fedavg', model_type='best'
+                                server_type='fedavg', model_type='best'
                               )
                          else: print("  Warning: FedAvg best_model state was None, not saved.")
                     elif 'fedavg' in experiment_results_for_cost:
@@ -546,7 +545,6 @@ class Experiment:
                          dataset=self.config.dataset,
                          num_clients_run=num_clients_this_run, # Use actual count
                          cost=cost, seed=seed,
-                         round_num=0, # Indicate pre-training state
                          server_type='fedavg', model_type='initial' # Use 'initial' type
                      )
                 # *** --- End New --- ***
@@ -554,19 +552,16 @@ class Experiment:
                 self._add_clients_to_server(server, client_dataloaders)
                 if not server.clients: print(f"Warn: No clients added to {server_type}."); tracking[server_type] = {'error': 'No clients'}; continue
 
-                # Train and evaluate
-                metrics = self._train_and_evaluate(server, trainer_config.rounds)
+                # --- MODIFIED: Pass cost and seed to _train_and_evaluate ---
+                metrics = self._train_and_evaluate(server=server, rounds=trainer_config.rounds, cost=cost, seed=seed)
                 tracking[server_type] = metrics
-                trained_servers[server_type] = server # Keep server instance FOR THIS COST evaluation
-                if hasattr(server, 'diversity_metrics') and server.diversity_metrics:
-                     weight_metrics_acc = server.diversity_metrics
-
+                trained_servers[server_type] = server # Keep server instance
+                if hasattr(server, 'diversity_metrics') and server.diversity_metrics: weight_metrics_acc = server.diversity_metrics
             except Exception as e:
-                print(f"ERROR during final eval run {server_type}, cost {cost}: {e}"); traceback.print_exc()
+                print(f"ERROR eval run {server_type}, cost {cost}: {e}"); traceback.print_exc()
                 tracking[server_type] = {'error': str(e)}
-                if server: trained_servers[server_type] = None; del server; server = None # Ensure cleanup on error
+                if server: trained_servers[server_type] = None; del server; server = None
                 cleanup_gpu()
-
         if weight_metrics_acc: tracking['weight_metrics'] = weight_metrics_acc
         return tracking, final_round_num, trained_servers
 
@@ -598,7 +593,7 @@ class Experiment:
         return {'data_source': dataset_config['data_source'], 'partitioning_strategy': dataset_config['partitioning_strategy'], 'cost_interpretation': dataset_config['cost_interpretation'], 'source_args': dataset_config.get('source_args', {}), 'partitioner_args': dataset_config.get('partitioner_args', {}), 'partition_scope': dataset_config.get('partition_scope', 'train')}
 
     def _load_source_data(self, data_source, dataset_name, source_args):
-        loader_func = DATA_LOADERS.get(data_source);
+        loader_func = DATA_LOADERS.get(data_source)
         if loader_func is None: raise NotImplementedError(f"Data loader '{data_source}' not found.")
         # print(f"Loading source data using: {loader_func.__name__}") # Verbose
         return loader_func(dataset_name=dataset_name, data_dir=self.data_dir_root, source_args=source_args)
@@ -720,15 +715,36 @@ class Experiment:
     def _create_site_data(self, client_id, loaders):
          return SiteData(site_id=client_id, train_loader=loaders[0], val_loader=loaders[1], test_loader=loaders[2])
 
-    def _train_and_evaluate(self, server, rounds):
-         # print(f"Starting training {'(tuning)' if server.tuning else '(eval)'} for {server.server_type}...") # Verbose
+    def _train_and_evaluate(self, server, rounds, cost, seed): # Added cost and seed
+         """ Train/evaluate, save FedAvg model after round 1 """
+         print(f"Starting training {'(tuning)' if server.tuning else '(eval)'} for {server.server_type}...")
          for round_num in range(rounds):
              train_loss, val_loss, val_score = server.train_round()
-             # Progress print removed for brevity
-         if not server.tuning: server.test_global()
+
+             # --- MODIFIED: Save FedAvg model after round 1 during evaluation ---
+             if not server.tuning and server.server_type == 'fedavg' and round_num == 0:
+                  print(f"  Saving FedAvg model state after round 1...")
+                  self.results_manager.save_model_state(
+                      model_state_dict=server.serverstate.model.state_dict(),
+                      experiment_type=ExperimentType.EVALUATION,
+                      dataset=self.config.dataset,
+                      num_clients_run=self.num_clients_for_run, # Use actual client count for this run
+                      cost=cost, seed=seed,
+                      server_type='fedavg', model_type='round1' # Use 'round1' type
+                  )
+             # --- End Modification ---
+
+             # Optional progress print
+             if (round_num + 1) % 20 == 0 or round_num == 0 or (round_num + 1) == rounds:
+                  print(f"  R {round_num+1}/{rounds} - TrL: {train_loss:.4f}, VL: {val_loss:.4f}, VS: {val_score:.4f}")
+
+         # Final Evaluation after all rounds (only if not tuning)
+         if not server.tuning:
+             print(f"Performing final test evaluation for {server.server_type}...")
+             server.test_global() # Evaluate on test sets
+
+         # Collect Metrics (remains the same)
          global_state = server.serverstate
-         loss_key = 'val_losses' if server.tuning else 'test_losses'
-         score_key = 'val_scores' if server.tuning else 'test_scores'
          metrics = {'global': {'losses': global_state.test_losses, 'scores': global_state.test_scores }, 'sites': {}}
          metrics['global']['val_losses'] = global_state.val_losses
          metrics['global']['val_scores'] = global_state.val_scores
@@ -736,5 +752,6 @@ class Experiment:
              state_to_log = client.personal_state if server.config.requires_personal_model and client.personal_state else client.global_state
              if state_to_log: metrics['sites'][client_id] = {'losses': state_to_log.test_losses, 'scores': state_to_log.test_scores, 'val_losses': state_to_log.val_losses, 'val_scores': state_to_log.val_scores}
              else: metrics['sites'][client_id] = {'losses': [], 'scores': [], 'val_losses': [], 'val_scores': []}
-         # print(f"Finished {server.server_type}.") # Verbose
+         final_global_score = metrics['global']['scores'][-1] if metrics['global']['scores'] else None
+         print(f"Finished {server.server_type}. Final Test Score: {final_global_score:.4f}")
          return metrics

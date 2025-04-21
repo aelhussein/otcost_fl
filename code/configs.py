@@ -41,6 +41,8 @@ import numpy as np
 import pandas as pd
 import scipy.stats
 import scipy.stats as stats
+from scipy.stats import wasserstein_distance
+from sklearn.cluster import KMeans
 from tqdm import tqdm  # Progress bars
 from tqdm.contrib.concurrent import process_map # Progress bars for parallel processing
 
@@ -68,6 +70,7 @@ from torchvision.models import resnet18
 from monai.transforms import EnsureChannelFirst, AsDiscrete,Compose,NormalizeIntensity,Resize,ToTensor
 from transformers import BertModel, BertTokenizer, AutoTokenizer, AutoModel # Keep if using NLP models
 
+import ot
 
 # --- Core Directories ---
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))

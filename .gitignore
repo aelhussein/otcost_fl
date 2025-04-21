@@ -8,3 +8,6 @@ code/evaluation/logs/
 *.txt
 results/
 activations/
+saved_models/
+__pycache__/
+*/__pycache__/
