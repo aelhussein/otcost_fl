@@ -1,4 +1,6 @@
 # ot_utils.py
+from configs import *
+from helper import cleanup_gpu, set_seeds, get_default_lr
 import torch
 import torch.nn.functional as F
 import ot
@@ -7,14 +9,14 @@ import warnings
 from typing import Optional, Tuple, Dict, Any, Union, List
 from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
+from pipeline import Experiment, ExperimentConfig, ExperimentType
+
 
 # --- Constants ---
 DEFAULT_OT_REG = 0.001
 DEFAULT_OT_MAX_ITER = 2000
 DEFAULT_EPS = 1e-10
 
-# --- Seeding (Keep if needed globally, or manage within experiment setup) ---
-# (Seeding functions like set_global_seeds, create_seeded_generator can go here or remain in the main script)
 
 # --- OT Computation Wrapper ---
 def compute_ot_cost(

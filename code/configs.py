@@ -28,7 +28,7 @@ import pickle
 import traceback
 import argparse
 import glob # Added for path finding
-from typing import List, Dict, Optional, Tuple, Union, Iterator, Iterable
+from typing import List, Dict, Optional, Tuple, Union, Iterator, Iterable, Any
 from datetime import datetime
 from functools import wraps, partial
 from collections import OrderedDict
@@ -78,6 +78,7 @@ EVAL_DIR = f'{ROOT_DIR}/code/evaluation' # Directory for evaluation scripts/resu
 OTCOST_DIR = f'{ROOT_DIR}/code/OTCost' # Directory for evaluation scripts/results
 RESULTS_DIR = f'{ROOT_DIR}/results' # Directory to save experiment results
 ACTIVATION_DIR = f'{ROOT_DIR}/activations'
+MODEL_SAVE_DIR = f'{ROOT_DIR}/save_models' # Directory to save models
 
 # --- Add project directories to Python path ---
 # Allows importing modules from these directories
@@ -85,6 +86,7 @@ sys.path.append(f'{ROOT_DIR}/code')
 sys.path.append(f'{EVAL_DIR}')
 sys.path.append(f'{OTCOST_DIR}')
 sys.path.append(f'{ACTIVATION_DIR}')
+sys.path.append(f'{MODEL_SAVE_DIR}')
 
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu' # Set computation device
