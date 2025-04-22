@@ -4,6 +4,8 @@ code/logs
 *ipynb
 *pkl
 data/
+code/archive/
+results/archive
 code/evaluation/logs/
 *.txt
 results/
