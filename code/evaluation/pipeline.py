@@ -4,14 +4,17 @@ from servers import *
 from helper import *
 from losses import *
 import models as ms
-from performance_logging import *
 
 DATA_LOADERS = {
+    # Base loaders (return BaseDataset for partitioning)
     'torchvision': load_torchvision_dataset,
-    'pre_split_csv': load_pre_split_csv_client, # Loads per client
-    'pre_split_paths_ixi': load_ixi_client_paths, # Loads per client
-    'pre_split_paths_isic': load_isic_client_paths, # Loads per client
-    # Add other loaders here, e.g., 'hdf5', 'database'
+    'synthetic_base': load_synthetic_base_data,
+    'credit_base': load_credit_base_data,
+
+    # Per-client / Site loaders (return X, y tuple for direct use)
+    'heart_site_loader': load_heart_site_data, # <--- ADDED
+    'pre_split_paths_ixi': load_ixi_client_paths,
+    'pre_split_paths_isic': load_isic_client_paths,
 }
 
 PARTITIONING_STRATEGIES = {
@@ -162,20 +165,74 @@ class ResultsManager:
         return None, None
 
     def save_results(self, results, experiment_type, client_count=None, run_metadata=None):
-        # (Implementation remains the same)
+        """
+        Saves results with metadata and flags indicating failed experiments.
+        
+        Args:
+            results: The results dictionary to save
+            experiment_type: Type of experiment
+            client_count: The number of clients used
+            run_metadata: Additional metadata for the run
+        """
         path = self._get_results_path(experiment_type)
-        if run_metadata is None: run_metadata = {}
+        if run_metadata is None: 
+            run_metadata = {}
+            
+        # Add a flag to indicate if any parts of the results contain errors
+        contains_errors = self._check_for_errors_in_results(results)
+        
         metadata = {
-            'timestamp': datetime.now().isoformat(), 'dataset': self.dataset,
-            'experiment_type': experiment_type, 'client_count_used': client_count,
-            'filename_target_clients': self.num_clients, **run_metadata
+            'timestamp': datetime.now().isoformat(),
+            'dataset': self.dataset,
+            'experiment_type': experiment_type,
+            'client_count_used': client_count,
+            'filename_target_clients': self.num_clients,
+            'contains_errors': contains_errors,  # Flag to indicate failures
+            **run_metadata
         }
+        
         final_data_to_save = {'results': results, 'metadata': metadata}
+        
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'wb') as f: pickle.dump(final_data_to_save, f)
-            print(f"Results saved to {path} (Actual Clients: {client_count})")
-        except Exception as e: print(f"Error saving results to {path}: {e}")
+            with open(path, 'wb') as f:
+                pickle.dump(final_data_to_save, f)
+            
+            status = "with ERRORS" if contains_errors else "successfully"
+            print(f"Results saved {status} to {path} (Actual Clients: {client_count})")
+        except Exception as e:
+            print(f"Error saving results to {path}: {e}")
+    
+    def _check_for_errors_in_results(self, results_dict):
+        """
+        Recursively checks if any part of the results dictionary contains error entries.
+        
+        Args:
+            results_dict: Results dictionary to check
+            
+        Returns:
+            bool: True if errors are found, False otherwise
+        """
+        if results_dict is None:
+            return False
+            
+        if isinstance(results_dict, dict):
+            # Check for direct error keys at this level
+            if 'error' in results_dict:
+                return True
+                
+            # Recursively check all nested dictionaries
+            for key, value in results_dict.items():
+                if isinstance(value, dict):
+                    if self._check_for_errors_in_results(value):
+                        return True
+                elif isinstance(value, list):
+                    # Check if any item in the list is a dict with errors
+                    for item in value:
+                        if isinstance(item, dict) and self._check_for_errors_in_results(item):
+                            return True
+                            
+        return False
 
     # ... (append_or_create_metric_lists, get_best_parameters, _select_best_hyperparameter remain the same) ...
     def append_or_create_metric_lists(self, existing_dict, new_dict):
@@ -258,33 +315,65 @@ class Experiment:
             raise ValueError(f"Unsupported experiment type: {self.config.experiment_type}")
 
     def _check_existing_results(self, costs):
-        # ... (no changes here) ...
-        results, _ = self.results_manager.load_results(self.config.experiment_type)
-        runs_key = 'runs_tune' if self.config.experiment_type != ExperimentType.EVALUATION else 'runs'
+        """
+        Checks existing results and determines which costs/runs need to be completed.
+        Now properly handles results that contain error flags.
+        """
+        results, metadata = self.results_manager.load_results(self.config.experiment_type)
+        runs_key = 'runs_tune' if self.config.experiment_type != ExperimentType.LEARNING_RATE else 'runs'
         target_runs = self.default_params.get(runs_key, 1)
-        remaining_costs = list(costs); completed_runs = 0
+        remaining_costs = list(costs)
+        completed_runs = 0
+        
         if results is not None:
+            # Check the metadata for error flags - if errors exist, we'll re-run
+            has_errors = metadata is not None and metadata.get('contains_errors', False)
+            if has_errors:
+                print(f"Previous results contain errors. Will re-run all experiments.")
+                return results, remaining_costs, 0  # Force re-run by returning 0 completed runs
+                
             completed_costs = set(results.keys())
             remaining_costs = [c for c in costs if c not in completed_costs]
+            
             if completed_costs:
                 first_cost = next(iter(completed_costs))
                 try:
-                     first_param = next(iter(results[first_cost]))
-                     first_server = next(iter(results[first_cost][first_param]))
-                     loss_key = 'val_losses' if self.config.experiment_type != ExperimentType.EVALUATION else 'test_losses'
-                     if first_server in results[first_cost][first_param] and \
-                        'global' in results[first_cost][first_param][first_server] and \
-                        loss_key in results[first_cost][first_param][first_server]['global']:
-                          completed_runs = len(results[first_cost][first_param][first_server]['global'][loss_key])
-                     else: completed_runs = 0 # Cannot determine
-                except (StopIteration, KeyError, IndexError, TypeError, AttributeError) as e: completed_runs = 0
-            # print(f"Found {completed_runs}/{target_runs} completed runs in existing results.") # Verbose
-            if completed_runs >= target_runs and not remaining_costs: remaining_costs = []
-            elif completed_runs < target_runs: remaining_costs = list(costs) # print(f"Runs incomplete. Will run all costs.") # Verbose
-        # else: print("No existing results found.") # Verbose
-        # print(f"Remaining costs: {remaining_costs}") # Verbose
+                    # Extract completed runs count as before
+                    first_param = next(iter(results[first_cost]))
+                    first_server = next(iter(results[first_cost][first_param]))
+                    loss_key = 'val_losses' if self.config.experiment_type != ExperimentType.EVALUATION else 'test_losses'
+                    if first_server in results[first_cost][first_param] and \
+                       'global' in results[first_cost][first_param][first_server] and \
+                       loss_key in results[first_cost][first_param][first_server]['global']:
+                         completed_runs = len(results[first_cost][first_param][first_server]['global'][loss_key])
+                    else:
+                        completed_runs = 0  # Cannot determine
+                        
+                    # Also check for error entries in any of the costs
+                    for cost_key in completed_costs:
+                        if self.results_manager._check_for_errors_in_results(results[cost_key]):
+                            print(f"Found errors in results for cost {cost_key}. Will re-run.")
+                            remaining_costs.append(cost_key)
+                            
+                except (StopIteration, KeyError, IndexError, TypeError, AttributeError) as e:
+                    completed_runs = 0
+                    print(f"Could not determine completed runs: {e}")
+                
+            # Ensure no duplicates in remaining_costs
+            remaining_costs = list(set(remaining_costs))
+                
+            print(f"Found {completed_runs}/{target_runs} completed valid runs in existing results.")
+            if completed_runs >= target_runs and not remaining_costs:
+                remaining_costs = []
+            elif completed_runs < target_runs:
+                remaining_costs = list(costs)
+                print(f"Runs incomplete. Will run all costs.")
+        else:
+            print("No existing results found.")
+            
+        print(f"Remaining costs to process: {remaining_costs}")
         return results, remaining_costs, completed_runs
-
+    
     def _run_hyperparam_tuning(self, costs):
         # --- MODIFIED: Set seed for each tuning run ---
         results, remaining_costs, completed_runs = self._check_existing_results(costs)
@@ -358,146 +447,204 @@ class Experiment:
         return results
 
     def _hyperparameter_tuning(self, cost, hyperparams, server_types):
-        # --- No changes needed here, relies on globally set seed ---
+        """
+        Perform hyperparameter tuning with improved error handling.
+        """
         try:
             client_dataloaders = self._initialize_experiment(cost)
-            if not client_dataloaders: print(f"Warning: No client dataloaders for cost {cost}."); return {}
-        except Exception as e: print(f"ERROR: Init failed for cost {cost}: {e}"); traceback.print_exc(); return {}
+            if not client_dataloaders:
+                error_msg = f"No client dataloaders for cost {cost}."
+                print(f"Warning: {error_msg}")
+                return {'error': error_msg}
+        except Exception as e:
+            error_msg = f"Initialization failed for cost {cost}: {e}"
+            print(f"ERROR: {error_msg}")
+            traceback.print_exc()
+            return {'error': error_msg}
 
         tracking = {}
         for server_type in server_types:
-             lr = hyperparams.get('learning_rate')
-             reg_param_val = None; algo_params_dict = {}
-             if server_type in ['pfedme', 'ditto']:
-                 reg_param_val = hyperparams.get('reg_param')
-                 if reg_param_val is not None: algo_params_dict['reg_param'] = reg_param_val
-             trainer_config = self._create_trainer_config(server_type, lr, algo_params_dict)
+            lr = hyperparams.get('learning_rate')
+            reg_param_val = None
+            algo_params_dict = {}
+            if server_type in ['pfedme', 'ditto']:
+                reg_param_val = hyperparams.get('reg_param')
+                if reg_param_val is not None:
+                    algo_params_dict['reg_param'] = reg_param_val
+            trainer_config = self._create_trainer_config(server_type, lr, algo_params_dict)
 
-             # print(f"..... Tuning Server: {server_type}, LR: {lr}, Reg: {reg_param_val} .....") # Verbose
-             server = None
-             try:
-                 server = self._create_server_instance(cost, server_type, trainer_config, tuning=True)
-                 self._add_clients_to_server(server, client_dataloaders)
-                 if not server.clients: print(f"Warning: No clients added to {server_type}."); tracking[server_type] = {'error': 'No clients'}; continue
+            server = None
+            try:
+                server = self._create_server_instance(cost, server_type, trainer_config, tuning=True)
+                self._add_clients_to_server(server, client_dataloaders)
+                if not server.clients:
+                    error_msg = 'No clients added'
+                    print(f"Warning: No clients added to {server_type}.")
+                    tracking[server_type] = {'error': error_msg}
+                    continue
 
-                 num_tuning_rounds = self.default_params.get('rounds_tune_inner', self.default_params['rounds'])
-                 metrics = self._train_and_evaluate(server, num_tuning_rounds, cost, seed=self.base_seed)
-                 tracking[server_type] = metrics
-             except Exception as e: print(f"ERROR tuning {server_type}: {e}"); traceback.print_exc(); tracking[server_type] = {'error': str(e)}
-             finally:
-                if server: del server; cleanup_gpu()
+                num_tuning_rounds = self.default_params.get('rounds_tune_inner', self.default_params['rounds'])
+                metrics = self._train_and_evaluate(server, num_tuning_rounds, cost, seed=self.base_seed)
+                tracking[server_type] = metrics
+            except Exception as e:
+                error_msg = str(e)
+                print(f"ERROR tuning {server_type}: {e}")
+                traceback.print_exc()
+                tracking[server_type] = {'error': error_msg}
+            finally:
+                if server:
+                    del server
+                cleanup_gpu()
         return tracking
 
     def _run_final_evaluation(self, costs):
-        results, _, completed_runs = self._check_existing_results(costs)
+        """
+        Runs final evaluation with improved error handling.
+        """
+        results, remaining_costs, completed_runs = self._check_existing_results(costs)
         target_runs = self.default_params.get('runs', 1)
 
-        # --- Check if runs/models already exist (optional detailed check can be added) ---
-        # Simple check for now: if results exist for target runs, assume models might exist too.
+        # Simple check for now: if results exist for target runs, assume models might exist too
         if results is not None and completed_runs >= target_runs:
-             print(f"Final evaluation metrics completed ({completed_runs}/{target_runs} runs). Models will be re-saved if missing or regeneration is intended.")
-             # Proceed to ensure models are saved for all runs/costs
-
-        remaining_runs_count = max(0, target_runs - completed_runs) # Ensure non-negative
-        if remaining_runs_count == 0 and completed_runs >= target_runs:
-            print(f"Target runs ({target_runs}) already completed. Ensuring models are saved...")
-            remaining_runs_count = target_runs # Force re-run to guarantee model saving
-            completed_runs = 0 # Reset completed count if forcing re-run
-
+            # Check specifically for any errors in the existing results
+            has_errors = False
+            for cost in costs:
+                if cost in results and isinstance(results[cost], dict) and 'error' in results[cost]:
+                    has_errors = True
+                    break
+                
+            if has_errors:
+                print(f"Found errors in existing results. Will re-run to ensure all models are properly saved.")
+                remaining_runs_count = target_runs  # Force re-run to fix errors
+                completed_runs = 0
+            else:
+                print(f"Final evaluation metrics completed ({completed_runs}/{target_runs} runs).")
+                # We'll still run if there are any remaining costs to process
+                remaining_runs_count = max(0, target_runs - completed_runs)
+        else:
+            remaining_runs_count = max(0, target_runs - completed_runs)
+            
         if remaining_runs_count > 0:
             print(f"Starting {remaining_runs_count} final evaluation run(s)...")
 
-        if results is None: results = {}
-        diversities, _ = self.results_manager.load_results(ExperimentType.DIVERSITY)
-        if diversities is None: diversities = {}
+        if results is None:
+            results = {}
+        diversities, diversity_metadata = self.results_manager.load_results(ExperimentType.DIVERSITY)
+        if diversities is None:
+            diversities = {}
+            
+        # Check if diversity results have errors
+        has_diversity_errors = diversity_metadata and diversity_metadata.get('contains_errors', False)
+        if has_diversity_errors:
+            print("Found errors in diversity metrics. Will regenerate.")
+            diversities = {}
 
         num_clients_metadata = None
 
         # Loop through the required number of runs
-        for run_idx in range(target_runs): # Iterate up to target_runs
-            current_run_total = run_idx + 1 # Use 1-based indexing for run number
-            current_seed = self.base_seed + run_idx # Use run-specific seed
+        for run_idx in range(remaining_runs_count):
+            current_run_total = completed_runs + run_idx + 1
+            current_seed = self.base_seed + run_idx
             print(f"--- Starting Final Evaluation Run {current_run_total}/{target_runs} (Seed: {current_seed}) ---")
-            set_seeds(current_seed) # Set seed for data init and training
+            set_seeds(current_seed)
 
             results_this_run = {}
             diversities_this_run = {}
             run_meta = {'run_number': current_run_total, 'seed_used': current_seed}
             cost_client_counts = {}
 
-            # Check if this run's metrics already exist completely
-            # If so, we might only need to save models if they are missing.
-            # For simplicity now, we re-run fully to ensure models are generated and saved.
-            # A more complex check could skip training if metrics exist and model files are found.
-
+            # Process each cost
             for cost in costs:
                 print(f"--- Evaluating Cost: {cost} (Run {current_run_total}) ---")
-                num_clients_this_cost = 0 # Initialize
-                trained_servers = {} # Reset for each cost
-                final_round_num = 0 # Reset for each cost
+                num_clients_this_cost = 0
+                trained_servers = {}
+                final_round_num = 0
+                
                 try:
                     num_clients_this_cost = self._get_final_client_count(self.default_params, cost)
                     cost_client_counts[cost] = num_clients_this_cost
-                    if num_clients_metadata is None: num_clients_metadata = num_clients_this_cost
+                    if num_clients_metadata is None:
+                        num_clients_metadata = num_clients_this_cost
 
-                    # --- Run evaluation for all server types for this cost ---
-                    # _final_evaluation now returns the trained server instances
+                    # Run evaluation for this cost
                     experiment_results_for_cost, final_round_num, trained_servers = self._final_evaluation(cost, current_seed)
 
-                    # --- Model Saving (Specifically for FedAvg from this run/cost) ---
-                    if 'fedavg' in trained_servers and trained_servers['fedavg'] is not None:
-                         fedavg_server = trained_servers['fedavg']
-                         print(f"  Saving FedAvg models for cost {cost}, seed {current_seed}...")
+                    # Model saving (only if the experiment didn't fail)
+                    if 'error' not in experiment_results_for_cost:
+                        if 'fedavg' in trained_servers and trained_servers['fedavg'] is not None:
+                            fedavg_server = trained_servers['fedavg']
+                            print(f"  Saving FedAvg models for cost {cost}, seed {current_seed}...")
 
-                         # *** Save Initial Model State (Already done inside _final_evaluation now) ***
-                         # Note: The initial model saving logic is moved into _final_evaluation
+                            # Save Final Model State
+                            self.results_manager.save_model_state(
+                                model_state_dict=fedavg_server.serverstate.model.state_dict(),
+                                experiment_type=ExperimentType.EVALUATION,
+                                dataset=self.config.dataset,
+                                num_clients_run=num_clients_this_cost,
+                                cost=cost,
+                                seed=current_seed,
+                                server_type='fedavg',
+                                model_type='final'
+                            )
+                            
+                            # Save Best Model State
+                            if fedavg_server.serverstate.best_model:
+                                self.results_manager.save_model_state(
+                                    model_state_dict=fedavg_server.serverstate.best_model.state_dict(),
+                                    experiment_type=ExperimentType.EVALUATION,
+                                    dataset=self.config.dataset,
+                                    num_clients_run=num_clients_this_cost,
+                                    cost=cost,
+                                    seed=current_seed,
+                                    server_type='fedavg',
+                                    model_type='best'
+                                )
+                            else:
+                                print("  Warning: FedAvg best_model state was None, not saved.")
+                        elif 'fedavg' in experiment_results_for_cost and 'error' not in experiment_results_for_cost['fedavg']:
+                            print("  Warning: FedAvg metrics exist but server instance not returned for model saving.")
+                    else:
+                        print(f"  Error occurred in experiment for cost {cost}. Models not saved.")
 
-                         # Save Final Model State
-                         self.results_manager.save_model_state(
-                             model_state_dict=fedavg_server.serverstate.model.state_dict(),
-                             experiment_type=ExperimentType.EVALUATION, dataset=self.config.dataset,
-                             num_clients_run=num_clients_this_cost, cost=cost, seed=current_seed,
-                             server_type='fedavg', model_type='final'
-                         )
-                         # Save Best Model State
-                         if fedavg_server.serverstate.best_model:
-                              self.results_manager.save_model_state(
-                                  model_state_dict=fedavg_server.serverstate.best_model.state_dict(),
-                                  experiment_type=ExperimentType.EVALUATION, dataset=self.config.dataset,
-                                  num_clients_run=num_clients_this_cost, cost=cost, seed=current_seed,
-                                server_type='fedavg', model_type='best'
-                              )
-                         else: print("  Warning: FedAvg best_model state was None, not saved.")
-                    elif 'fedavg' in experiment_results_for_cost:
-                         print("  Warning: FedAvg metrics exist but server instance not returned for model saving.")
-
-                    # Process results metrics
+                    # Process diversity metrics
                     if 'weight_metrics' in experiment_results_for_cost:
-                         diversities_this_run[cost] = experiment_results_for_cost.pop('weight_metrics')
+                        diversities_this_run[cost] = experiment_results_for_cost.pop('weight_metrics')
+                        
                     results_this_run[cost] = experiment_results_for_cost
 
                 except Exception as e:
+                    error_msg = str(e)
                     print(f"ERROR during final evaluation for cost {cost}, run {current_run_total}: {e}")
                     traceback.print_exc()
-                    results_this_run[cost] = {'error': str(e)}
+                    results_this_run[cost] = {'error': error_msg}
                 finally:
-                    # Clean up server instances after processing each cost
+                    # Clean up server instances
                     for server in trained_servers.values():
-                        if server: del server
+                        if server:
+                            del server
                     cleanup_gpu()
 
-            # --- Append/Update results for this run ---
-            # Logic to update results dict needs refinement if re-running completed runs
-            # Simplest for now: overwrite/append assuming rerunning generates the definitive results for that run index
+            # Append results for this run
             results = self.results_manager.append_or_create_metric_lists(results, results_this_run)
             diversities = self.results_manager.append_or_create_metric_lists(diversities, diversities_this_run)
 
             # Save metrics after each completed run
             print(f"--- Completed Final Evaluation Run {current_run_total}/{target_runs} ---")
             run_meta['cost_specific_client_counts'] = cost_client_counts
-            # Save metrics, potentially overwriting previous save for this run if re-running
-            self.results_manager.save_results(results, ExperimentType.EVALUATION, client_count=num_clients_metadata, run_metadata=run_meta)
-            self.results_manager.save_results(diversities, ExperimentType.DIVERSITY, client_count=num_clients_metadata, run_metadata=run_meta)
+            
+            self.results_manager.save_results(
+                results, 
+                ExperimentType.EVALUATION, 
+                client_count=num_clients_metadata, 
+                run_metadata=run_meta
+            )
+            
+            self.results_manager.save_results(
+                diversities, 
+                ExperimentType.DIVERSITY, 
+                client_count=num_clients_metadata, 
+                run_metadata=run_meta
+            )
 
         return results, diversities
 
@@ -608,7 +755,7 @@ class Experiment:
         else: return partitioner_func(dataset=data_to_partition, num_clients=num_clients, **full_args)
 
     def _load_client_specific_data(self, data_source, dataset_name, client_num, source_args, translated_cost, dataset_config):
-        loader_func = DATA_LOADERS.get(data_source);
+        loader_func = DATA_LOADERS.get(data_source)
         if loader_func is None: raise NotImplementedError(f"Data loader '{data_source}' not found.")
         # print(f"Loading pre-split data for client {client_num} using: {loader_func.__name__}") # Verbose
         specific_cost_arg = translated_cost.get('key', translated_cost.get('suffix'))
@@ -617,7 +764,6 @@ class Experiment:
 
     def _prepare_client_data(self, client_ids_list, partitioning_strategy, partition_result, data_to_partition, dataset_name, dataset_config, translated_cost):
         client_input_data = {}; preprocessor_input_type = 'unknown'
-        num_clients = len(client_ids_list)
         if partitioning_strategy.endswith('_indices'):
             if partition_result is None: raise ValueError("partition_result None for index partitioning")
             for i, client_id in enumerate(client_ids_list):
@@ -689,7 +835,7 @@ class Experiment:
         fixed_classes = dataset_config.get('fixed_classes')
         if not hasattr(ms, model_name): raise ValueError(f"Model class '{model_name}' not found.")
         model_class = getattr(ms, model_name); model = model_class()
-        criterion_map = {'Synthetic': nn.CrossEntropyLoss(), 'Credit': nn.CrossEntropyLoss(), 'Weather': nn.MSELoss(), 'EMNIST': nn.CrossEntropyLoss(), 'CIFAR': nn.CrossEntropyLoss(), 'IXITiny': get_dice_score, 'ISIC': nn.CrossEntropyLoss(), 'Heart': nn.CrossEntropyLoss()}
+        criterion_map = {'Synthetic': nn.CrossEntropyLoss(), 'Credit': nn.CrossEntropyLoss(), 'EMNIST': nn.CrossEntropyLoss(), 'CIFAR': nn.CrossEntropyLoss(), 'IXITiny': get_dice_score, 'ISIC': nn.CrossEntropyLoss(), 'Heart': nn.CrossEntropyLoss()}
         criterion = criterion_map.get(self.config.dataset);
         if criterion is None: raise ValueError(f"Criterion not defined for {self.config.dataset}")
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True, weight_decay=1e-4)
@@ -745,13 +891,20 @@ class Experiment:
 
          # Collect Metrics (remains the same)
          global_state = server.serverstate
-         metrics = {'global': {'losses': global_state.test_losses, 'scores': global_state.test_scores }, 'sites': {}}
-         metrics['global']['val_losses'] = global_state.val_losses
-         metrics['global']['val_scores'] = global_state.val_scores
+         if server.tuning:
+             metrics = {'global': {'losses': global_state.val_losses, 'scores': global_state.val_scores }, 'sites': {}}
+         else:
+            metrics = {'global': {'losses': global_state.test_losses, 'scores': global_state.test_scores }, 'sites': {}}
+
          for client_id, client in server.clients.items():
-             state_to_log = client.personal_state if server.config.requires_personal_model and client.personal_state else client.global_state
-             if state_to_log: metrics['sites'][client_id] = {'losses': state_to_log.test_losses, 'scores': state_to_log.test_scores, 'val_losses': state_to_log.val_losses, 'val_scores': state_to_log.val_scores}
-             else: metrics['sites'][client_id] = {'losses': [], 'scores': [], 'val_losses': [], 'val_scores': []}
+            state_to_log = client.personal_state if server.config.requires_personal_model and client.personal_state else client.global_state
+            if server.tuning:
+                metrics['sites'][client_id] = {'losses': state_to_log.val_losses, 
+                                                'scores': state_to_log.val_scores}
+            else:
+                metrics['sites'][client_id] = {'losses': state_to_log.test_losses, 
+                                                'scores': state_to_log.test_scores}
+                
          final_global_score = metrics['global']['scores'][-1] if metrics['global']['scores'] else None
          print(f"Finished {server.server_type}. Final Test Score: {final_global_score:.4f}")
          return metrics

@@ -93,7 +93,7 @@ sys.path.append(f'{MODEL_SAVE_DIR}')
 
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu' # Set computation device
-N_WORKERS = 0 # Default number of workers for DataLoader
+N_WORKERS = 1 # Default number of workers for DataLoader
 
 
 # --- Supported Algorithms ---
@@ -112,7 +112,6 @@ DATASETS = [
     'CIFAR',     # CIFAR-10
     'ISIC',      # Skin dermoscopy
     'IXITiny',   # Brain MRI
-    'Weather',   # Weather prediction
     'Heart'      # Heart disease prediction
 ]
 
@@ -121,190 +120,128 @@ DATASETS = [
 
 DEFAULT_PARAMS = {
     'CIFAR': {
-        # Data Handling
-        'data_source': 'torchvision',
-        'partitioning_strategy': 'dirichlet_indices', # Uses the size-balancing function
-        'cost_interpretation': 'alpha',
-        'dataset_class': 'CIFARDataset',
-        'default_num_clients': 2, # Default if -nc not specified
-        'max_clients': None,     # No theoretical limit
-        'fixed_classes': 10,
-        'source_args': {'dataset_name': 'CIFAR10', 'data_dir': os.path.join(DATA_DIR)}, # Simplified path
-        'partitioner_args': {},
-        'partition_scope': 'train',
-        'sampling_config': {'type': 'fixed_total', 'size': 1000, 'replace': False}, # Target size per client
-        # Standard Params ...
+        'data_source': 'torchvision', 'partitioning_strategy': 'dirichlet_indices', 'cost_interpretation': 'alpha',
+        'dataset_class': 'CIFARDataset', 'default_num_clients': 10, 'max_clients': None, 'fixed_classes': 10,
+        'source_args': {'dataset_name': 'CIFAR10', 'data_dir': DATA_DIR}, # Use CIFAR10 name
+        'partitioner_args': {}, 'partition_scope': 'train',
+        'sampling_config': {'type': 'fixed_total', 'size': 3000, 'replace': False},
         'learning_rates_try': [5e-3, 1e-3, 5e-4], 'default_lr': 1e-3,
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3], 'default_reg_param': 1e-1,
         'batch_size': 128, 'epochs_per_round': 1, 'rounds': 100,
-        'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy'
+        'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42
     },
     'EMNIST': {
-        # Data Handling
-        'data_source': 'torchvision',
-        'partitioning_strategy': 'dirichlet_indices', # Uses the size-balancing function
-        'cost_interpretation': 'alpha',
-        'dataset_class': 'EMNISTDataset',
-        'default_num_clients': 2,
-        'max_clients': None,
-        'fixed_classes': 10,
-        'source_args': {'dataset_name': 'EMNIST', 'data_dir': os.path.join(DATA_DIR), 'split': 'digits'},
-        'partitioner_args': {},
-        'partition_scope': 'train',
-        'sampling_config': {'type': 'fixed_total', 'size': 1000, 'replace': False}, # Target size per client
-        # Standard Params ...
+        'data_source': 'torchvision', 'partitioning_strategy': 'dirichlet_indices', 'cost_interpretation': 'alpha',
+        'dataset_class': 'EMNISTDataset', 'default_num_clients': 10, 'max_clients': None, 'fixed_classes': 10,
+        'source_args': {'dataset_name': 'EMNIST', 'data_dir': DATA_DIR, 'split': 'digits'},
+        'partitioner_args': {}, 'partition_scope': 'train',
+        'sampling_config': {'type': 'fixed_total', 'size': 1000, 'replace': False},
         'learning_rates_try': [5e-3, 1e-3, 5e-4, 1e-4], 'default_lr': 1e-3,
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3], 'default_reg_param': 1e-1,
         'batch_size': 128, 'epochs_per_round': 1, 'rounds': 75,
-        'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy'
+        'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42
     },
     'Synthetic': {
-        # Data Handling
-        'data_source': 'pre_split_csv',
-        'partitioning_strategy': 'pre_split',
-        'cost_interpretation': 'file_suffix',
-        'dataset_class': 'SyntheticDataset',
-        'default_num_clients': 2,
-        'max_clients': 5, # Assumes only files for 5 clients exist
-        'fixed_classes': 2,
-        'source_args': {'data_dir': os.path.join(DATA_DIR, 'Synthetic'), 'column_count': 11},
-        'partitioner_args': {},
-        'needs_preprocessing': ['standard_scale'],
-        'sampling_config': {'type': 'fixed_total', 'size': 250, 'replace': False},
-        # Standard Params ...
+        'data_source': 'synthetic_base', 'partitioning_strategy': 'dirichlet_indices', 'cost_interpretation': 'alpha',
+        'dataset_class': 'SyntheticDataset', 'default_num_clients': 10, 'max_clients': None, 'fixed_classes': 2,
+        'source_args': {'base_n_samples': 20000, 'n_features': 10, 'dist_type1': 'normal', 'dist_type2': 'skewed', 'label_noise': 0.05, 'random_state': 42 },
+        'partitioner_args': {}, 'partition_scope': 'all', 'needs_preprocessing': ['standard_scale'], # Needs scaling fitted per client train split
+        'sampling_config': {'type': 'fixed_total', 'size': 1000, 'replace': False},
         'learning_rates_try':[5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3], 'default_lr': 1e-3,
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 'default_reg_param': 1e-1,
         'batch_size': 64, 'epochs_per_round': 1, 'rounds': 100,
-        'runs': 20, 'runs_tune': 10, 'metric': 'F1'
+        'runs': 10, 'runs_tune': 3, 'metric': 'F1', 'base_seed': 42
     },
     'Credit': {
-        # Data Handling
-        'data_source': 'pre_split_csv',
-        'partitioning_strategy': 'pre_split',
-        'cost_interpretation': 'file_suffix',
-        'dataset_class': 'CreditDataset',
-        'default_num_clients': 2,
-        'max_clients': 5, # Adjust if more client files exist
-        'fixed_classes': 2,
-        'source_args': {'data_dir': os.path.join(DATA_DIR, 'Credit'), 'column_count': 29},
-        'partitioner_args': {},
-        'needs_preprocessing': ['standard_scale'],
-        'sampling_config': {'type': 'fixed_total', 'size': 200, 'replace': True},
-        # Standard Params ...
+        'data_source': 'credit_base', 'partitioning_strategy': 'dirichlet_indices', 'cost_interpretation': 'alpha',
+        'dataset_class': 'CreditDataset', 'default_num_clients': 10, 'max_clients': None, 'fixed_classes': 2,
+        'source_args': {'csv_path': os.path.join(DATA_DIR, 'Credit/creditcard.csv'), 'drop_cols': ['Time', 'Amount']},
+        'partitioner_args': {}, 'partition_scope': 'all', 'needs_preprocessing': ['standard_scale'], # Needs scaling fitted per client train split
+        'sampling_config': {'type': 'fixed_total', 'size': 1000, 'replace': False},
         'learning_rates_try':[5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3], 'default_lr':1e-3,
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 'default_reg_param': 1e-1,
         'batch_size': 64, 'epochs_per_round': 1, 'rounds': 100,
-        'runs': 20, 'runs_tune': 10, 'metric': 'F1'
+        'runs': 10, 'runs_tune': 3, 'metric': 'F1', 'base_seed': 42
     },
-     'Weather': {
-        # Data Handling
-        'data_source': 'pre_split_csv',
-        'partitioning_strategy': 'pre_split',
-        'cost_interpretation': 'file_suffix',
-        'dataset_class': 'WeatherDataset',
-        'default_num_clients': 2,
-        'max_clients': 4, # Adjust if needed
-        'fixed_classes': None, # Regression task
-        'source_args': {'data_dir': os.path.join(DATA_DIR, 'Weather'), 'column_count': 124},
-        'partitioner_args': {},
-        'needs_preprocessing': ['standard_scale'],
-        'sampling_config': {'type': 'fixed_total', 'size': 500, 'replace': False},
-         # Standard Params ...
-        'learning_rates_try': [5e-2, 1e-2, 5e-3, 1e-3, 5e-4], 'default_lr': 5e-3,
-        'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 'default_reg_param': 1e-1,
-        'batch_size': 64, 'epochs_per_round': 1, 'rounds': 25,
-        'runs': 10, 'runs_tune': 3, 'metric': 'R2'
-    },
-     'Heart': {
-        # Data Handling
-        'data_source': 'pre_split_csv',
-        'partitioning_strategy': 'pre_split',
-        'cost_interpretation': 'file_suffix',
-        'dataset_class': 'HeartDataset',
-        'default_num_clients': 2,
-        'max_clients': 6, # Max based on cost values
+    'Heart': {
+        'data_source': 'heart_site_loader', # <--- CHANGED: Use new site loader
+        'partitioning_strategy': 'pre_split', # <--- CHANGED: Assignment via mapping
+        'cost_interpretation': 'site_mapping_key', # <--- CHANGED: Cost is map key
+        'dataset_class': 'HeartDataset', # Final wrapper
+        'default_num_clients': 2, # Designed for pairs based on original script
+        'max_clients': 2, # Limited by pairwise site_mappings
         'fixed_classes': 2,
-        'source_args': {'data_dir': os.path.join(DATA_DIR, 'Heart'), 'column_count': 11},
-        'partitioner_args': {},
-        'needs_preprocessing': ['standard_scale'],
-        # 'sampling_config': None, # Original didn't sample Heart
-         # Standard Params ...
-        'learning_rates_try':[5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3], 'default_lr':1e-3,
-        'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 'default_reg_param': 1e-1,
-        'batch_size': 64, 'epochs_per_round': 1, 'rounds': 100,
-        'runs': 100, 'runs_tune': 10, 'metric': 'F1'
-    },
-    'ISIC': {
-        # Data Handling
-        'data_source': 'pre_split_paths_isic',
-        'partitioning_strategy': 'pre_split',
-        'cost_interpretation': 'site_mapping_key',
-        'dataset_class': 'ISICDataset',
-        'default_num_clients': 2, # Default for paired runs
-        'max_clients': 4,
-        'fixed_classes': 8, # Check if your model/labels match this
-        'source_args': {
-            'data_dir': os.path.join(DATA_DIR, 'ISIC'),
-            'site_mappings': { # Define mappings explicitly here
-                 0.06: [2, 2], 0.15: [2, 0], 0.19: [2, 3], 0.25: [2, 1],
-                 0.3: [1, 3], 'all': [0, 1, 2, 3]
-             }
+        'source_args': { # <--- CHANGED: Include all info needed by loader
+            'data_dir': os.path.join(DATA_DIR, 'Heart'),
+            'sites': ['cleveland', 'hungarian', 'switzerland', 'va'],
+             'used_columns': ['age', 'sex', 'chest_pain_type', 'resting_bp', 'cholesterol',
+                              'sugar', 'ecg', 'max_hr', 'exercise_angina', 'exercise_ST_depression', 'target'],
+            'feature_names': ['age', 'sex', 'chest_pain_type', 'resting_bp', 'cholesterol',
+                              'sugar', 'ecg', 'max_hr', 'exercise_angina', 'exercise_ST_depression'],
+            'cols_to_scale': ['age', 'chest_pain_type', 'resting_bp', 'cholesterol',
+                              'ecg', 'max_hr', 'exercise_ST_depression'],
+            'scale_values': { # Pre-defined global scaling values
+                'age': (53.0872973, 7.01459463e+01), 'chest_pain_type': (3.23702703, 8.17756772e-01),
+                'resting_bp': (132.74405405, 3.45493057e+02), 'cholesterol': (220.23648649, 4.88430934e+03),
+                'ecg': (0.64513514, 5.92069868e-01), 'max_hr': (138.75459459, 5.29172208e+02),
+                'exercise_ST_depression': (0.89532432, 1.11317517e+00) },
+            'site_mappings': { # Map cost keys (1-6) to site pairs for 2 clients
+                1: [['cleveland'], ['hungarian']],    # Pair 1
+                2: [['cleveland'], ['switzerland']], # Pair 2
+                3: [['cleveland'], ['va']],          # Pair 3
+                4: [['hungarian'], ['switzerland']], # Pair 4
+                5: [['hungarian'], ['va']],          # Pair 5
+                6: [['switzerland'], ['va']],        # Pair 6
+                # Could add 'all' mapping if needed: 'all': [['cleveland'], ['hungarian'], ['switzerland'], ['va']] (would need default_num_clients=4)
+            }
         },
         'partitioner_args': {},
-        'sampling_config': {'type': 'fixed_total', 'size': 2000}, # Corresponds to nrows
-        # Standard Params ...
+        # 'needs_preprocessing': [], # Scaling handled internally by loader
+        'sampling_config': None, # No sampling within sites
+        'learning_rates_try':[5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3], 'default_lr':1e-3,
+        'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 'default_reg_param': 1e-1,
+        'batch_size': 64, 'epochs_per_round': 1, 'rounds': 100,
+        'runs': 10, 'runs_tune': 3, 'metric': 'F1', 'base_seed': 42
+    },
+    'ISIC': { # Keep as is
+        'data_source': 'pre_split_paths_isic', 'partitioning_strategy': 'pre_split', 'cost_interpretation': 'site_mapping_key',
+        'dataset_class': 'ISICDataset', 'default_num_clients': 2, 'max_clients': 4, 'fixed_classes': 8,
+        'source_args': { 'data_dir': os.path.join(DATA_DIR, 'ISIC'),
+            'site_mappings': { 0.06: [[2], [2]], 0.15: [[2], [0]], 0.19: [[2], [3]], 0.25: [[2], [1]], 0.3: [[1], [3]], 'all': [[0], [1], [2], [3]] }}, # Wrap site index in list
+        'partitioner_args': {}, 'sampling_config': {'type': 'fixed_total', 'size': 2000},
         'learning_rates_try': [5e-3, 1e-3, 5e-4, 1e-4], 'default_lr': 1e-3,
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 'default_reg_param': 1e-1,
         'batch_size': 128, 'epochs_per_round': 1, 'rounds': 60,
-        'runs': 5, 'runs_tune': 1, 'metric': 'Balanced_accuracy'
+        'runs': 5, 'runs_tune': 1, 'metric': 'Balanced_accuracy', 'base_seed': 42
     },
-    'IXITiny': {
-        # Data Handling
-        'data_source': 'pre_split_paths_ixi',
-        'partitioning_strategy': 'pre_split',
-        'cost_interpretation': 'site_mapping_key',
-        'dataset_class': 'IXITinyDataset',
-        'default_num_clients': 2,
-        'max_clients': 3,
-        'fixed_classes': 2,
-        'source_args': {
-            'data_dir': os.path.join(DATA_DIR, 'IXITiny'),
-            'site_mappings': { # Define mappings explicitly
-                 0.08: [['Guys'], ['HH']], 0.28: [['IOP'], ['Guys']],
-                 0.30: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']]
-             }
-        },
-        'partitioner_args': {},
-        # 'sampling_config': None,
-         # Standard Params ...
+    'IXITiny': { # Keep as is
+        'data_source': 'pre_split_paths_ixi', 'partitioning_strategy': 'pre_split', 'cost_interpretation': 'site_mapping_key',
+        'dataset_class': 'IXITinyDataset', 'default_num_clients': 2, 'max_clients': 3, 'fixed_classes': 2,
+        'source_args': { 'data_dir': os.path.join(DATA_DIR, 'IXITiny'),
+            'site_mappings': { 0.08: [['Guys'], ['HH']], 0.28: [['IOP'], ['Guys']], 0.30: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] }},
+        'partitioner_args': {}, 'sampling_config': None,
         'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4], 'default_lr': 1e-3,
         'reg_params_try':[1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5], 'default_reg_param': 1e-1,
         'batch_size': 64, 'epochs_per_round': 1, 'rounds': 50,
-        'runs': 10, 'runs_tune': 3, 'metric': 'DICE'
+        'runs': 10, 'runs_tune': 3, 'metric': 'DICE', 'base_seed': 42
     }
 }
 
-
 # Define the set of 'cost' or heterogeneity parameters to iterate over for each dataset.
-# The *meaning* of these values (e.g., alpha, 1/alpha, file key) is determined downstream
-# by the dataset's configuration in configs.py and the pipeline's cost translation logic.
 DATASET_COSTS = {
-    'IXITiny': [0.08, 0.28, 0.30, 'all'], # Interpreted as site mapping keys
-    'ISIC': [0.06, 0.15, 0.19, 0.25, 0.3, 'all'], # Interpreted as site mapping keys
-    # For Dirichlet partitioned datasets, these are intended as direct alpha values:
-    'EMNIST': [0.1, 0.5, 1.0, 5.0, 10.0],  # Direct alpha values (low alpha = high non-IID)
-    'CIFAR': [0.1, 0.5, 1.0, 5.0, 10.0],   # Direct alpha values
-    # For others, interpreted as file suffixes:
-    'Synthetic': [0.01, 0.03, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.69],
-    'Credit': [0.12, 0.16, 0.22, 0.23, 0.27, 0.3, 0.34, 0.4],
-    'Weather': [0.11, 0.19, 0.3, 0.4, 0.48],
-    'Heart': [1,2,3,4,5,6] # Example: Interpreted as file suffix by config
+    'IXITiny': [0.08, 0.28, 0.30, 'all'], # Site mapping keys
+    'ISIC': [0.06, 0.15, 0.19, 0.25, 0.3, 'all'], # Site mapping keys
+    'EMNIST': [0.1, 0.5, 1.0, 5.0, 10.0, 1000.0],  # Alpha values
+    'CIFAR': [0.1, 0.5, 1.0, 5.0, 10.0, 1000.0],   # Alpha values
+    'Synthetic': [0.1, 0.3, 0.5, 1.0, 5.0, 10.0, 1000.0], # Alpha values
+    'Credit': [0.1, 0.3, 0.5, 1.0, 5.0, 10.0, 1000.0],    # Alpha values
+    'Heart': [1, 2, 3, 4, 5, 6] # Site mapping keys (pair indices)
 }
 
-# --- Lists for quick checks (can be derived from DEFAULT_PARAMS if needed elsewhere) ---
-TABULAR = [k for k, v in DEFAULT_PARAMS.items() if v.get('data_source') == 'pre_split_csv']
-# CLASS_ADJUST = ['EMNIST', 'CIFAR'] # No longer needed for pipeline logic
-SQUEEZE = [k for k, v in DEFAULT_PARAMS.items() if v.get('fixed_classes') is not None and v.get('fixed_classes') > 1 and v.get('metric') != 'R2' and k != 'IXITiny'] # Example derivation
-LONG = [k for k, v in DEFAULT_PARAMS.items() if v.get('fixed_classes') is not None and v.get('fixed_classes') > 1 and v.get('metric') != 'R2' and k != 'IXITiny'] # Example derivation
+# --- Lists for quick checks (dynamically derived) ---
+TABULAR_DATASET_CLASSES = ['SyntheticDataset', 'CreditDataset', 'HeartDataset'] # Removed Weather
+TABULAR = [k for k, v in DEFAULT_PARAMS.items() if v.get('dataset_class') in TABULAR_DATASET_CLASSES]
+
+SQUEEZE = [k for k, v in DEFAULT_PARAMS.items() if v.get('fixed_classes') is not None and v.get('fixed_classes') > 1 and v.get('metric') != 'R2' and k != 'IXITiny']
+LONG = [k for k, v in DEFAULT_PARAMS.items() if v.get('fixed_classes') is not None and v.get('fixed_classes') > 1 and v.get('metric') != 'R2' and k != 'IXITiny']
 TENSOR = ['IXITiny']
-CONTINUOUS_OUTCOME = ['Weather']
