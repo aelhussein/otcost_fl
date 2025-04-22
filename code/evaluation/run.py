@@ -10,7 +10,7 @@ experiment run.
 import argparse
 import os
 import sys
-
+import traceback
 
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
