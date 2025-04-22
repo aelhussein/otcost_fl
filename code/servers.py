@@ -6,11 +6,11 @@ and model distribution.
 import copy
 import numpy as np # Keep for potential future use in aggregation or metrics
 import torch
-from typing import Dict, Optional, List, Tuple, Any, Iterator
+from typing import Dict, Optional, List, Tuple, Any
 
 # Import necessary components from other modules
-from clients import Client, FedProxClient, PFedMeClient, DittoClient # Import specific client types
-from helper import ModelDiversity, MetricsCalculator, cleanup_gpu # Import utilities
+from clients import Client, FedProxClient, PFedMeClient, DittoClient,  MetricsCalculator # Import specific client types
+from helper import ModelDiversity # Import utilities
 # Note: TrainerConfig, SiteData, ModelState are now defined WITHIN servers.py or clients.py
 # Let's assume they are defined here for now, or adjust imports if they move to clients.py
 

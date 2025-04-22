@@ -6,7 +6,7 @@ import os
 import pickle
 import traceback
 from datetime import datetime
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Dict, Any, Tuple, Optional
 import numpy as np
 import torch # Needed for torch.save
 

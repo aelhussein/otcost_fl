@@ -5,17 +5,11 @@ Handles local training, evaluation, and model state management.
 """
 import copy
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 import numpy as np
-from typing import Dict, Optional, Tuple, List, Iterator, Any
-from dataclasses import dataclass, field
-
-# Import necessary components from other modules
-# Avoid importing Server classes here to prevent circular dependency if Server imports Client
-# Instead, necessary info like config, model state is passed during __init__
-from helper import move_to_device, cleanup_gpu, get_dice_score # General utilities
-# Import data structures if they live in servers.py (or a common file)
+from typing import Dict, Optional, Tuple, List, Iterator
+import traceback
+from helper import move_to_device
 from servers import TrainerConfig, SiteData, ModelState, MetricsCalculator
 
 

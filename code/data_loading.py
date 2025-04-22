@@ -13,6 +13,8 @@ from torchvision.datasets import CIFAR10, EMNIST
 from torchvision import transforms
 from sklearn.preprocessing import StandardScaler # Only if used by SynthGen directly
 from typing import Dict, Tuple, Any, Optional, List, Union
+from torch.utils.data import Dataset as TorchDataset
+import traceback
 
 # Import Base Dataset wrappers needed by loaders that return them
 from datasets import SyntheticBaseDataset, CreditBaseDataset
