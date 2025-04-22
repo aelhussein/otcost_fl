@@ -6,7 +6,7 @@ import traceback
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Subset, ConcatDataset, DataLoader, TorchDataset
+from torch.utils.data import Subset, ConcatDataset, DataLoader, Dataset as TorchDataset
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple, Any
 

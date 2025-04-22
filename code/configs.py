@@ -15,16 +15,17 @@ _PROJECT_ROOT  = os.path.dirname(_CURRENT_DIR)
 ROOT_DIR = _PROJECT_ROOT
 DATA_DIR = os.path.join(ROOT_DIR, 'data') # Use os.path.join for cross-platform compatibility
 RESULTS_DIR = os.path.join(ROOT_DIR, 'results')
+ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
 MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models')
-# Add other DIR constants if needed (e.g., EVAL_DIR, OTCOST_DIR if still used)
-# EVAL_DIR = os.path.join(ROOT_DIR, 'code', 'evaluation')
-# OTCOST_DIR = os.path.join(ROOT_DIR, 'code', 'OTCost')
-# ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
+EVAL_DIR = os.path.join(ROOT_DIR, 'code', 'evaluation')
+OTCOST_DIR = os.path.join(ROOT_DIR, 'code', 'OTCost')
 
 # --- Add project directories to Python path ---
 # Allows importing modules from these directories
 # (Ensure these are added in run.py or entry point, not necessarily needed here)
-# sys.path.insert(0, os.path.join(ROOT_DIR, 'code')) # Example
+for local_path in [DATA_DIR, RESULTS_DIR, ACTIVATION_DIR, MODEL_SAVE_DIR, EVAL_DIR, OTCOST_DIR]:
+    if local_path not in sys.path:
+        sys.path.insert(0, local_path)
 
 # --- Global Settings ---
 # Check if torch is imported and CUDA is available

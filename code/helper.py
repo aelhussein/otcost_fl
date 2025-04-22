@@ -85,6 +85,19 @@ def get_default_reg(DATASET):
     # It's okay if this is None for algos that don't need it
     return reg
 
+def validate_dataset_config(config: Dict, dataset_name: str):
+    """Basic validation for required config keys."""
+    required_keys = ['data_source', 'partitioning_strategy', 'cost_interpretation',
+                     'dataset_class', 'default_num_clients']
+    missing_keys = [key for key in required_keys if key not in config]
+    if missing_keys:
+        raise ValueError(f"Dataset config for '{dataset_name}' missing required keys: {missing_keys}")
+    # Add specific checks, e.g., for site_mappings if needed by strategy
+    if config['partitioning_strategy'] == 'pre_split' and dataset_name in ['ISIC', 'IXITiny']:
+         if 'site_mappings' not in config.get('source_args', {}):
+             print(f"Warning: 'site_mappings' potentially missing in source_args for pre-split {dataset_name}.")
+
+
 def translate_cost(cost, interpretation_type: str) -> Dict:
     """
     Translates the raw 'cost' value based on the configured interpretation type.

@@ -14,12 +14,8 @@ import traceback
 # Import necessary components from other modules
 from configs import N_WORKERS
 from helper import g, seed_worker # Random generator and worker seeding
-from datasets import BaseTabularDataset # Import base class used for scaling check
-
-# Import specific dataset classes needed by DataPreprocessor._get_final_dataset_class
-# This assumes datasets.py defines all final wrapper classes
-# (Ensure these are correctly defined in datasets.py)
-from datasets import (
+from data_sets import (
+    BaseTabularDataset, BaseImageDataset,
     SyntheticDataset, CreditDataset, HeartDataset, EMNISTDataset,
     CIFARDataset, ISICDataset, IXITinyDataset
 )

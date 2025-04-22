@@ -17,7 +17,7 @@ from torch.utils.data import Dataset as TorchDataset
 import traceback
 
 # Import Base Dataset wrappers needed by loaders that return them
-from datasets import SyntheticBaseDataset, CreditBaseDataset
+from data_sets import SyntheticBaseDataset, CreditBaseDataset
 
 # --- Synthetic Data Generation Class ---
 class SyntheticDataGenerator:
