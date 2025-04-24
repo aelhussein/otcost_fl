@@ -116,7 +116,6 @@ class OTDataManager:
         self._initialize_results_manager(dataset)
         # Get both records and metadata from results_manager
         _, metadata = self.results_manager.load_results(ExperimentType.EVALUATION)
-        
         # Determine actual client count used for this run
         actual_clients = self.num_clients  # Default to target count
         
@@ -137,7 +136,7 @@ class OTDataManager:
         )
 
     def _load_model_for_activation_generation(
-        self, dataset: str, cost: Any, seed: int, num_clients: int
+        self, dataset: str, cost: Any, seed: int, num_clients: int, model_type: str
     ) -> Tuple[Optional[torch.nn.Module], Optional[Dict], int]:
         """
         Loads a saved model for activation generation.
@@ -155,7 +154,7 @@ class OTDataManager:
         print(f"    Dataset: {dataset}, Cost: {cost}, Seed: {seed}, Target Clients: {num_clients}")
         
         # Try ONLY the round0 model as required
-        model_path = self._get_model_path(dataset, cost, seed, 'round0')
+        model_path = self._get_model_path(dataset, cost, seed, model_type)
                     
         if not os.path.exists(model_path):
             print(f"Round0 model not found for {dataset}, cost {cost}, seed {seed}")
@@ -355,7 +354,7 @@ class OTDataManager:
     def _generate_activations(
         self, dataset: str, cost: Any, seed: int,
         client_id_1: Union[str, int], client_id_2: Union[str, int],
-        num_clients: int, num_classes: int, loader_type: str
+        num_clients: int, num_classes: int, loader_type: str, model_type: str
     ) -> Optional[Tuple]:
         """
         Generates activations by loading a pre-trained model and running inference.
@@ -369,7 +368,7 @@ class OTDataManager:
         try:
             # Load the model and dataloaders
             model, dataloaders, actual_clients = self._load_model_for_activation_generation(
-                dataset, cost, seed, num_clients
+                dataset, cost, seed, num_clients, model_type
             )
             
             if model is None or dataloaders is None:
@@ -466,7 +465,8 @@ class OTDataManager:
         client_id_1: Union[str, int], client_id_2: Union[str, int],
         num_clients: int, num_classes: int,
         loader_type: str = 'val',
-        force_regenerate: bool = False
+        force_regenerate: bool = False,
+        model_type: str = 'round0'
     ) -> Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]]:
         """
         Gets processed activations for a specific client pair.
@@ -497,7 +497,7 @@ class OTDataManager:
                 dataset=dataset_name, cost=cost, seed=seed,
                 client_id_1=cid1_str, client_id_2=cid2_str,
                 num_clients=num_clients, num_classes=num_classes,
-                loader_type=loader_type
+                loader_type=loader_type, model_type=model_type
             )
             
             if raw_activations is not None:

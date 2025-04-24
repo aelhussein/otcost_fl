@@ -35,7 +35,7 @@ def _apply_feature_shift(X: np.ndarray,
     """
     n_samples, n_features = X.shape
     if cols is None:
-        cols = min(5, n_features) # Default to affect first 5 cols or fewer
+        cols = min(10, n_features) # Default to affect first 10 cols or fewer
 
     if kind == "mean" and cols > 0:
         X[:, :cols] += delta * mu

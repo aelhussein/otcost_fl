@@ -35,11 +35,11 @@ DATASETS = [
 COMMON_TABULAR_PARAMS = dict(
     fixed_classes=2,
     default_lr=1e-3,
-    learning_rates_try=[1e-2, 1e-3, 5e-4],
+    learning_rates_try=[1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
     default_reg_param=0.1, # For FedProx, pFedMe, Ditto if added
     reg_params_try=[1, 0.1, 0.01], # For FedProx, pFedMe, Ditto
     batch_size=64,
-    epochs_per_round=1,
+    epochs_per_round=3,
     rounds=100,
     rounds_tune_inner=20,
     runs=10, # Number of evaluation runs
@@ -86,7 +86,7 @@ DEFAULT_PARAMS = {
             'label_noise': 0.05,
             # Feature shift specific config (passed as **kwargs to generator)
             'feature_shift_kind': 'mean',
-            'feature_shift_cols': 5,
+            'feature_shift_cols': 10,
             'feature_shift_mu': 3.0,
         },
         'sampling_config': None, # Data already generated per client size
@@ -123,7 +123,7 @@ DEFAULT_PARAMS = {
             'drop_cols': ['Time']
         },
         'metric': 'F1',
-        'learning_rates_try': [1e-1, 1e-2, 1e-3],
+        'learning_rates_try': [5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
     },
     'CIFAR': {
         'dataset_name': 'CIFAR',
@@ -236,8 +236,9 @@ DATASET_COSTS = {
     'EMNIST': [1000.0, 10.0, 1.0, 0.5, 0.1],
     'CIFAR': [1000.0, 10.0, 1.0, 0.5, 0.1],
 
-    # Feature shift parameter (0=baseline, 1=max difference) - Used directly by load_synthetic_raw
-    'Synthetic_Feature': [0.0, 0.25, 0.5, 0.75, 1.0],
+    # Feature shift parameter (0=baseline) - Used directly by load_synthetic_raw
+    'Synthetic_Feature': [0.0, 0.5, 1.0, 5.0, 10.0],
+    # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
     'Synthetic_Concept': [0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0],
 
     # Site mapping keys - Used directly by load_heart_raw, load_isic_paths_raw, load_ixi_paths_raw

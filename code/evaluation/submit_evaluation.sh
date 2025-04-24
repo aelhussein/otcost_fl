@@ -3,12 +3,13 @@
 # Default values
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR"  "ISIC" "IXITiny")
 DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR")
-DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit")
-DEFAULT_EXP_TYPES=("evaluation")
+#DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit")
+#DEFAULT_DATASETS=("Synthetic_Feature" "Credit")
+DEFAULT_EXP_TYPES=("learning_rate")
 DEFAULT_DIR='/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'
 DEFAULT_ENV_PATH='/gpfs/commons/home/aelhussein/anaconda3/bin/activate'
 DEFAULT_ENV_NAME='cuda_env_ne1'
-DEFAULT_NUM_CLIENTS="" # Default: Don't override, let run.py use config default
+DEFAULT_NUM_CLIENTS="2"
 
 # Function to display usage
 show_usage() {
@@ -26,7 +27,7 @@ show_usage() {
 # Parse named arguments
 datasets=() # Initialize as empty arrays
 experiment_types=()
-num_clients_override="" # Initialize specific variable for client override
+#num_clients_override="" # Initialize specific variable for client override
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -96,6 +97,24 @@ echo
 
 # Submit jobs
 for dataset in "${datasets[@]}"; do
+    # Determine whether the job needs a GPU
+    gpu_datasets=("EMNIST" "CIFAR")
+    use_gpu=false
+    for gpu_ds in "${gpu_datasets[@]}"; do
+        if [[ "$dataset" == "$gpu_ds" ]]; then
+            use_gpu=true
+            break
+        fi
+    done
+
+    # Set partition and GRES accordingly
+    if [ "$use_gpu" = true ]; then
+        partition="gpu"
+        gres_line="#SBATCH --gres=gpu:1"
+    else
+        partition="cpu"
+        gres_line=""
+    fi
     for exp_type in "${experiment_types[@]}"; do
         # Include client count in job name if overridden for clarity
         job_name_suffix=""
@@ -107,7 +126,8 @@ for dataset in "${datasets[@]}"; do
         cat << EOF > temp_submit_${job_name}.sh
 #!/bin/bash
 #SBATCH --job-name=${job_name}
-#SBATCH --partition=cpu
+#SBATCH --partition=${partition}
+${gres_line}
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=aelhussein@nygenome.org
 #SBATCH --nodes=1

@@ -39,7 +39,8 @@ def load_synthetic_raw(dataset_name: str,
     # Set shift parameter if applicable (for feature/concept shift)
     shift_param = 0.0
     if mode in ['feature_shift', 'concept_shift'] and isinstance(cost_key, (int, float)):
-        shift_param = float(np.clip(cost_key, 0.0, 1.0))
+        n_clients = num_clients if num_clients is not None else source_args.get('n_clients', 5)
+        shift_param = float(cost_key)  * (client_num - 1) / (n_clients - 1)
     
     # Determine sample size and seed based on mode
     if mode == 'feature_shift':
@@ -50,12 +51,10 @@ def load_synthetic_raw(dataset_name: str,
     else:
         n_samples = source_args.get('base_n_samples', 10000)
         seed = source_args.get('random_state', base_seed)
-        if mode == 'concept_shift':
-            n_clients = num_clients if num_clients is not None else source_args.get('n_clients', 5)
-            shift_param = float(cost_key)  * (client_num - 1) / (n_clients - 1)
+
     # Basic parameters
     n_features = source_args.get('n_features', 10)
-    label_noise = source_args.get('label_noise', 0.0)
+    label_noise = source_args.get('label_noise', 0.05)
     
     # Extract relevant configuration keys for each shift type
     shift_configs = {

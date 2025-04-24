@@ -326,6 +326,7 @@ class DataManager:
         preprocessor = DataPreprocessor(self.config, self.batch_size)
         client_dataloaders = {}
         
+        print('\n')
         for client_id, bundle in client_raw_bundles.items():
             dataloaders = preprocessor.preprocess_client_data(bundle)
             client_dataloaders[client_id] = dataloaders
@@ -333,5 +334,5 @@ class DataManager:
                   f"Train size: {len(dataloaders[0].dataset)}, "
                   f"Val size: {len(dataloaders[1].dataset)}, "
                   f"Test size: {len(dataloaders[2].dataset)}")
-                  
+        print('\n')      
         return client_dataloaders

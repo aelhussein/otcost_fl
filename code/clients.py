@@ -48,7 +48,7 @@ class Client:
         """Creates optimizer for a given model instance (CPU)."""
         wd = self.config.algorithm_params.get('weight_decay', 1e-4)
         lr = self.config.learning_rate
-        return optim.Adam(model.parameters(), lr=lr, amsgrad=True, weight_decay=wd)
+        return optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, eps = 1e-8)
 
     def _get_state(self, personal: bool) -> ModelState:
         """Helper to get the correct state object."""

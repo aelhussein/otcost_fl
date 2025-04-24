@@ -7,6 +7,8 @@ from typing import List, Tuple, Dict, Any, Union, Optional
 from ot_data_manager import OTDataManager as DataManager
 # Import OT calculator related classes
 from ot_calculators import OTConfig, OTCalculatorFactory
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 class PipelineRunner:
     """ Orchestrates the OT similarity analysis pipeline for multiple client pairs. """
@@ -41,7 +43,8 @@ class PipelineRunner:
         activation_loader_type: str = 'val',
         performance_aggregation: str = 'mean',
         base_seed: int = 42,
-        force_activation_regen: bool = False
+        force_activation_regen: bool = False,
+        model_type: str = 'round0'
     ) -> pd.DataFrame:
         """
         Runs the full OT analysis pipeline.
@@ -61,12 +64,6 @@ class PipelineRunner:
             pd.DataFrame: DataFrame with OT results for each pair, cost, and config.
         """
         results_list = []
-
-        # Validation
-        if not ot_configurations:
-            raise ValueError("Must provide at least one OT configuration.")
-        if not all(isinstance(cfg, OTConfig) for cfg in ot_configurations):
-            raise TypeError("ot_configurations must be a list of OTConfig objects.")
 
         # Generate client pairs
         client_ids = [f'client_{i+1}' for i in range(self.num_clients)]
@@ -133,7 +130,8 @@ class PipelineRunner:
                         num_clients=self.num_clients,
                         num_classes=num_classes,
                         loader_type=activation_loader_type,
-                        force_regenerate=force_activation_regen
+                        force_regenerate=force_activation_regen,
+                        model_type=model_type
                     )
                     
                     activation_status = "Loaded/Generated" if processed_activations else "Activation Failed"

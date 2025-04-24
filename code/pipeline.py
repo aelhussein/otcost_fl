@@ -248,7 +248,6 @@ class Experiment:
 
             # --- Cost Loop ---
             for cost in costs_to_run_this_iter:
-                print(f"  Cost: {cost}")
                 cost_results = None; num_actual_clients = 0
                 try:
                     client_dataloaders = self.data_manager.get_dataloaders(
@@ -316,7 +315,7 @@ class Experiment:
     def _evaluate_cost_for_run(self, cost: Any, run_idx: int, seed: int,
                                client_dataloaders: Dict, num_actual_clients: int
                               ) -> CostExecutionResult:
-        """Executes all evaluation trials (servers) for a single cost and run."""
+        """Executes all evaluation trials (servers) for a single cost and run.""" 
         trial_records: List[TrialRecord] = []
 
         for server_type in ALGORITHMS: # Use global ALGORITHMS list
@@ -327,7 +326,8 @@ class Experiment:
             if best_lr is None: best_lr = get_default_lr(self.config.dataset)
             if best_reg is None and server_type in ['fedprox', 'pfedme', 'ditto']: best_reg = get_default_reg(self.config.dataset)
             eval_hyperparams = {'learning_rate': best_lr, 'reg_param': best_reg}
-
+            print(f"\n")
+            print(f"========== Cost: {cost} | Server: {server_type:<10} | Run: {run_idx+1} | LR: {best_lr:.5f} ========== ", end="")
             # Execute trial
             trial_metrics, model_states = self.single_run_executor.execute_trial(
                 server_type=server_type, hyperparams=eval_hyperparams,
@@ -344,7 +344,7 @@ class Experiment:
                     if model_type != 'error' and state_dict is not None:
                          self.results_manager.save_model_state(
                              state_dict, num_actual_clients, cost, seed, 'fedavg', model_type)
-                         print(f"{model_type} model saved successfully for {server_type}, Cost: {cost}, Run: {run_idx}, Seed: {seed}")
-
+                         
+        print(f"\n")
         # Return records, no need to return state dicts from here
         return CostExecutionResult(cost=cost, trial_records=trial_records)

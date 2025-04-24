@@ -1,5 +1,11 @@
 # ot_utils.py
-from configs import *
+from typing import Optional, Tuple, Dict, Any, List, Union
+import numpy as np
+import torch
+import warnings
+import ot
+from scipy.stats import wasserstein_distance
+from sklearn.cluster import KMeans
 
 # --- Constants ---
 DEFAULT_OT_REG = 0.001

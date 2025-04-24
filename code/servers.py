@@ -96,8 +96,9 @@ class Server:
     def train_round(self) -> None:
         """Runs one round of training and validation."""
         current_round = len(self.history.get(MetricKey.VAL_LOSSES, []))
+        if current_round % 10 == 0:
+                print(f"** Round {current_round + 1} **")
         use_personal = self.personal_model_required_by_server
-        print(f"Round {current_round + 1}")
         def train_val_step(client: Client) -> Dict:
              return client.train_and_validate(personal=use_personal)
 
@@ -113,9 +114,10 @@ class Server:
             round_metrics[MetricKey.TRAIN_LOSSES] += output_dict.get('train_loss', 0.0) * weight
             round_metrics[MetricKey.VAL_LOSSES] += output_dict.get('val_loss', float('inf')) * weight
             round_metrics[MetricKey.VAL_SCORES] += output_dict.get('val_score', 0.0) * weight
-            print(f"Client {client_id}, weight {weight:2f} - Train Loss: {output_dict.get('train_loss', 0.0):4f}, "
-                  f"Val Loss: {output_dict.get('val_loss', float('inf')):4f}, "
-                  f"Val Score: {output_dict.get('val_score', 0.0):4f}")
+            if current_round % 10 == 0:
+                print(f"Client {client_id}, weight {weight:2f} - Train Loss: {output_dict.get('train_loss', 0.0):4f}, "
+                    f"Val Loss: {output_dict.get('val_loss', float('inf')):4f}, "
+                    f"Val Score: {output_dict.get('val_score', 0.0):4f}")
             # Collect current state dicts only if NOT a personal training round for this server type
             if not use_personal and 'state_dict' in output_dict and output_dict['state_dict'] is not None:
                  states_for_agg.append({'state_dict': output_dict['state_dict'], 'weight': weight})
