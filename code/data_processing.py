@@ -224,7 +224,7 @@ class DataManager:
             return {'type': 'direct', 'data': {'X': loaded_data[0], 'y': loaded_data[1]}}
         return None
 
-    def _prepare_loader_args(self, cost, client_num=None):
+    def _prepare_loader_args(self, cost, client_num=None, num_clients=None):
         """Prepare common loader arguments with dataset-specific adjustments."""
         args = {'source_args': self.config.get('source_args', {}), 'cost_key': cost}
         
@@ -232,6 +232,8 @@ class DataManager:
         if self.data_source_type == 'synthetic':
             args['dataset_name'] = self.dataset_name
             args['base_seed'] = self.base_seed
+            if num_clients is not None:
+                args['num_clients'] = num_clients
         elif self.data_source_type == 'torchvision':
             args['data_dir'] = self.data_dir_root
             args['transform_config'] = self.config.get('transform_config', {})
@@ -280,7 +282,7 @@ class DataManager:
                 
                 # Load data for this client
                 try:
-                    loader_args = self._prepare_loader_args(cost, client_idx)
+                    loader_args = self._prepare_loader_args(cost, client_idx, num_clients)
                     loaded_data = loader_func(**loader_args)
                     bundle = self._create_client_bundle(loaded_data)
                     if bundle:

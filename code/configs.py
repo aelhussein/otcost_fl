@@ -94,7 +94,7 @@ DEFAULT_PARAMS = {
         **COMMON_TABULAR_PARAMS,
         'dataset_name': 'Synthetic_Concept',
         'data_source': 'synthetic',
-        'partitioning_strategy': 'iid_indices', # Partition baseline data IID
+        'partitioning_strategy': 'pre_split', # Partition baseline data IID
         # REMOVED: cost_interpretation (Loader uses cost_key as shift_param)
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for base generation + concept shift (mode='concept_shift')

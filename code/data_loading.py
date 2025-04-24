@@ -25,7 +25,7 @@ def load_synthetic_raw(dataset_name: str,
                        client_num: Optional[int] = None,
                        cost_key: Optional[Any] = None,
                        base_seed: int = 42,
-                       data_dir: Optional[str] = None
+                       num_clients: Optional[int] = None
                       ) -> Tuple[np.ndarray, np.ndarray]:
     """Generates raw synthetic data (features, labels) using the unified generator."""
     # Simplified dataset-to-mode mapping 
@@ -47,6 +47,8 @@ def load_synthetic_raw(dataset_name: str,
         # Create deterministic but unique seed for each client/cost combination
         seed_string = f"synth-{base_seed}-{client_num}-{cost_key}"
         seed = int(hashlib.sha256(seed_string.encode('utf-8')).hexdigest(), 16) % (2**32)
+    elif mode == 'concept_shift':
+        shift_param = (client_num - 1) / (num_clients - 1)
     else:
         n_samples = source_args.get('base_n_samples', 10000)
         seed = source_args.get('random_state', base_seed)

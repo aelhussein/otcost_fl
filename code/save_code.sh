@@ -23,7 +23,7 @@ save_files() {
 fl_files=("run.py" "pipeline.py" "servers.py" "clients.py" "data_processing.py" "data_partitioning.py" "data_loading.py" "data_sets.py" "synthetic_data.py" "helper.py" "configs.py")
 eval_files=("run.py" "results_manager.py" "pipeline.py" "servers.py" "clients.py")
 data_files=("pipeline.py" "data_processing.py" "data_partitioning.py" "data_loading.py" "data_sets.py" "synthetic_data.py"  "configs.py")
-data_files=("data_processing.py" "data_loading.py" "configs.py")
+data_files=("data_processing.py" "data_loading.py" "synthetic_data.py" "configs.py")
 ot_files=("ot_results_analysis.py" "ot_pipeline_runner.py" "ot_calculators.py" "ot_data_manager.py" "ot_utils.py")
 
 save_files fl_files[@] "code_fl.txt"
