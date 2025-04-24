@@ -1,410 +1,302 @@
+# helper.py
 """
-Utility functions and classes for the federated learning pipeline.
-Includes seeding, GPU cleanup, metric calculation helpers, configuration access,
-cost translation, and model diversity calculation.
+Core utility functions for the federated learning pipeline.
+Streamlined version focusing on essential helpers.
+REMOVED: translate_cost function.
 """
 import os
-import gc
 import random
-import copy # Used in ModelDiversity if it were more complex, but not strictly needed now
 import numpy as np
 import torch
-import torch.nn as nn # For type hinting nn.Module
-from torch import Tensor # For type hinting
-from typing import Dict, Any, Optional, List, Tuple, Iterator # For type hinting
-import hashlib # NEW: For better seed generation
+from contextlib import contextmanager, suppress
+from torch import nn, optim
+from torch.utils.data import DataLoader
+import numpy as np
+from typing import Dict, Optional, Tuple, List, Iterator, Any, Callable,  Union
+from dataclasses import dataclass, field
+import copy
+from functools import partial
+import sklearn.metrics as metrics
 
-# Import only necessary configs or access via functions
-from configs import DEFAULT_PARAMS
+# Import global config directly
+from configs import DEFAULT_PARAMS # Needed for config helpers
 
-# --- NEW: Metric Key Constants ---
-class MetricKey:
-    """Constants for metric dictionary keys."""
-    TRAIN_LOSSES = 'train_losses'
-    VAL_LOSSES = 'val_losses'
-    TEST_LOSSES = 'test_losses'
-    TRAIN_SCORES = 'train_scores'
-    VAL_SCORES = 'val_scores'
-    TEST_SCORES = 'test_scores'
-    # Add others if needed, e.g., GLOBAL_LOSSES, GLOBAL_SCORES
-
-# --- Seeding and Environment ---
-
-def set_seeds(seed_value: int = 1) -> torch.Generator:
-    """
-    Sets random seeds for PyTorch, NumPy, and Python's random module
-    for reproducibility. Also configures CUDA for deterministic algorithms.
-
-    Args:
-        seed_value: The integer value to use for seeding.
-
-    Returns:
-        A seeded PyTorch random number generator.
-    """
+# --- Seeding ---
+def set_seeds(seed_value: int = 42):
+    """Sets random seeds for PyTorch, NumPy, and Python's random module."""
     torch.manual_seed(seed_value)
-    # Seed all GPUs if available
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed_value)
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed_value)
     np.random.seed(seed_value)
     random.seed(seed_value)
-    # Set environment variable for Python's hash seed
     os.environ['PYTHONHASHSEED'] = str(seed_value)
-    # Configure PyTorch to use deterministic algorithms
-    # Note: This might impact performance and compatibility with some operations.
-    try:
-         torch.backends.cudnn.deterministic = True
-         torch.backends.cudnn.benchmark = False
-         # Requires PyTorch 1.7+
-         # MODIFIED: Wrap in version check if possible, or just try/except
-         if hasattr(torch, 'use_deterministic_algorithms'):
-             torch.use_deterministic_algorithms(True)
-         # On some systems (like CUBLAS), further env vars might be needed:
-         # os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8" # Or ":16:8"
-    except AttributeError:
-         print("Warning: Could not set deterministic algorithms (requires PyTorch 1.7+).")
-    except Exception as e:
-         print(f"Warning: Error setting deterministic behavior: {e}")
 
-    # Create and return a seeded generator for DataLoaders if needed elsewhere
-    g = torch.Generator()
-    g.manual_seed(seed_value)
-    return g
-
-# Initialize global generator (used by DataLoaders if passed)
-g = set_seeds(seed_value=1) # Or use seed from config/args
-
-def seed_worker(worker_id: int):
-    """
-    Seeds a DataLoader worker process for reproducible data loading/shuffling
-    when using multiple workers. To be used with `worker_init_fn`.
-
-    Args:
-        worker_id: The ID of the worker process (unused but required by DataLoader).
-    """
-    # Get the initial seed from the main process and make it worker-specific
-    worker_seed = torch.initial_seed() % 2**32
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-    # print(f"DataLoader worker {worker_id} seeded with {worker_seed}") # Debug print
-
-def cleanup_gpu():
-    """Releases unused memory from the CUDA cache if available."""
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        # Optional: Trigger Python's garbage collector too
-        # gc.collect()
+# --- Device Handling ---
+@contextmanager
+def gpu_scope():
+    try: yield
+    finally:
+        with suppress(Exception):
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
 
 def move_to_device(batch: Any, device: torch.device) -> Any:
-    """
-    Moves a batch of data (single tensor, list, or tuple) to the specified device.
-
-    Args:
-        batch: The data batch.
-        device: The target torch.device (e.g., 'cuda', 'cpu').
-
-    Returns:
-        The batch moved to the target device.
-    """
+    """Moves a batch (tensor, list/tuple of tensors) to the specified device."""
     if isinstance(batch, (list, tuple)):
-        # Recursively move elements if they are tensors
-        return [
-            item.to(device) if isinstance(item, torch.Tensor) else item
-            for item in batch
-        ]
-    elif isinstance(batch, torch.Tensor):
-        return batch.to(device)
-    # Return unchanged if not a tensor or list/tuple of tensors
+        return [item.to(device) if isinstance(item, torch.Tensor) else item for item in batch]
+    elif isinstance(batch, torch.Tensor): return batch.to(device)
     return batch
 
 # --- Metrics ---
-
 def get_dice_score(output: torch.Tensor, target: torch.Tensor,
-                   foreground_channel: int = 1, # NEW: Specify foreground channel
-                   SPATIAL_DIMENSIONS: Tuple[int, ...] = (2, 3, 4),
+                   foreground_channel: int = 1,
+                   spatial_dims: Tuple[int, ...] = (2, 3, 4), # D, H, W for 3D
                    epsilon: float = 1e-9) -> float:
-    """
-    Calculates the mean Dice score for 3D segmentation tasks (like IXITiny).
-    Assumes input tensors are probabilities or logits for the foreground class.
-
-    Args:
-        output: Predicted probabilities/logits (shape: N, C, D, H, W).
-        target: Ground truth labels (shape: N, C, D, H, W, usually one-hot).
-        foreground_channel (int): Index of the channel representing the foreground class. Default 1.
-        SPATIAL_DIMENSIONS: Tuple of spatial dimension indices (usually Depth, Height, Width).
-        epsilon: Small value to prevent division by zero.
-
-    Returns:
-        The mean Dice score across the batch.
-
-    Raises:
-        ValueError: If foreground_channel index is invalid for input shapes.
-    """
-    num_channels_out = output.shape[1]
-    num_channels_tgt = target.shape[1]
-
-    if not (0 <= foreground_channel < num_channels_out):
-        raise ValueError(f"foreground_channel ({foreground_channel}) out of bounds for output shape {output.shape}")
-    if not (0 <= foreground_channel < num_channels_tgt):
-         raise ValueError(f"foreground_channel ({foreground_channel}) out of bounds for target shape {target.shape}")
-
-    # MODIFIED: Use foreground_channel parameter
-    # If input is logits, apply sigmoid/softmax first if needed by the metric interpretation
-    p0 = output[:, foreground_channel, ...] # Predicted foreground prob
-    g0 = target[:, foreground_channel, ...] # True foreground mask
-
-    # Calculate background probabilities/masks (assuming binary or multi-class handled by focusing on foreground_channel)
-    # For Dice, we typically compare foreground prediction vs foreground target directly
-    # Background logic might be needed for other metrics, but not standard Dice.
-
-    # Calculate True Positives, False Positives, False Negatives per sample for the foreground channel
-    tp = torch.sum(p0 * g0, dim=SPATIAL_DIMENSIONS)
-    fp = torch.sum(p0 * (1.0 - g0), dim=SPATIAL_DIMENSIONS) # Predict foreground, but target is background
-    fn = torch.sum((1.0 - p0) * g0, dim=SPATIAL_DIMENSIONS) # Predict background, but target is foreground
-
-    # Calculate Dice score per sample
+    """Calculates the mean Dice score for segmentation tasks."""
+    # (Implementation remains the same as previous valid version)
+    p0 = output[:, foreground_channel, ...]
+    g0 = target[:, foreground_channel, ...]
+    tp = torch.sum(p0 * g0, dim=spatial_dims)
+    fp = torch.sum(p0 * (1.0 - g0), dim=spatial_dims)
+    fn = torch.sum((1.0 - p0) * g0, dim=spatial_dims)
     numerator = 2 * tp
     denominator = 2 * tp + fp + fn + epsilon
     dice_score_per_sample = numerator / denominator
-
-    # Return the mean Dice score across the batch
     return dice_score_per_sample.mean().item()
 
+
 # --- Configuration Helpers ---
-
 def get_parameters_for_dataset(dataset_name: str) -> Dict:
-    """
-    Retrieves the default configuration parameters dictionary for a given dataset
-    from the global `DEFAULT_PARAMS`.
-
-    Args:
-        dataset_name: The name of the dataset (must be a key in DEFAULT_PARAMS).
-
-    Returns:
-        The configuration dictionary for the dataset.
-
-    Raises:
-        ValueError: If the dataset name is not found in DEFAULT_PARAMS.
-    """
+    """Retrieves the config dict for a dataset from global defaults."""
     params = DEFAULT_PARAMS.get(dataset_name)
     if params is None:
-        raise ValueError(f"Dataset '{dataset_name}' is not supported or has no default "
-                         f"parameters defined in configs.py.")
-
-    # Ensure backward compatibility if older code uses sizes_per_client directly
-    sampling_config = params.get('sampling_config')
-    if (isinstance(sampling_config, dict) and
-        sampling_config.get('type') == 'fixed_total' and
-        'size' in sampling_config):
-        # This can potentially be removed if nothing relies on 'sizes_per_client' anymore
-        params['sizes_per_client'] = sampling_config['size']
-
+        raise ValueError(f"Dataset '{dataset_name}' not found in configs.DEFAULT_PARAMS.")
+    if 'dataset_name' not in params: params['dataset_name'] = dataset_name
     return params
 
 def get_default_lr(dataset_name: str) -> float:
-    """Gets the default learning rate from the dataset's configuration."""
+    """Gets the default learning rate from the dataset's config."""
     params = get_parameters_for_dataset(dataset_name)
     lr = params.get('default_lr')
-    if lr is None:
-         raise ValueError(f"'default_lr' not defined for dataset '{dataset_name}' in configs.py")
+    if lr is None: raise ValueError(f"'default_lr' not defined for '{dataset_name}'.")
     return lr
 
 def get_default_reg(dataset_name: str) -> Optional[float]:
-    """Gets the default regularization parameter from the dataset's config (can be None)."""
+    """Gets the default regularization parameter (can be None)."""
     params = get_parameters_for_dataset(dataset_name)
-    # Returns None if not defined, which is valid for algos not needing it
-    reg = params.get('default_reg_param')
-    return reg
+    return params.get('default_reg_param')
 
-def translate_cost(cost: Any, interpretation_type: str) -> Dict[str, Any]:
-    """
-    Translates the raw 'cost' parameter value based on the configured
-    interpretation type (e.g., 'alpha', 'site_mapping_key', 'feature_shift_param').
 
-    Args:
-        cost: The value from the DATASET_COSTS list for the current dataset.
-        interpretation_type: String key from config defining how to interpret cost.
+# --- Configuration & Data Structures ---
 
-    Returns:
-        A dictionary containing the interpreted value(s) usable by loaders,
-        partitioners or dataset wrappers (e.g., {'alpha': 0.1}, {'key': 1},
-        {'feature_shift_param': 0.5}, {'cost_key_is_all': True}).
+# --- Constants ---
+class MetricKey:
+    TRAIN_LOSSES = 'train_losses'; VAL_LOSSES = 'val_losses'; TEST_LOSSES = 'test_losses'
+    TRAIN_SCORES = 'train_scores'; VAL_SCORES = 'val_scores'; TEST_SCORES = 'test_scores'
 
-    Raises:
-        ValueError: If cost value is invalid for the interpretation type or
-                    if interpretation type is unknown.
-    """
-    # NEW: Handle 'all' consistently
-    is_all_sentinel = isinstance(cost, str) and cost.lower() == 'all'
+# Define Experiment types locally
+class ExperimentType:
+    LEARNING_RATE = 'learning_rate'; REG_PARAM = 'reg_param'
+    EVALUATION = 'evaluation'; DIVERSITY = 'diversity' # Keep diversity type if needed
 
-    if is_all_sentinel:
-         # Return a specific signal if the cost is 'all'
-         # The consumers (loader, partitioner) need to know how to handle this dict
-         print(f"Translating cost: Detected 'all' sentinel for type '{interpretation_type}'")
-         # Specific handling might differ based on interpretation type later if needed
-         # For now, a general flag is useful.
-         return {'cost_key_is_all': True, 'original_cost': cost}
+@dataclass
+class TrainerConfig:
+    """Training configuration."""
+    dataset_name: str
+    device: str # Target compute device string (e.g., 'cuda:0')
+    learning_rate: float
+    batch_size: int
+    epochs: int = 1
+    rounds: int = 1
+    requires_personal_model: bool = False
+    algorithm_params: Dict[str, Any] = field(default_factory=dict)
 
-    # --- Handle numeric/specific costs ---
-    if interpretation_type == 'alpha':
-        try: alpha = float(cost); assert alpha > 0
-        except: raise ValueError(f"Invalid alpha value: {cost}")
-        return {'alpha': alpha}
+@dataclass
+class SiteData:
+    """Client data and metadata."""
+    site_id: str
+    train_loader: DataLoader
+    val_loader: Optional[DataLoader] = None
+    test_loader: Optional[DataLoader] = None
+    weight: float = 1.0
+    num_samples: int = 0
 
-    elif interpretation_type == 'inv_alpha':
-        try: inv_a = float(cost); assert inv_a > 0; alpha = 1.0 / inv_a
-        except: raise ValueError(f"Invalid inverse alpha value: {cost}")
-        return {'alpha': alpha}
+    def __post_init__(self):
+        if self.num_samples == 0 and self.train_loader and hasattr(self.train_loader, 'dataset'):
+            try: self.num_samples = len(self.train_loader.dataset)
+            except: self.num_samples = 0
 
-    elif interpretation_type == 'file_suffix':
-        return {'suffix': cost}
+@dataclass
+class ModelState:
+    """Holds state for one model: current weights, optimizer, criterion, best state."""
+    model: nn.Module # Current model weights/arch (CPU)
+    optimizer: Optional[optim.Optimizer] = None # Client creates and assigns
+    criterion: Union[nn.Module, Callable] = None # Loss function
+    best_loss: float = field(init=False, default=float('inf'))
+    best_model_state_dict: Optional[Dict] = field(init=False, default=None) # CPU state dict
 
-    elif interpretation_type == 'site_mapping_key':
-        return {'key': cost}
+    def __post_init__(self):
+        """Initialize best state based on the initial model."""
+        self.model.cpu()
+        if self.best_model_state_dict is None:
+            self.best_model_state_dict = copy.deepcopy(self.model.state_dict())
 
-    elif interpretation_type == 'feature_shift_param':
-        try:
-             shift = float(cost)
-             # shift = np.clip(shift, 0.0, 1.0) # Clip here or later? Let loader/dataset handle it.
-        except (ValueError, TypeError):
-             raise ValueError(f"Invalid cost value '{cost}' for feature_shift_param.")
-        return {'feature_shift_param': shift}
+    def update_best_state(self, current_val_loss: float) -> bool:
+        """Updates best_loss and best_model_state_dict if loss improved."""
+        if current_val_loss < self.best_loss:
+            self.best_loss = current_val_loss
+            self.model.cpu() # Ensure model is on CPU before getting state_dict
+            self.best_model_state_dict = copy.deepcopy(self.model.state_dict())
+            return True
+        return False
 
-    elif interpretation_type == 'concept_shift_param':
-        try:
-             shift = float(cost)
-             # shift = np.clip(shift, 0.0, 1.0) # Clip here or later? Let loader/dataset handle it.
-        except (ValueError, TypeError):
-             raise ValueError(f"Invalid cost value '{cost}' for concept_shift_param.")
-        return {'concept_shift_param': shift}
+    def get_best_model_state_dict(self) -> Optional[Dict]:
+        """Returns the best recorded state dict (CPU)."""
+        return self.best_model_state_dict
 
-    elif interpretation_type == 'ignore':
-        return {} # No parameters needed
+    def get_current_model_state_dict(self) -> Optional[Dict]:
+        """Returns the current model state dict (CPU)."""
+        self.model.cpu()
+        return self.model.state_dict()
 
-    else:
-        raise ValueError(f"Unknown cost_interpretation type: '{interpretation_type}'")
+    def load_current_model_state_dict(self, state_dict: Dict):
+        """Loads state_dict into the current model (CPU)."""
+        self.model.cpu()
+        self.model.load_state_dict(state_dict)
 
-# --- Model Comparison ---
+    def load_best_model_state_dict_into_current(self):
+        """Loads the best state into the current model if available."""
+        if self.best_model_state_dict:
+            self.load_current_model_state_dict(self.best_model_state_dict)
+            return True
+        return False
 
+    def set_learning_rate(self, lr: float):
+        """Updates the learning rate of the optimizer."""
+        if self.optimizer:
+             for param_group in self.optimizer.param_groups: param_group['lr'] = lr
+
+# --- Minimal Training Manager ---
+class TrainingManager:
+    """Helper for device placement and batch preparation."""
+    def __init__(self, compute_device_str: str):
+        self.compute_device = torch.device(compute_device_str)
+        self.cpu_device = torch.device('cpu')
+
+    def prepare_batch(self, batch: Any, criterion: Union[nn.Module, Callable]) -> Optional[Tuple[Any, Any, Any]]:
+        """Moves batch to compute device and handles labels."""
+        if not isinstance(batch, (list, tuple)) or len(batch) < 2: return None
+        batch_x, batch_y_orig = batch[0], batch[1]
+        batch_x_dev = move_to_device(batch_x, self.compute_device)
+        batch_y_dev = move_to_device(batch_y_orig, self.compute_device)
+        batch_y_orig_cpu = batch_y_orig.cpu() if isinstance(batch_y_orig, torch.Tensor) else batch_y_orig
+
+        # Process labels on device based on criterion type
+        if isinstance(criterion, nn.CrossEntropyLoss):
+             if batch_y_dev.ndim == 2 and batch_y_dev.shape[1] == 1: batch_y_dev = batch_y_dev.squeeze(1)
+             batch_y_dev = batch_y_dev.long()
+        elif callable(criterion) and criterion.__name__ == 'get_dice_score':
+             batch_y_dev = batch_y_dev.float()
+
+        return batch_x_dev, batch_y_dev, batch_y_orig_cpu
+
+
+# --- Model Comparison (Simplified) ---
 class ModelDiversity:
-    """Calculates diversity metrics between the models of two clients."""
-
-    def __init__(self, client_1, client_2):
-        # Type hint 'Client' as string to avoid circular import if Client imports this
-        if client_1 is None or client_2 is None:
-            raise ValueError("Both client_1 and client_2 must be valid Client instances.")
-        self.client_1 = client_1
-        self.client_2 = client_2
-
+    """Calculates basic diversity metrics between model weights."""
+    def __init__(self, client_1, client_2): self.client_1, self.client_2 = client_1, client_2
+    def _get_weights(self, client) -> Optional[torch.Tensor]:
+        # Simplified access assuming client has .model and potentially .personal_model
+        model_to_use = getattr(client, 'personal_model', None) or getattr(client, 'model', None)
+        if model_to_use:
+            weights = [p.data.detach().view(-1) for p in model_to_use.parameters() if p.data is not None]
+            if weights: return torch.cat(weights)
+        return None
     def calculate_weight_divergence(self) -> Tuple[float, float]:
-        """
-        Calculates L2 distance and cosine similarity (orientation) between
-        the normalized weight vectors of two clients' primary models.
+        w1, w2 = self._get_weights(self.client_1), self._get_weights(self.client_2)
+        if w1 is None or w2 is None or w1.numel()==0 or w2.numel()==0: return np.nan, np.nan
+        n1, n2 = torch.norm(w1), torch.norm(w2)
+        w1n, w2n = w1 / (n1 + 1e-9), w2 / (n2 + 1e-9)
+        l2 = torch.norm(w1n - w2n, p=2).item()
+        cos = torch.dot(w1n, w2n).item()
+        return l2, cos
+    
+# =============================================================================
+# == Mixin for Diversity Calculation ==
+# =============================================================================
+class DiversityMixin:
+    """Mixin class to add diversity calculation."""
+    def __init__(self, *args, **kwargs):
+        # Ensure history exists
+        getattr(self, 'history', {}).setdefault('weight_div', [])
+        getattr(self, 'history', {}).setdefault('weight_orient', [])
+        self.diversity_calculator: Optional[ModelDiversity] = None
 
-        Returns:
-            Tuple[float, float]: (weight_divergence, weight_orientation).
-                                 Returns (NaN, NaN) if weights cannot be obtained.
-        """
-        try:
-             # Get flattened weight vectors for the primary model of each client
-             # Assumes client state holds the model to compare (e.g., personal or global)
-             weights_1 = self._get_weights(self.client_1)
-             weights_2 = self._get_weights(self.client_2)
-        except AttributeError as e:
-             print(f"Error accessing model weights for diversity: {e}")
-             return np.nan, np.nan
-        except Exception as e:
-             print(f"Unexpected error getting weights for diversity: {e}")
-             return np.nan, np.nan
+    def _setup_diversity_calculator(self):
+        if self.diversity_calculator is None and hasattr(self, 'clients') and len(self.clients) >= 2:
+             client_ids = list(self.clients.keys())
+             self.diversity_calculator = ModelDiversity(self.clients[client_ids[0]], self.clients[client_ids[1]])
 
+    def after_step_hook(self, step_results: List[Tuple[str, Any]]):
+        # Check if it was a training step returning state dicts
+        is_training_step = any(isinstance(res, dict) and 'state_dict' in res for _, res in step_results)
+        if is_training_step:
+            self._setup_diversity_calculator()
+            if self.diversity_calculator:
+                try:
+                    div, orient = self.diversity_calculator.calculate_weight_divergence()
+                    self.history['weight_div'].append(div)
+                    self.history['weight_orient'].append(orient)
+                except Exception:
+                    self.history['weight_div'].append(np.nan); self.history['weight_orient'].append(np.nan)
+        # super().after_step_hook(step_results) # Call next hook if needed
 
-        # Handle cases where weights might be empty (e.g., model not initialized)
-        if weights_1.numel() == 0 or weights_2.numel() == 0:
-             print("Warning: Cannot calculate diversity with empty model weights.")
-             return np.nan, np.nan
-
-        # Normalize weight vectors
-        norm_1 = torch.norm(weights_1)
-        norm_2 = torch.norm(weights_2)
-
-        # Avoid division by zero if norm is zero
-        w1_normalized = weights_1 / (norm_1 + 1e-9) # Add epsilon for safety
-        w2_normalized = weights_2 / (norm_2 + 1e-9)
-
-        if norm_1 < 1e-9: print("Warning: Norm of client 1 weights is near zero.")
-        if norm_2 < 1e-9: print("Warning: Norm of client 2 weights is near zero.")
-
-
-        # Calculate L2 distance between normalized weights
-        weight_divergence = torch.norm(w1_normalized - w2_normalized, p=2)
-
-        # Calculate cosine similarity (dot product of normalized vectors)
-        weight_orientation = torch.dot(w1_normalized, w2_normalized)
-
-        # Ensure results are standard Python floats
-        return weight_divergence.item(), weight_orientation.item()
-
-    def _get_weights(self, client) -> torch.Tensor:
-        """
-        Extracts and flattens all parameters from a client's relevant model state.
-
-        Args:
-            client: The client instance.
-
-        Returns:
-            A 1D tensor containing all model parameters flattened.
-
-        Raises:
-            AttributeError: If the client or its model state cannot be accessed.
-        """
-        # Decide which model state to use (e.g., personal if it exists, else global)
-        # This logic might need refinement based on the specific diversity comparison needed
-        if hasattr(client, 'personal_state') and client.personal_state is not None:
-             state_to_use = client.personal_state
-             # print(f"DEBUG: Using PERSONAL state for diversity client {getattr(client, 'site_id', 'Unknown')}") # Debug
-        elif hasattr(client, 'global_state') and client.global_state is not None:
-             state_to_use = client.global_state
-             # print(f"DEBUG: Using GLOBAL state for diversity client {getattr(client, 'site_id', 'Unknown')}") # Debug
+class MetricsCalculator:
+    def __init__(self, dataset_name):
+        self.dataset_name = dataset_name
+        if 'Synthetic_' in dataset_name:
+             self.dataset_key = 'Synthetic'
         else:
-             raise AttributeError(f"Client {getattr(client, 'site_id', 'Unknown')} has no accessible model state.")
+             self.dataset_key = dataset_name
+        self.continuous_outcome = ['Weather']
+        self.long_required = ['CIFAR', 'EMNIST', 'ISIC', 'Heart', 'Synthetic', 'Credit']
+        self.tensor_metrics = ['IXITiny']
+        
+    def get_metric_function(self):
+        """Returns appropriate metric function based on dataset."""
+        metric_mapping = {
+            'Synthetic': partial(metrics.f1_score, average='macro'),
+            'Credit': partial(metrics.f1_score, average='macro'),
+            'Weather': metrics.r2_score,
+            'EMNIST': metrics.accuracy_score,
+            'CIFAR': metrics.accuracy_score,
+            'IXITiny': get_dice_score,
+            'ISIC': metrics.balanced_accuracy_score,
+            'Heart':metrics.balanced_accuracy_score
+        }
+        return metric_mapping[self.dataset_key]
 
-        if not hasattr(state_to_use, 'model') or state_to_use.model is None:
-             raise AttributeError(f"Model is None in the selected state for client {getattr(client, 'site_id', 'Unknown')}.")
+    def process_predictions(self, labels, predictions):
+        """Process model predictions based on dataset requirements."""
+        predictions = predictions.cpu().numpy()
+        labels = labels.cpu().numpy()
+        
+        if self.dataset_key in self.continuous_outcome:
+            predictions = np.clip(predictions, -2, 2)
+        elif self.dataset_key in self.long_required:
+            predictions = predictions.argmax(axis=1)
+            
+        return labels, predictions
 
-        weights_list: List[torch.Tensor] = []
-        # Iterate through parameters of the selected model
-        for param in state_to_use.model.parameters():
-            # Ensure parameter has data and flatten it
-            if param.data is not None:
-                weights_list.append(param.data.detach().view(-1)) # Use detach
-
-        if not weights_list:
-             # Handle models with no parameters
-             # Use client's device if possible, else default CPU
-             device = client.device if hasattr(client, 'device') else torch.device('cpu')
-             return torch.tensor([], dtype=torch.float32, device=device) # Return empty tensor
-
-        # Concatenate all flattened parameters into a single vector
-        return torch.cat(weights_list)
-
-def validate_dataset_config(config: Dict, dataset_name: str):
-    """Basic validation for required config keys."""
-    required_keys = [
-        'data_source', 'partitioning_strategy', 'cost_interpretation',
-        'dataset_class', 'default_num_clients', 'batch_size', 'rounds', 'runs',
-        'metric', 'default_lr', #'learning_rates_try' # LR try is optional
-    ]
-    # Add conditional requirements based on other keys
-    if config.get('partitioning_strategy') == 'pre_split' and dataset_name in ['ISIC', 'IXITiny', 'Heart']:
-         if 'site_mappings' not in config.get('source_args', {}):
-             print(f"Warning: 'site_mappings' potentially missing in source_args for pre-split dataset {dataset_name}.")
-    if config.get('cost_interpretation') == 'concept_shift_param':
-         if 'concept_mapping' not in config.get('source_args', {}):
-             raise ValueError(f"Dataset config for '{dataset_name}' uses 'concept_shift_param' but is missing 'concept_mapping' in source_args.")
-    if config.get('cost_interpretation') == 'feature_shift_param':
-         if 'shift_mapping' not in config.get('source_args', {}):
-              raise ValueError(f"Dataset config for '{dataset_name}' uses 'feature_shift_param' but is missing 'shift_mapping' in source_args.")
-
-
-    missing_keys = [key for key in required_keys if key not in config]
-    if missing_keys:
-        raise ValueError(f"Dataset config for '{dataset_name}' missing required keys: {missing_keys}")
+    def calculate_metrics(self, true_labels, predictions):
+        """Calculate appropriate metric score."""
+        true_labels, predictions_class = self.process_predictions(true_labels, predictions)
+        metric_func = self.get_metric_function()
+        if self.dataset_key in self.tensor_metrics:
+            return metric_func(
+                torch.tensor(true_labels, dtype=torch.float32),
+                torch.tensor(predictions_class, dtype=torch.float32)
+            )
+        else:
+            return metric_func(
+                np.array(true_labels).reshape(-1),
+                np.array(predictions_class).reshape(-1)
+            )        

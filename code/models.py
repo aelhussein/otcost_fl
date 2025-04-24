@@ -1,5 +1,10 @@
 
-from configs import *
+from configs import ROOT_DIR
+import torch.nn.functional as F
+import torch.nn as nn
+import torch
+from unet import UNet
+from torchvision.models import resnet18
 
 
 class L2Normalize(torch.nn.Module):
@@ -35,10 +40,10 @@ class Synthetic(torch.nn.Module):
                 nn.init.constant_(layer.bias, 0)
     
     def forward(self, x):
+        if x.dtype != torch.float32:
+            x = x.float()
         x = x.squeeze(1)
-        logits = self.fc(x)
-        logits = torch.clamp(logits, min=-10.0, max=10.0) 
-        return logits
+        return self.fc(x)
 
 
 class Heart(torch.nn.Module):
@@ -65,13 +70,15 @@ class Heart(torch.nn.Module):
     
     def forward(self, x):
         x = x.squeeze(1)
+        if x.dtype != torch.float32:
+            x = x.float()
         return self.fc(x)
 
 class Credit(torch.nn.Module):
     def __init__(self, dropout_rate=0.3):
         super(Credit, self).__init__()
-        self.input_size = 28
-        self.hidden_size = [56, 28]
+        self.input_size = 29
+        self.hidden_size = [56, 29]
         
         self.fc = nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size[0]),
@@ -94,48 +101,11 @@ class Credit(torch.nn.Module):
                 nn.init.constant_(layer.bias, 0)
     
     def forward(self, x):
-        x = x.squeeze(1)
-        logits = self.fc(x)
-        logits = torch.clamp(logits, min=-10.0, max=10.0) 
-        return logits
-        # return self.sigmoid(self.fc(x))
-
-class Weather(torch.nn.Module):
-    def __init__(self, dropout_rate=0.3):
-        super(Weather, self).__init__()
-        self.input_size = 123
-        self.hidden_size = [123, 123, 50]
-        
-        self.fc = nn.Sequential(
-            # First block
-            nn.Linear(self.input_size, self.hidden_size[0]),
-            nn.BatchNorm1d(self.hidden_size[0]),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            # # Second block
-            # nn.Linear(self.hidden_size[0], self.hidden_size[1]),
-            # nn.BatchNorm1d(self.hidden_size[1]),
-            # nn.ReLU(),
-            # nn.Dropout(dropout_rate),
-            # # Third block
-            # nn.Linear(self.hidden_size[1], self.hidden_size[2]),
-            # nn.BatchNorm1d(self.hidden_size[2]),
-            # nn.ReLU(),
-            # Output layer
-            nn.Linear(self.hidden_size[0], 1)
-        )
-        
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        for layer in self.fc:
-            if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
-                nn.init.constant_(layer.bias, 0)
-    
-    def forward(self, x):
+        if x.dtype != torch.float32:
+            x = x.float()
         x = x.squeeze(1)
         return self.fc(x)
+
 
 class EMNIST(nn.Module):
     def __init__(self):

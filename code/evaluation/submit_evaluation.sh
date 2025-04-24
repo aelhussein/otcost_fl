@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Default values
-DEFAULT_DATASETS=("Heart""Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR"  "ISIC" "IXITiny")
+#DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR"  "ISIC" "IXITiny")
+DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR")
 DEFAULT_EXP_TYPES=("evaluation")
 DEFAULT_DIR='/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'
 DEFAULT_ENV_PATH='/gpfs/commons/home/aelhussein/anaconda3/bin/activate'
@@ -105,14 +106,13 @@ for dataset in "${datasets[@]}"; do
         cat << EOF > temp_submit_${job_name}.sh
 #!/bin/bash
 #SBATCH --job-name=${job_name}
-#SBATCH --partition=gpu
+#SBATCH --partition=cpu
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=aelhussein@nygenome.org
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=40G
-#SBATCH --gres=gpu:1
 #SBATCH --time=30:00:00
 #SBATCH --output=logs/outputs/${job_name}.txt
 #SBATCH --error=logs/errors/${job_name}.txt

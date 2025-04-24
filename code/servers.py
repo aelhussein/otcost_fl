@@ -1,589 +1,322 @@
+# servers.py
 """
-Defines the Server base class and specific federated learning server implementations
-like FedAvg, FedProx, pFedMe, Ditto. Handles client management, aggregation,
-and model distribution.
+Server implementations for Federated Learning. Streamlined version.
+Focuses on CPU-based aggregation and state management.
+Uses run_clients helper and direct overrides for algorithms.
+Manages best global model state directly.
 """
 import copy
-import numpy as np # Keep for potential future use in aggregation or metrics
+import numpy as np
 import torch
-from typing import Dict, Optional, List, Tuple, Any
+from typing import Dict, Optional, List, Tuple, Any, Callable
 
-# Import necessary components from other modules
-from clients import Client, FedProxClient, PFedMeClient, DittoClient,  MetricsCalculator # Import specific client types
-from helper import ModelDiversity # Import utilities
-# Note: TrainerConfig, SiteData, ModelState are now defined WITHIN servers.py or clients.py
-# Let's assume they are defined here for now, or adjust imports if they move to clients.py
+# Get core types from helper
+from helper import (MetricKey, TrainerConfig, SiteData, ModelState, # Import types
+                   DiversityMixin, MetricsCalculator) # gpu_scope not strictly needed server-side
 
-# --- Data Structures (Potentially move to a separate 'common.py' or keep here) ---
-from dataclasses import dataclass, field
+# Import client classes for type hints and instantiation in _create_client overrides
+from clients import Client, FedProxClient, PFedMeClient, DittoClient
 
-@dataclass
-class TrainerConfig:
-    """Configuration for training parameters passed to clients/servers."""
-    dataset_name: str
-    device: str
-    learning_rate: float
-    batch_size: int
-    epochs: int = 5 # Default local epochs
-    rounds: int = 20 # Default communication rounds
-    requires_personal_model: bool = False # Flag for personalized FL algorithms
-    algorithm_params: Optional[Dict[str, Any]] = None # Algo-specific params (e.g., mu for FedProx)
-
-    def __post_init__(self):
-        # Ensure algorithm_params is a dict if not None
-        if self.algorithm_params is None:
-            self.algorithm_params = {}
-
-@dataclass
-class SiteData:
-    """Holds DataLoader instances and metadata for a client/site."""
-    site_id: str
-    train_loader: torch.utils.data.DataLoader
-    val_loader: torch.utils.data.DataLoader
-    test_loader: torch.utils.data.DataLoader
-    weight: float = 1.0 # Weight for aggregation (e.g., based on num_samples)
-    num_samples: int = 0
-
-    def __post_init__(self):
-        # Calculate num_samples from train_loader dataset if not provided
-        if self.num_samples == 0 and self.train_loader is not None and self.train_loader.dataset is not None:
-            try:
-                 self.num_samples = len(self.train_loader.dataset)
-            except TypeError: # Handle datasets without __len__ (less common)
-                 print(f"Warning: Could not determine num_samples for site {self.site_id}")
-                 self.num_samples = 0 # Or estimate differently if possible
-
-@dataclass
-class ModelState:
-    """Holds the state (model, optimizer, criterion, metrics) for a model."""
-    model: torch.nn.Module
-    optimizer: torch.optim.Optimizer
-    criterion: torch.nn.Module # Loss function
-    best_loss: float = float('inf') # Track best validation loss
-    best_model: Optional[torch.nn.Module] = None # State dict of the best model
-    # Lists to store metrics per round/epoch
-    train_losses: List[float] = field(default_factory=list)
-    val_losses: List[List[float]] = field(default_factory=list) # [[loss1], [loss2], ...] format
-    val_scores: List[List[float]] = field(default_factory=list) # [[score1], [score2], ...] format
-    test_losses: List[List[float]] = field(default_factory=list) # [[loss1], [loss2], ...] format
-    test_scores: List[List[float]] = field(default_factory=list) # [[score1], [score2], ...] format
-
-    def __post_init__(self):
-        # Initialize best_model with a deep copy of the initial model state
-        if self.best_model is None and self.model is not None:
-            try:
-                 # Ensure model is on a device to get parameters' device
-                 device = next(self.model.parameters()).device
-                 self.best_model = copy.deepcopy(self.model).to(device)
-            except StopIteration: # Handle model with no parameters
-                 self.best_model = copy.deepcopy(self.model) # Copy structure anyway
-
-    def copy(self):
-        """
-        Creates a deep copy of the ModelState, including model architecture,
-        weights, and optimizer state. Useful for initializing client states
-        from the global state.
-        """
-        # Ensure the model has parameters before proceeding
-        try:
-            device = next(self.model.parameters()).device
-        except StopIteration:
-            device = 'cpu' # Default device if model has no parameters
-
-        # Create a new instance of the model and copy weights
-        new_model = copy.deepcopy(self.model).to(device)
-
-        # Create a new optimizer instance for the new model
-        # Re-initialize optimizer state to avoid issues with parameter IDs
-        new_optimizer = type(self.optimizer)(new_model.parameters(), **self.optimizer.defaults)
-        # Deep copy optimizer state - this can be complex if state contains tensors
-        # A common approach is to save and load state_dict, but requires temporary storage
-        # Simpler approach for now: re-initialize state (might lose momentum etc.)
-        # For more robust state copy, consider state_dict saving/loading or specific deepcopy logic
-        # new_optimizer.load_state_dict(copy.deepcopy(self.optimizer.state_dict()))
-
-        # Create a new ModelState instance, keeping metrics empty
-        return ModelState(
-            model=new_model,
-            optimizer=new_optimizer, # Note: Optimizer state might be reset
-            criterion=self.criterion # Criterion is usually stateless or shared
-            # best_loss, best_model, and metric lists are initialized by default
-        )
-
-# --- Base Server Class ---
+# =============================================================================
+# == Base Server Class ==
+# =============================================================================
 class Server:
-    """Base server class providing core functionalities for federated learning."""
+    """Base server class. Manages clients, runs rounds via step functions."""
 
     def __init__(self, config: TrainerConfig, globalmodelstate: ModelState):
         self.config = config
-        self.device = config.device
-        # Flag indicating if clients maintain personalized models
-        self.personal = config.requires_personal_model
-        # Dictionary to store client instances {client_id: Client}
+        self.server_device = torch.device('cpu') # Server always on CPU
+        self.client_device_str = config.device # Target device for client computation
         self.clients: Dict[str, Client] = {}
-        # Holds the global model state (model, optimizer, criterion, metrics)
-        self.serverstate = globalmodelstate
-        # Ensure the global model and best model are on the correct device
-        self.serverstate.model = self.serverstate.model.to(self.device)
-        if self.serverstate.best_model:
-             self.serverstate.best_model = self.serverstate.best_model.to(self.device)
-        # Placeholders for server type and tuning status (set by set_server_type)
-        self.server_type: str = "BaseServer"
-        self.tuning: bool = False # Default to evaluation run
 
+        # Server holds the reference to the GLOBAL ModelState
+        self.serverstate: ModelState = globalmodelstate
+        # Ensure server's copy of the model is on CPU
+        self.serverstate.model.cpu()
+        # Server's own tracking of the best GLOBAL state encountered
+        self.best_global_loss: float = float('inf')
+        self.best_global_model_state_dict: Optional[Dict] = copy.deepcopy(self.serverstate.model.state_dict())
+
+        self.server_type: str = "BaseServer"
+        self.tuning: bool = False
+        self.personal_model_required_by_server: bool = False # Set by set_server_type
+        self.history: Dict[str, List] = {k: [] for k in [ # History for the current trial
+            MetricKey.TRAIN_LOSSES, MetricKey.VAL_LOSSES, MetricKey.VAL_SCORES,
+            MetricKey.TEST_LOSSES, MetricKey.TEST_SCORES
+        ]}
+        self.round_0_state_dict: Optional[Dict] = None # Captured after round 0 training
 
     def set_server_type(self, name: str, tuning: bool):
         """Sets the server type name and tuning status."""
         self.server_type = name
         self.tuning = tuning
-        print(f"Server type set to: {self.server_type}, Tuning: {self.tuning}")
+        # Determine if server type requires personal models on clients
+        self.personal_model_required_by_server = name in ['pfedme', 'ditto']
 
-    def _create_client(self, clientdata: SiteData, modelstate: ModelState,
-                       personal_model: bool) -> Client:
-        """
-        Factory method to create a client instance.
-        Subclasses can override this to create specific client types (FedProxClient, etc.).
-        """
-        # Default implementation creates a base Client instance
-        print(f"Creating base Client for site {clientdata.site_id}")
-        return Client(
-            config=self.config,
-            data=clientdata,
-            modelstate=modelstate.copy(), # Give client a deep copy of the initial state
-            metrics_calculator=MetricsCalculator(self.config.dataset_name),
-            personal_model=personal_model # Pass flag for personalized models
-        )
+    def get_best_model_state_dict(self) -> Optional[Dict]:
+        """Returns the state dict of the best global model found by the server (CPU)."""
+        return self.best_global_model_state_dict
+
+    def _create_client(self, clientdata: SiteData) -> Client:
+        """Creates a base Client for FedAvg."""
+        mc = MetricsCalculator(self.config.dataset_name)
+        metric_fn = mc.calculate_metrics
+        return Client(config=self.config, data=clientdata,
+                      initial_global_state=self.serverstate, # Pass server's initial state
+                      metric_fn=metric_fn,
+                      personal_model=False)
 
     def add_client(self, clientdata: SiteData):
-        """Creates and adds a new client to the server's federation."""
-        if not isinstance(clientdata, SiteData):
-             print(f"Warning: Invalid clientdata provided to add_client (type: {type(clientdata)}). Skipping.")
-             return
-
-        print(f"Adding client: {clientdata.site_id} with {clientdata.num_samples} samples.")
-        # Use the factory method to create the appropriate client type
-        client = self._create_client(
-            clientdata=clientdata,
-            modelstate=self.serverstate, # Pass the current global state for initialization
-            personal_model=self.personal
-        )
-
-        # Add the created client to the server's dictionary
-        self.clients[clientdata.site_id] = client
-        # Update aggregation weights whenever a client is added/removed
-        self._update_client_weights()
+        """Creates and adds a client using the factory method."""
+        if not isinstance(clientdata, SiteData): return
+        try:
+            client = self._create_client(clientdata=clientdata)
+            self.clients[clientdata.site_id] = client
+            self._update_client_weights()
+        except Exception as e: print(f"ERROR creating/adding client {clientdata.site_id}: {e}")
 
     def _update_client_weights(self):
-        """Calculates and updates client weights based on their number of samples."""
-        if not self.clients:
-            return # No clients to weight
-
-        total_samples = sum(client.data.num_samples for client in self.clients.values() if client.data.num_samples > 0)
-
-        if total_samples == 0:
-            # Handle case where all clients have 0 samples (assign equal weight or error)
-            print("Warning: Total samples across all clients is 0. Assigning equal weights.")
-            num_clients = len(self.clients)
-            weight = 1.0 / num_clients if num_clients > 0 else 0
-            for client in self.clients.values():
-                client.data.weight = weight
-            return
-
-        # Calculate weight = client_samples / total_samples
+        """Calculates client weights based on num_samples."""
+        if not self.clients: return
+        total_samples = sum(getattr(client.data, 'num_samples', 0) for client in self.clients.values())
+        default_weight = 1.0 / len(self.clients) if self.clients else 0.0
         for client in self.clients.values():
-            client.data.weight = client.data.num_samples / total_samples
-            # print(f"  Client {client.data.site_id}: weight = {client.data.weight:.4f}") # Verbose
+             client.data.weight = getattr(client.data, 'num_samples', 0) / total_samples if total_samples > 0 else default_weight
 
-    def train_round(self) -> Tuple[float, float, float]:
-        """
-        Runs one complete round of federated training.
-        1. Triggers training on all clients.
-        2. Aggregates results (losses, scores).
-        3. Aggregates models (implemented by subclasses).
-        4. Distributes the updated global model (implemented by subclasses).
-        5. Updates the best performing global model based on validation loss.
-
-        Returns:
-            Tuple[float, float, float]: Aggregated training loss, validation loss,
-                                        and validation score for the round.
-        """
-        if not self.clients:
-             print("Warning: train_round called with no clients.")
-             return 0.0, float('inf'), 0.0 # Return defaults indicating no training occurred
-
-        round_train_loss = 0.0
-        round_val_loss = 0.0
-        round_val_score = 0.0
-
-        # --- Client Training & Validation Phase ---
+    def run_clients(self, step_fn: Callable[[Client], Any]) -> List[Tuple[str, Any]]:
+        """Runs step_fn on all clients, returns [(client_id, result), ...]."""
+        results = []
         for client_id, client in self.clients.items():
-            # print(f"  Training client {client_id}...") # Verbose
-            # Client trains for its configured number of local epochs
-            # The 'personal' flag determines which model (global or personal) is trained
-            client_train_loss = client.train(personal=self.personal)
-            # Client validates using its current model state
-            client_val_loss, client_val_score = client.validate(personal=self.personal)
-
-            # Aggregate weighted metrics (use client's weight)
-            round_train_loss += client_train_loss * client.data.weight
-            round_val_loss += client_val_loss * client.data.weight
-            round_val_score += client_val_score * client.data.weight
-
-        # --- Server Aggregation & Distribution Phase ---
-        # Aggregate model updates from clients (specific logic in subclasses)
-        self.aggregate_models()
-        # Distribute the newly aggregated global model back to clients
-        self.distribute_global_model(test=False) # Distribute the current training model
-
-        # --- Track Server-Side Metrics ---
-        # Store aggregated metrics for the round (use list-of-lists format)
-        self.serverstate.train_losses.append([round_train_loss])
-        self.serverstate.val_losses.append([round_val_loss])
-        self.serverstate.val_scores.append([round_val_score])
-
-        # --- Update Best Model ---
-        # Check if the current round's validation loss is the best seen so far
-        if round_val_loss < self.serverstate.best_loss:
-            print(f"  New best validation loss: {round_val_loss:.4f} (prev: {self.serverstate.best_loss:.4f})")
-            self.serverstate.best_loss = round_val_loss
-            # Save a deep copy of the current best model state
-            self.serverstate.best_model = copy.deepcopy(self.serverstate.model)
-
-        return round_train_loss, round_val_loss, round_val_score
-
-    def test_global(self) -> Tuple[float, float]:
-        """
-        Tests the best performing global model on the test sets of all clients.
-
-        Returns:
-            Tuple[float, float]: Aggregated test loss and test score.
-        """
-        if not self.clients:
-             print("Warning: test_global called with no clients.")
-             return float('inf'), 0.0 # Return defaults indicating no testing
-
-        round_test_loss = 0.0
-        round_test_score = 0.0
-
-        # Ensure clients have the latest *best* global model for testing
-        self.distribute_global_model(test=True) # Signal to distribute the best model
-
-        # --- Client Testing Phase ---
-        for client_id, client in self.clients.items():
-            # print(f"  Testing client {client_id}...") # Verbose
-            # Client tests using the best global model state received
-            # The 'personal' flag here should determine if the personal model's test score
-            # is calculated (if applicable) or if the global model is tested.
-            # For standard evaluation, we test the final global model (personal=False).
-            client_test_loss, client_test_score = client.test(personal=False) # Test the global model
-
-            # Aggregate weighted metrics
-            round_test_loss += client_test_loss * client.data.weight
-            round_test_score += client_test_score * client.data.weight
-
-        # --- Track Server-Side Metrics ---
-        self.serverstate.test_losses.append([round_test_loss])
-        self.serverstate.test_scores.append([round_test_score])
-
-        return round_test_loss, round_test_score
-
-    def aggregate_models(self):
-        """
-        Placeholder for model aggregation logic.
-        Subclasses (like FedAvgServer) must implement this.
-        """
-        # print("Warning: Base Server aggregate_models called - no aggregation performed.")
-        pass # Base implementation does nothing
-
-    def distribute_global_model(self, test: bool = False):
-        """
-        Placeholder for distributing the global model state to clients.
-        Subclasses (like FLServer) must implement this.
-
-        Args:
-            test (bool): If True, distribute the best model state; otherwise,
-                         distribute the current training model state.
-        """
-        # print("Warning: Base Server distribute_global_model called - no distribution performed.")
-        pass # Base implementation does nothing
-
-
-# --- Federated Learning Server Base Class ---
-class FLServer(Server):
-    """
-    Base class for standard federated learning servers (like FedAvg, FedProx)
-    that implement aggregation and distribution.
-    """
-    def aggregate_models(self):
-        """
-        Performs standard Federated Averaging (FedAvg) aggregation.
-        Averages client model parameters weighted by client data size.
-        """
-        if not self.clients:
-            return # Cannot aggregate without clients
-
-        # Zero out the global model parameters before aggregation
-        with torch.no_grad():
-            for param in self.serverstate.model.parameters():
-                param.data.zero_()
-
-            # Accumulate weighted parameters from clients
-            for client_id, client in self.clients.items():
-                # Determine which model state to aggregate (global or personal)
-                # For standard FL (FedAvg, FedProx), aggregate the state updated during client.train(personal=False)
-                state_to_agg = client.global_state # FedAvg/FedProx update global state
-                # Add weighted client parameters to the global model parameters
-                for server_param, client_param in zip(self.serverstate.model.parameters(), state_to_agg.model.parameters()):
-                    server_param.data.add_(client_param.data.detach(), alpha=client.data.weight)
-
-    def distribute_global_model(self, test: bool = False):
-        """
-        Distributes the appropriate global model state dictionary to all clients.
-
-        Args:
-            test (bool): If True, distributes the best performing model state.
-                         If False, distributes the current aggregated global model state.
-        """
-        if not self.clients:
-            return
-
-        # Select the state dictionary to distribute
-        if test:
-             # Use the best model found during validation
-             if self.serverstate.best_model is not None:
-                  state_dict_to_dist = self.serverstate.best_model.state_dict()
-                  # print("Distributing best model state for testing.") # Verbose
-             else:
-                  # Fallback if best model wasn't recorded (shouldn't happen if validation ran)
-                  print("Warning: Best model not available for testing, distributing current model state.")
-                  state_dict_to_dist = self.serverstate.model.state_dict()
-        else:
-             # Use the current (just aggregated) global model state
-             state_dict_to_dist = self.serverstate.model.state_dict()
-             # print("Distributing current global model state for training.") # Verbose
-
-
-        # Send the state dictionary to each client
-        for client in self.clients.values():
-            # Client's method updates its internal model(s)
-            client.set_model_state(state_dict_to_dist, test)
-
-
-# --- Specific Server Implementations ---
-
-class FedAvgServer(FLServer):
-    """
-    Standard Federated Averaging server. Inherits aggregation and distribution
-    from FLServer. Adds diversity calculation.
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.diversity_calculator: Optional[ModelDiversity] = None
-        self.diversity_metrics: Dict[str, List[float]] = {'weight_div': [], 'weight_orient': []}
-
-    def _set_diversity_calculation(self):
-        """Initializes the diversity calculator using the first two clients."""
-        # Requires at least 2 clients to calculate pairwise diversity
-        if len(self.clients) >= 2:
-            client_ids = list(self.clients.keys())
-            client_1 = self.clients[client_ids[0]]
-            client_2 = self.clients[client_ids[1]]
-            self.diversity_calculator = ModelDiversity(client_1, client_2)
-            print("Diversity calculator initialized between clients:", client_ids[0], client_ids[1])
-        else:
-            print("Warning: Not enough clients (< 2) to initialize diversity calculator.")
-            self.diversity_calculator = None
-
-
-    def train_round(self) -> Tuple[float, float, float]:
-        """
-        Overrides train_round to calculate diversity metrics BEFORE aggregation.
-        """
-        if not self.clients:
-             print("Warning: train_round called with no clients.")
-             return 0.0, float('inf'), 0.0
-
-        round_train_loss = 0.0
-        round_val_loss = 0.0
-        round_val_score = 0.0
-
-        # --- Client Training & Validation Phase ---
-        for client in self.clients.values():
-            client_train_loss = client.train(personal=self.personal) # Should be False for FedAvg
-            client_val_loss, client_val_score = client.validate(personal=self.personal)
-
-            round_train_loss += client_train_loss * client.data.weight
-            round_val_loss += client_val_loss * client.data.weight
-            round_val_score += client_val_score * client.data.weight
-
-        # --- Calculate Diversity (BEFORE aggregation) ---
-        if self.diversity_calculator is None and len(self.clients) >= 2:
-            self._set_diversity_calculation() # Initialize on first round with enough clients
-
-        if self.diversity_calculator is not None:
             try:
-                weight_div, weight_orient = self.diversity_calculator.calculate_weight_divergence()
-                self.diversity_metrics['weight_div'].append(weight_div)
-                self.diversity_metrics['weight_orient'].append(weight_orient)
-            except Exception as e:
-                 print(f"Error calculating diversity metrics: {e}")
-                 # Append placeholder values?
-                 self.diversity_metrics['weight_div'].append(np.nan)
-                 self.diversity_metrics['weight_orient'].append(np.nan)
+                client_result = step_fn(client)
+                results.append((client_id, client_result))
+            except Exception as e: print(f"ERROR step_fn client {client_id}: {e}")
+        return results
+
+    def train_round(self) -> None:
+        """Runs one round of training and validation."""
+        current_round = len(self.history.get(MetricKey.VAL_LOSSES, []))
+        use_personal = self.personal_model_required_by_server
+        print(f"Round {current_round + 1}")
+        def train_val_step(client: Client) -> Dict:
+             return client.train_and_validate(personal=use_personal)
+
+        client_outputs = self.run_clients(train_val_step)
+
+        # Aggregate Metrics & States
+        round_metrics = {k: 0.0 for k in [MetricKey.TRAIN_LOSSES, MetricKey.VAL_LOSSES, MetricKey.VAL_SCORES]}
+        states_for_agg: List[Dict[str, Any]] = []
+
+        for client_id, output_dict in client_outputs:
+            if not isinstance(output_dict, dict): continue
+            weight = getattr(self.clients[client_id].data, 'weight', 0.0)
+            round_metrics[MetricKey.TRAIN_LOSSES] += output_dict.get('train_loss', 0.0) * weight
+            round_metrics[MetricKey.VAL_LOSSES] += output_dict.get('val_loss', float('inf')) * weight
+            round_metrics[MetricKey.VAL_SCORES] += output_dict.get('val_score', 0.0) * weight
+            print(f"Client {client_id}, weight {weight:2f} - Train Loss: {output_dict.get('train_loss', 0.0):4f}, "
+                  f"Val Loss: {output_dict.get('val_loss', float('inf')):4f}, "
+                  f"Val Score: {output_dict.get('val_score', 0.0):4f}")
+            # Collect current state dicts only if NOT a personal training round for this server type
+            if not use_personal and 'state_dict' in output_dict and output_dict['state_dict'] is not None:
+                 states_for_agg.append({'state_dict': output_dict['state_dict'], 'weight': weight})
+
+        # Server Model Updates (if applicable)ß
+        if not use_personal and states_for_agg:
+             self.aggregate_models(states_for_agg) # Implemented by FLServer
+             self.distribute_global_model(test=False) # Implemented by FLServer
+        elif not use_personal:
+             print(f"Warning: No client states for aggregation round {current_round + 1}.")
+
+        # Hooks
+        self.after_step_hook(client_outputs)
+
+        # Capture Round 0 State (Based on current global model after potential aggregation)
+        if current_round == 0 and self.round_0_state_dict is None:
+            try: self.round_0_state_dict = self.serverstate.model.state_dict() # Already CPU
+            except: pass
+
+        # Track Metrics
+        self.history[MetricKey.TRAIN_LOSSES].append(round_metrics[MetricKey.TRAIN_LOSSES])
+        self.history[MetricKey.VAL_LOSSES].append(round_metrics[MetricKey.VAL_LOSSES])
+        self.history[MetricKey.VAL_SCORES].append(round_metrics[MetricKey.VAL_SCORES])
+
+        # Update Server's Best Global Model State
+        current_val_loss = round_metrics[MetricKey.VAL_LOSSES]
+        if current_val_loss < self.best_global_loss:
+            self.best_global_loss = current_val_loss
+            try: self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
+            except: pass
+
+    def test_global(self) -> None:
+        """Tests the appropriate model (best global) on all clients."""
+        test_personal = self.personal_model_required_by_server # Test personal model if server requires it
+
+        # Distribute Best *Global* Model State First
+        self.distribute_global_model(test=True) # Sends self.best_global_model_state_dict
+
+        def test_step(client: Client) -> Tuple[float, float]:
+             return client.test(personal=test_personal) # Client internally loads best state
+
+        client_outputs = self.run_clients(test_step)
+
+        # Aggregate Metrics
+        round_test_loss, round_test_score = 0.0, 0.0
+        for client_id, output_tuple in client_outputs:
+             if not isinstance(output_tuple, tuple) or len(output_tuple) != 2: continue
+             weight = getattr(self.clients[client_id].data, 'weight', 0.0)
+             round_test_loss += output_tuple[0] * weight
+             round_test_score += output_tuple[1] * weight
+
+        # Hooks
+        self.after_step_hook(client_outputs)
+
+        # Track Metrics
+        self.history[MetricKey.TEST_LOSSES].append(round_test_loss)
+        self.history[MetricKey.TEST_SCORES].append(round_test_score)
+
+    # --- Hooks & Abstract Methods ---
+    def after_step_hook(self, step_results: List[Tuple[str, Any]]): pass # For Mixins
+    def aggregate_models(self, client_states_info: List[Dict[str, Any]]): pass
+    def distribute_global_model(self, test: bool = False): pass
 
 
-        # --- Server Aggregation & Distribution Phase ---
-        self.aggregate_models()
-        self.distribute_global_model(test=False)
+# =============================================================================
+# == FL Server Base Class ==
+# =============================================================================
+class FLServer(Server):
+    """Implements standard FedAvg aggregation and distribution (CPU-based)."""
+    def aggregate_models(self, client_states_info: List[Dict[str, Any]]):
+        """Performs FedAvg aggregation on CPU using state dicts."""
+        if not client_states_info: return
+        global_model = self.serverstate.model # Operate on server's model (CPU)
+        with torch.no_grad():
+            for param in global_model.parameters(): param.zero_()
+            total_weight = 0.0
+            for info in client_states_info:
+                state_dict = info.get('state_dict')
+                weight = info.get('weight', 0.0)
+                if state_dict is None: continue
+                total_weight += weight
+                for server_param, client_param_val in zip(global_model.parameters(), state_dict.values()):
+                     if isinstance(client_param_val, torch.Tensor):
+                          server_param.add_(client_param_val.cpu(), alpha=weight) # Ensure adding CPU tensors
+            # Optional normalization...
 
-        # --- Track Server-Side Metrics ---
-        self.serverstate.train_losses.append([round_train_loss])
-        self.serverstate.val_losses.append([round_val_loss])
-        self.serverstate.val_scores.append([round_val_score])
+    def distribute_global_model(self, test: bool = False):
+        """Distributes the appropriate CPU global model state dictionary."""
+        if not self.clients: return
+        # Distribute current global model or server's tracked best global model
+        state_dict_to_dist = self.get_best_model_state_dict() if test else self.serverstate.model.state_dict()
+        if state_dict_to_dist is None: return
+        try:
+            for client in self.clients.values():
+                 client.set_model_state(state_dict_to_dist, test) # Client loads CPU state dict
+        except Exception as e: print(f"Error distributing state_dict: {e}")
 
-        # --- Update Best Model ---
-        if round_val_loss < self.serverstate.best_loss:
-            print(f"  New best validation loss: {round_val_loss:.4f} (prev: {self.serverstate.best_loss:.4f})")
-            self.serverstate.best_loss = round_val_loss
-            self.serverstate.best_model = copy.deepcopy(self.serverstate.model)
 
-        return round_train_loss, round_val_loss, round_val_score
+# =============================================================================
+# == Specific Server Implementations ==
+# =============================================================================
+
+class FedAvgServer(DiversityMixin, FLServer):
+    """Standard FedAvg with added diversity calculation."""
+    def __init__(self, *args, **kwargs):
+        FLServer.__init__(self, *args, **kwargs)
+        DiversityMixin.__init__(self, *args, **kwargs)
+
+    def _create_client(self, clientdata: SiteData) -> Client:
+        """Creates a base Client for FedAvg."""
+        mc = MetricsCalculator(self.config.dataset_name)
+        metric_fn = mc.calculate_metrics
+        return Client(config=self.config, data=clientdata,
+                      initial_global_state=self.serverstate, # Pass server's initial state
+                      metric_fn=metric_fn,
+                      personal_model=False)
 
 class FedProxServer(FLServer):
-    """
-    Server implementation for FedProx.
-    Relies on FLServer for aggregation/distribution. Creates FedProxClient instances.
-    """
-    def _create_client(self, clientdata: SiteData, modelstate: ModelState,
-                       personal_model: bool = False) -> FedProxClient:
-        """Overrides factory to create FedProxClient instances."""
-        # FedProx modifies the global model state, so personal_model should be False
-        if personal_model:
-            print("Warning: FedProxServer received personal_model=True, but FedProx typically uses personal_model=False. Forcing False.")
-            personal_model = False # Enforce correct behavior
-
-        print(f"Creating FedProxClient for site {clientdata.site_id}")
-        return FedProxClient(
-            config=self.config,
-            data=clientdata,
-            modelstate=modelstate.copy(), # Pass a copy of the global state
-            metrics_calculator=MetricsCalculator(self.config.dataset_name),
-            personal_model=personal_model # Should be False
-        )
+    """FedProx server."""
+    def _create_client(self, clientdata: SiteData) -> FedProxClient:
+        """Creates a FedProxClient."""
+        mc = MetricsCalculator(self.config.dataset_name)
+        metric_fn = mc.calculate_metrics
+        return FedProxClient(config=self.config, data=clientdata,
+                             initial_global_state=self.serverstate,
+                             metric_fn=metric_fn,
+                             personal_model=False) # FedProx client is not personalized
 
 class PFedMeServer(FLServer):
-    """
-    Server implementation for pFedMe.
-    Uses standard FedAvg aggregation/distribution but creates pFedMe clients.
-    """
-    def _create_client(self, clientdata: SiteData, modelstate: ModelState,
-                       personal_model: bool = True) -> PFedMeClient: # Default personal=True
-        """Overrides factory to create PFedMeClient instances."""
-        # pFedMe requires personalized models
-        if not personal_model:
-             print("Warning: PFedMeServer received personal_model=False. pFedMe requires personalized models. Forcing True.")
-             personal_model = True # Enforce correct behavior
-
-        print(f"Creating PFedMeClient for site {clientdata.site_id}")
-        return PFedMeClient(
-            config=self.config,
-            data=clientdata,
-            modelstate=modelstate.copy(), # Global state copy
-            metrics_calculator=MetricsCalculator(self.config.dataset_name),
-            personal_model=personal_model # Should be True
-        )
+    """pFedMe server."""
+    def _create_client(self, clientdata: SiteData) -> PFedMeClient:
+        """Creates a PFedMeClient."""
+        mc = MetricsCalculator(self.config.dataset_name)
+        metric_fn = mc.calculate_metrics
+        return PFedMeClient(config=self.config, data=clientdata,
+                            initial_global_state=self.serverstate,
+                            metric_fn=metric_fn,
+                            personal_model=True) # pFedMe client requires personal
 
 class DittoServer(FLServer):
-    """
-    Server implementation for Ditto.
-    Uses standard FedAvg aggregation/distribution for the global model.
-    Relies on DittoClient for managing both global and personal models.
-    """
-    def _create_client(self, clientdata: SiteData, modelstate: ModelState,
-                       personal_model: bool = True) -> DittoClient: # Default personal=True
-        """Overrides factory to create DittoClient instances."""
-        if not personal_model:
-             print("Warning: DittoServer received personal_model=False. Ditto requires personalized models. Forcing True.")
-             personal_model = True # Enforce correct behavior
+    """Ditto server."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    def _create_client(self, clientdata: SiteData) -> DittoClient:
+        """Creates a DittoClient."""
+        mc = MetricsCalculator(self.config.dataset_name)
+        metric_fn = mc.calculate_metrics
+        return DittoClient(config=self.config, data=clientdata,
+                           initial_global_state=self.serverstate,
+                           metric_fn=metric_fn,
+                           personal_model=True) # Ditto client requires personal
 
-        print(f"Creating DittoClient for site {clientdata.site_id}")
-        return DittoClient(
-            config=self.config,
-            data=clientdata,
-            modelstate=modelstate.copy(), # Global state copy
-            metrics_calculator=MetricsCalculator(self.config.dataset_name),
-            personal_model=personal_model # Should be True
-        )
+    def train_round(self) -> None:
+        """Ditto round: Global phase + Personal phase."""
+        current_round = len(self.history.get(MetricKey.VAL_LOSSES, []))
 
-    def train_round(self) -> Tuple[float, float, float]:
-        """
-        Runs one round of Ditto training. Includes separate global and personal steps.
-        Reports metrics based on the *personal* model validation.
-        Updates best *global* model based on *global* model validation.
-
-        Returns:
-            Tuple[float, float, float]: Aggregated personal training loss,
-                                        personal validation loss,
-                                        and personal validation score for the round.
-        """
-        if not self.clients:
-             print("Warning: train_round called with no clients.")
-             return 0.0, float('inf'), 0.0
-
-        # --- 1. Global Model Update Step ---
-        global_train_loss = 0.0
-        global_val_loss = 0.0
-        global_val_score = 0.0
-        print("  Ditto: Starting Global Model Update Phase...")
-        for client in self.clients.values():
-            # Train global model copy on client
-            client_global_train_loss = client.train(personal=False)
-            # Validate global model copy on client
-            client_global_val_loss, client_global_val_score = client.validate(personal=False)
-
-            global_train_loss += client_global_train_loss * client.data.weight
-            global_val_loss += client_global_val_loss * client.data.weight
-            global_val_score += client_global_val_score * client.data.weight
-
-        # Aggregate global models and distribute the new global average
-        self.aggregate_models() # Averages client.global_state.model updates
-        self.distribute_global_model(test=False) # Sends aggregated model to client.global_state
-
-        # --- Track Global Model Validation (for best model selection) ---
-        # Note: Ditto doesn't explicitly track global metrics on the server state in the paper,
-        # but we need it to select the best *global* model for saving.
-        # Let's store it temporarily or decide if it should be part of serverstate.
-        print(f"  Ditto: Global Phase Metrics - ValLoss: {global_val_loss:.4f}, ValScore: {global_val_score:.4f}")
-
+        # --- 1. Global Model Update Phase ---
+        def global_train_step(client: Client) -> Dict:
+             return client.train_and_validate(personal=False)
+        global_client_outputs = self.run_clients(global_train_step)
+        global_states_for_agg = [{'state_dict': out.get('state_dict'), 'weight': getattr(self.clients[cid].data, 'weight', 0.0)}
+                                 for cid, out in global_client_outputs if isinstance(out, dict) and out.get('state_dict')]
+        if global_states_for_agg:
+            self.aggregate_models(global_states_for_agg)
+            self.distribute_global_model(test=False)
 
         # --- 2. Personal Model Update Step ---
-        personal_train_loss = 0.0
-        personal_val_loss = 0.0
-        personal_val_score = 0.0
-        print("  Ditto: Starting Personal Model Update Phase...")
-        for client in self.clients.values():
-            # Train personal model on client (uses regularization towards current global)
-            client_personal_train_loss = client.train(personal=True)
-            # Validate personal model on client
-            client_personal_val_loss, client_personal_val_score = client.validate(personal=True)
+        def personal_train_step(client: Client) -> Dict:
+             result = client.train_and_validate(personal=True)
+             result.pop('state_dict', None) # Don't need personal state dict on server
+             return result
+        personal_client_outputs = self.run_clients(personal_train_step)
 
-            personal_train_loss += client_personal_train_loss * client.data.weight
-            personal_val_loss += client_personal_val_loss * client.data.weight
-            personal_val_score += client_personal_val_score * client.data.weight
+        # --- Aggregate and Record *Personal* Metrics ---
+        personal_metrics = {k: 0.0 for k in [MetricKey.TRAIN_LOSSES, MetricKey.VAL_LOSSES, MetricKey.VAL_SCORES]}
+        for cid, output_dict in personal_client_outputs:
+            if not isinstance(output_dict, dict): continue
+            weight = getattr(self.clients[cid].data, 'weight', 0.0)
+            personal_metrics[MetricKey.TRAIN_LOSSES] += output_dict.get('train_loss', 0.0) * weight
+            personal_metrics[MetricKey.VAL_LOSSES] += output_dict.get('val_loss', float('inf')) * weight
+            personal_metrics[MetricKey.VAL_SCORES] += output_dict.get('val_score', 0.0) * weight
 
-        # --- Track Server-Side Personal Metrics ---
-        # These are the primary metrics reported for Ditto's performance during training
-        self.serverstate.train_losses.append([personal_train_loss])
-        self.serverstate.val_losses.append([personal_val_loss])
-        self.serverstate.val_scores.append([personal_val_score])
+        self.history[MetricKey.TRAIN_LOSSES].append(personal_metrics[MetricKey.TRAIN_LOSSES])
+        self.history[MetricKey.VAL_LOSSES].append(personal_metrics[MetricKey.VAL_LOSSES])
+        self.history[MetricKey.VAL_SCORES].append(personal_metrics[MetricKey.VAL_SCORES])
 
-        # --- Update Best Global Model ---
-        # The 'best model' saved by the server is the best *global* model found
-        # based on the validation performance *of the global model updates*.
-        if global_val_loss < self.serverstate.best_loss:
-            print(f"  New best *global* validation loss: {global_val_loss:.4f} (prev: {self.serverstate.best_loss:.4f})")
-            self.serverstate.best_loss = global_val_loss
-            self.serverstate.best_model = copy.deepcopy(self.serverstate.model) # Save the global model
+        # --- Hooks ---
+        self.after_step_hook(personal_client_outputs) # Hook after personal step
 
-        # Return the aggregated *personal* model metrics for the round
-        return personal_train_loss, personal_val_loss, personal_val_score
+        # --- Capture Round 0 State ---
+        if current_round == 0 and self.round_0_state_dict is None:
+            try: self.round_0_state_dict = self.serverstate.model.state_dict()
+            except: pass
+
+        # --- Update Best *Global* Model State ---
+        # Decision: Base on the personal validation loss, as it's the primary performance metric
+        current_personal_val_loss = personal_metrics[MetricKey.VAL_LOSSES]
+        if current_personal_val_loss < self.best_global_loss:
+            self.best_global_loss = current_personal_val_loss
+            # Save the *current global* model state when the personal validation improves
+            try: self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
+            except: pass
+
+    # test_global inherited from base Server will test personal models

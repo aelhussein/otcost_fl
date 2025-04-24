@@ -6,6 +6,8 @@ Parses command-line arguments to select the dataset and experiment type
 initializes the `Experiment` class from `pipeline.py`, and executes the
 experiment run.
 """
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 import argparse
 import os
