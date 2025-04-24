@@ -47,13 +47,12 @@ def load_synthetic_raw(dataset_name: str,
         # Create deterministic but unique seed for each client/cost combination
         seed_string = f"synth-{base_seed}-{client_num}-{cost_key}"
         seed = int(hashlib.sha256(seed_string.encode('utf-8')).hexdigest(), 16) % (2**32)
-    elif mode == 'concept_shift':
-        n_clients = num_clients if num_clients is not None else source_args.get('n_clients', 5)
-        shift_param = (client_num - 1) / (n_clients - 1)
     else:
         n_samples = source_args.get('base_n_samples', 10000)
         seed = source_args.get('random_state', base_seed)
-    
+        if mode == 'concept_shift':
+            n_clients = num_clients if num_clients is not None else source_args.get('n_clients', 5)
+            shift_param = float(cost_key)  * (client_num - 1) / (n_clients - 1)
     # Basic parameters
     n_features = source_args.get('n_features', 10)
     label_noise = source_args.get('label_noise', 0.0)
@@ -111,7 +110,9 @@ def load_torchvision_raw(source_args: dict,
         raise ValueError(f"Torchvision loader not configured for: {tv_dataset_name}")
 
 
-def load_credit_raw(source_args: dict) -> Tuple[np.ndarray, np.ndarray]:
+def load_credit_raw(source_args: dict,
+                    cost_key: Any,
+                    data_dir: str) -> Tuple[np.ndarray, np.ndarray]:
     """Loads raw Credit Card Fraud data from CSV."""
     csv_path = source_args['csv_path']
     df = pd.read_csv(csv_path)

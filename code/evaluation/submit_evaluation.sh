@@ -3,6 +3,7 @@
 # Default values
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR"  "ISIC" "IXITiny")
 DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR")
+DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit")
 DEFAULT_EXP_TYPES=("evaluation")
 DEFAULT_DIR='/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'
 DEFAULT_ENV_PATH='/gpfs/commons/home/aelhussein/anaconda3/bin/activate'

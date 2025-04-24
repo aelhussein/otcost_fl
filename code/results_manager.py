@@ -145,9 +145,6 @@ class ResultsManager:
     def save_model_state(self, model_state_dict: Optional[Dict], num_clients_run: int,
                          cost: Any, seed: int, server_type: str, model_type: str):
         """Saves a model's state_dict."""
-        if model_state_dict is None or num_clients_run <= 0:
-            return  # Don't save if invalid
-
         try:
             path = self.path_builder.get_model_save_path(
                 num_clients_run, cost, seed, server_type, model_type

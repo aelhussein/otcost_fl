@@ -344,6 +344,7 @@ class Experiment:
                     if model_type != 'error' and state_dict is not None:
                          self.results_manager.save_model_state(
                              state_dict, num_actual_clients, cost, seed, 'fedavg', model_type)
+                         print(f"{model_type} model saved successfully for {server_type}, Cost: {cost}, Run: {run_idx}, Seed: {seed}")
 
         # Return records, no need to return state dicts from here
         return CostExecutionResult(cost=cost, trial_records=trial_records)
