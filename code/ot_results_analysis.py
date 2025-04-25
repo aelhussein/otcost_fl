@@ -29,6 +29,8 @@ def pivot_results_comparison(results_df: pd.DataFrame) -> pd.DataFrame:
             return row['Decomposed_ConditionalOT'] # Lower is better? (Depends on interpretation)
         elif row['OT_Method'] == 'fixed_anchor':
             return row['FixedAnchor_TotalCost']
+        elif row['OT_Method'] == 'direct_ot':
+            return row['DirectOT_Cost']  # New entry for direct_ot
         else:
             return np.nan
 
@@ -97,23 +99,25 @@ def plot_ot_metrics_vs_perf_delta(
     primary_metric_map = {
         'feature_error': 'FeatureErrorOT_Cost',
         'decomposed': 'Decomposed_CombinedScore',
-        'fixed_anchor': 'FixedAnchor_TotalCost' # Changed from TotalCost to SimScore
-        # Add new methods here
+        'fixed_anchor': 'FixedAnchor_TotalCost',
+        'direct_ot': 'DirectOT_Cost'  # New entry for direct_ot
     }
+
     # Define corresponding labels for axes
     metric_labels = {
         'feature_error': 'Feature-Error OT Cost',
         'decomposed': 'Decomposed Combined Score',
-        'fixed_anchor': 'Fixed Anchor Cost'
-        # Add new methods here
-    }
-     # Indicate if lower is better (True) or higher is better (False) for the metric
-    lower_is_better = {
-        'feature_error': True,
-        'decomposed': True, # Assuming combined score is a cost/distance
-        'fixed_anchor': False # Similarity score, higher is better
+        'fixed_anchor': 'Fixed Anchor Cost',
+        'direct_ot': 'Direct OT Cost'  # New entry for direct_ot
     }
 
+    # Indicate if lower is better (True) or higher is better (False) for the metric
+    lower_is_better = {
+        'feature_error': True,
+        'decomposed': True,
+        'fixed_anchor': False,
+        'direct_ot': True  # Lower is better for direct_ot cost
+    }
     # Filter to methods present in the data and defined above
     available_methods = [m for m in plot_df['OT_Method'].unique() if m in primary_metric_map]
 

@@ -22,7 +22,7 @@ class OTConfig:
     Includes basic validation.
     """
     # Define known method types to prevent typos
-    KNOWN_METHOD_TYPES = {'feature_error', 'decomposed', 'fixed_anchor'}
+    KNOWN_METHOD_TYPES = {'feature_error', 'decomposed', 'fixed_anchor', 'direct_ot'}
 
     def __init__(self, method_type: str, name: str, params: Optional[Dict[str, Any]] = None):
         """
@@ -63,8 +63,8 @@ class OTCalculatorFactory:
             'feature_error': FeatureErrorOTCalculator,
             'decomposed': DecomposedOTCalculator,
             'fixed_anchor': FixedAnchorLOTCalculator,
+            'direct_ot': DirectOTCalculator,
             # Register new calculator classes here
-            # 'new_method': NewMethodCalculator,
         }
 
     @classmethod
@@ -855,3 +855,130 @@ class FixedAnchorLOTCalculator(BaseOTCalculator):
             sim_score_print = self.results.get('similarity_score', np.nan)
             print(f"  ---> Fixed-Anchor LOT Similarity: {f'{sim_score_print:.4f}' if np.isfinite(sim_score_print) else 'Failed'}")
 
+
+class DirectOTCalculator(BaseOTCalculator):
+    """
+    Calculates direct OT cost between feature vectors.
+    This is a simple implementation that computes OT directly on normalized feature spaces.
+    """
+    
+    def _reset_results(self) -> None:
+        """Initialize/reset the results dictionary and cost matrices."""
+        self.results = {
+            'direct_ot_cost': np.nan,
+            'transport_plan': None,
+            'feature_distance_method': None
+        }
+        self.cost_matrices = {'direct_ot': None}
+    
+    def calculate_similarity(self, data1: Dict[str, Optional[torch.Tensor]], 
+                           data2: Dict[str, Optional[torch.Tensor]], 
+                           params: Dict[str, Any]) -> None:
+        """
+        Calculate direct OT similarity between client feature spaces.
+        
+        Args:
+            data1: Processed data for client 1
+            data2: Processed data for client 2
+            params: Configuration parameters
+        """
+        self._reset_results()
+        
+        # Extract parameters
+        verbose = params.get('verbose', False)
+        normalize_features = params.get('normalize_features', True)
+        normalize_cost = params.get('normalize_cost', True)
+        distance_method = params.get('distance_method', 'euclidean')
+        use_uniform_weights = params.get('use_uniform_weights', False)
+        reg = params.get('reg', DEFAULT_OT_REG)
+        max_iter = params.get('max_iter', DEFAULT_OT_MAX_ITER)
+        
+        # Record feature distance method used
+        self.results['feature_distance_method'] = distance_method
+        
+        # Process inputs - require only h and weights
+        required_keys = ['h']
+        if not use_uniform_weights:
+            required_keys.append('weights')
+            
+        proc_data1 = self._preprocess_input(data1.get('h'), None, None, 
+                                          data1.get('weights'), required_keys)
+        proc_data2 = self._preprocess_input(data2.get('h'), None, None, 
+                                          data2.get('weights'), required_keys)
+        
+        if proc_data1 is None or proc_data2 is None:
+            warnings.warn("Direct OT calculation requires feature vectors (h). "
+                         "Preprocessing failed or data missing. Skipping.")
+            return
+            
+        h1 = proc_data1['h']
+        h2 = proc_data2['h']
+        w1 = proc_data1.get('weights')
+        w2 = proc_data2.get('weights')
+        
+        N, M = h1.shape[0], h2.shape[0]
+        
+        if N == 0 or M == 0:
+            warnings.warn("Direct OT: One or both clients have zero samples. OT cost is 0.")
+            self.results['direct_ot_cost'] = 0.0
+            return
+            
+        # Normalize features if requested
+        if normalize_features:
+            h1_norm = F.normalize(h1.float(), p=2, dim=1, eps=self.eps_num)
+            h2_norm = F.normalize(h2.float(), p=2, dim=1, eps=self.eps_num)
+        else:
+            h1_norm = h1.float()
+            h2_norm = h2.float()
+            
+        # Compute cost matrix based on distance method
+        if distance_method == 'euclidean':
+            cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
+            max_cost = 2.0  # Max distance between normalized vectors is 2
+        elif distance_method == 'cosine':
+            # Compute cosine similarity and convert to distance
+            cos_sim = torch.mm(h1_norm, h2_norm.t())
+            cost_matrix = 1.0 - cos_sim
+            max_cost = 2.0  # Max cosine distance is 2
+        else:
+            warnings.warn(f"Unknown distance method: {distance_method}. Using euclidean.")
+            cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
+            max_cost = 2.0
+        
+        # Normalize cost matrix if requested
+        if normalize_cost:
+            cost_matrix = cost_matrix / max_cost
+            
+        self.cost_matrices['direct_ot'] = cost_matrix.cpu().numpy()
+        
+        # Prepare weights for OT
+        if use_uniform_weights or w1 is None or w2 is None:
+            a = np.ones(N, dtype=np.float64) / N
+            b = np.ones(M, dtype=np.float64) / M
+            weight_type = "Uniform"
+        else:
+            a = w1.cpu().numpy().astype(np.float64)
+            b = w2.cpu().numpy().astype(np.float64)
+            # Ensure valid distributions
+            if a.sum() <= self.eps_num:
+                a = np.ones_like(a) / N
+            else:
+                a = a / a.sum()
+            if b.sum() <= self.eps_num:
+                b = np.ones_like(b) / M
+            else:
+                b = b / b.sum()
+            weight_type = "Sample-Weighted"
+        
+        # Compute OT cost
+        ot_cost, transport_plan = compute_ot_cost(
+            cost_matrix, a=a, b=b, reg=reg, 
+            sinkhorn_max_iter=max_iter, eps_num=self.eps_num
+        )
+        
+        self.results['direct_ot_cost'] = ot_cost
+        self.results['transport_plan'] = transport_plan
+        
+        if verbose:
+            print(f"  Direct OT Cost ({weight_type} weights, dist={distance_method}): "
+                 f"{ot_cost:.4f if not np.isnan(ot_cost) else 'Failed'}")

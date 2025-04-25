@@ -278,6 +278,9 @@ class PipelineRunner:
             row_data['FixedAnchor_CostL1'] = ot_results.get('cost_local1', np.nan)
             row_data['FixedAnchor_CostL2'] = ot_results.get('cost_local2', np.nan)
             row_data['FixedAnchor_CostX'] = ot_results.get('cost_cross_anchor', np.nan)
+        elif method_type == 'direct_ot':
+            row_data['DirectOT_Cost'] = ot_results.get('direct_ot_cost', np.nan)
+            row_data['DirectOT_DistMethod'] = ot_results.get('feature_distance_method', None)
 
     def _structure_output_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """Structures the output DataFrame with consistent column ordering."""
@@ -288,7 +291,8 @@ class PipelineRunner:
             'FeatureErrorOT_Cost', 'FeatureErrorOT_Weighting',
             'Decomposed_CombinedScore', 'Decomposed_LabelEMD', 'Decomposed_ConditionalOT',
             'FixedAnchor_SimScore', 'FixedAnchor_TotalCost',
-            'FixedAnchor_CostL1', 'FixedAnchor_CostL2', 'FixedAnchor_CostX'
+            'FixedAnchor_CostL1', 'FixedAnchor_CostL2', 'FixedAnchor_CostX',
+            'DirectOT_Cost', 'DirectOT_DistMethod'  # New columns for DirectOT
         ]
         
         # Get columns present in the DataFrame, maintaining the desired order
