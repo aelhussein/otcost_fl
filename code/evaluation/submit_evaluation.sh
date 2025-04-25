@@ -4,12 +4,12 @@
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR"  "ISIC" "IXITiny")
 DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR")
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit")
-#DEFAULT_DATASETS=("Synthetic_Feature" "Credit")
+#DEFAULT_DATASETS=("EMNIST" "CIFAR")
 DEFAULT_EXP_TYPES=("learning_rate")
 DEFAULT_DIR='/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'
 DEFAULT_ENV_PATH='/gpfs/commons/home/aelhussein/anaconda3/bin/activate'
 DEFAULT_ENV_NAME='cuda_env_ne1'
-DEFAULT_NUM_CLIENTS="2"
+DEFAULT_NUM_CLIENTS=""
 
 # Function to display usage
 show_usage() {

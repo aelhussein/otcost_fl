@@ -77,8 +77,8 @@ def load_synthetic_raw(dataset_name: str,
 
 def load_torchvision_raw(source_args: dict,
                          data_dir: str,
-                         transform_config: Optional[dict] = None
-                         ) -> Tuple[Any, Any]: # Returns raw torchvision dataset objects
+                         transform_config: Optional[dict] = None,
+                         cost_key: Optional[Any] = None) -> Tuple[Any, Any]: # Returns raw torchvision dataset objects
     """Loads raw torchvision datasets (train/test)."""
     transform_config = transform_config or {}
     tv_dataset_name = source_args.get('dataset_name')

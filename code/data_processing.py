@@ -137,8 +137,14 @@ class DataPreprocessor:
                 train_dataset = Subset(base_data, train_indices) if train_indices else None
                 val_dataset = Subset(base_data, val_indices) if val_indices else None
                 test_dataset = Subset(base_data, test_indices) if test_indices else None
+            # Handle tuple of torch datasets (e.g., torchvision train/test datasets)
+            elif isinstance(base_data, tuple) and all(isinstance(d, torch.utils.data.Dataset) for d in base_data):
+                # Use the first dataset (typically train) for all splits
+                train_dataset = Subset(base_data[0], train_indices) if train_indices else None
+                val_dataset = Subset(base_data[0], val_indices) if val_indices else None
+                test_dataset = Subset(base_data[0], test_indices) if test_indices else None
             # Handle numpy array subset
-            elif isinstance(base_data, tuple) and len(base_data) == 2:
+            elif isinstance(base_data, tuple) and len(base_data) == 2 and isinstance(base_data[0], np.ndarray):
                 base_X, base_y = base_data
                 train_data = (base_X[train_indices], base_y[train_indices]) if train_indices else None
                 val_data = (base_X[val_indices], base_y[val_indices]) if val_indices else None
@@ -214,14 +220,13 @@ class DataManager:
 
     def _create_client_bundle(self, loaded_data):
         """Helper to convert loaded data to a standardized client bundle format."""
-        if not isinstance(loaded_data, tuple) or len(loaded_data) != 2:
-            return None
-            
         # Create appropriate bundle based on data type
         if isinstance(loaded_data[0], list):
             return {'type': 'paths', 'data': {'X_paths': loaded_data[0], 'y_data': loaded_data[1]}}
         elif isinstance(loaded_data[0], np.ndarray):
             return {'type': 'direct', 'data': {'X': loaded_data[0], 'y': loaded_data[1]}}
+        elif isinstance(loaded_data[0], torch.utils.data.Dataset):
+            print(loaded_data)
         return None
 
     def _prepare_loader_args(self, cost, client_num=None, num_clients=None):
@@ -249,18 +254,15 @@ class DataManager:
     def _extract_partitioner_input(self, data):
         """Extract data needed for the partitioner based on the data format."""
         # For torchvision datasets
-        if hasattr(data, 'targets'):
-            if isinstance(data.targets, torch.Tensor):
-                partitioner_input = data.targets.cpu().numpy()
+        data_type = type(data[0]).__module__
+        if data_type.startswith('torchvision.datasets'):
+        # Handle both tensor and list targets
+            tr_data = data[0]
+            if isinstance(tr_data.targets, torch.Tensor):
+                partitioner_input = tr_data.targets.numpy()
             else:
-                partitioner_input = np.array(data.targets)
-                
-            # Convert multi-dimensional targets to 1D
-            if partitioner_input.ndim > 1:
-                partitioner_input = partitioner_input[:, 0] if partitioner_input.shape[1] > 0 else partitioner_input.ravel()
-                
-            return partitioner_input, len(data)
-            
+                partitioner_input = np.array(tr_data.targets) 
+            return partitioner_input, len(tr_data)
         # For tuple data (features, labels)
         elif isinstance(data, tuple) and len(data) == 2:
             return data[1], len(data[0])  # labels, num_samples
@@ -303,8 +305,6 @@ class DataManager:
                 # Configure partitioner
                 partitioner_kwargs = {**self.config.get('partitioner_args', {})}
                 if self.partitioning_strategy == 'dirichlet_indices':
-                    if not isinstance(cost, (int, float)):
-                        raise TypeError(f"Dirichlet requires numeric cost (alpha), got {type(cost)}")
                     partitioner_kwargs['alpha'] = float(cost)
                     if 'sampling_config' in self.config:
                         partitioner_kwargs['sampling_config'] = self.config['sampling_config']
@@ -325,14 +325,13 @@ class DataManager:
         # Process client data into DataLoaders
         preprocessor = DataPreprocessor(self.config, self.batch_size)
         client_dataloaders = {}
-        
-        print('\n')
+        # print('\n')
         for client_id, bundle in client_raw_bundles.items():
             dataloaders = preprocessor.preprocess_client_data(bundle)
             client_dataloaders[client_id] = dataloaders
-            print(f"Client {client_id}: "
-                  f"Train size: {len(dataloaders[0].dataset)}, "
-                  f"Val size: {len(dataloaders[1].dataset)}, "
-                  f"Test size: {len(dataloaders[2].dataset)}")
-        print('\n')      
+        #     print(f"Client {client_id}: "
+        #           f"Train size: {len(dataloaders[0].dataset)}, "
+        #           f"Val size: {len(dataloaders[1].dataset)}, "
+        #           f"Test size: {len(dataloaders[2].dataset)}")
+        # print('\n')      
         return client_dataloaders

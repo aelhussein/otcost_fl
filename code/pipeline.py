@@ -206,7 +206,6 @@ class Experiment:
     def run_experiment(self, costs: List[Any]) -> List[TrialRecord]:
         """Main entry point."""
         experiment_type = self.config.experiment_type
-
         if experiment_type == ExperimentType.EVALUATION:
             self._execute_experiment_runs(experiment_type, costs, self._evaluate_cost_for_run)
         elif experiment_type in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM]:
@@ -285,7 +284,6 @@ class Experiment:
         """Executes all tuning trials for a single cost and run."""
         tuning_type = self.config.experiment_type
         trial_records: List[TrialRecord] = []
-
         # Determine tuning parameters
         if tuning_type == ExperimentType.LEARNING_RATE: param_key, try_vals_key, servers_key = 'learning_rate', 'learning_rates_try', 'servers_tune_lr'
         elif tuning_type == ExperimentType.REG_PARAM: param_key, try_vals_key, servers_key = 'reg_param', 'reg_params_try', 'servers_tune_reg'
@@ -302,6 +300,9 @@ class Experiment:
         for param_val in try_vals:
             hp = {param_key: param_val, fixed_key: fixed_val}
             for server_type in servers_to_tune:
+                print(f"\n")
+                print(f"========== Cost: {cost} | Server: {server_type:<10} | Run: {run_idx+1} | LR: {param_val:.5f} ========== ", end="")
+                print(f"\n")
                 trial_metrics, _ = self.single_run_executor.execute_trial( # Ignore model states for tuning
                     server_type=server_type, hyperparams=hp,
                     client_dataloaders=client_dataloaders, tuning=True
@@ -310,6 +311,7 @@ class Experiment:
                                      tuning_param_name=param_key, tuning_param_value=param_val,
                                      metrics=trial_metrics, error=trial_metrics.get('error'))
                 trial_records.append(record)
+        print(f"\n")
         return CostExecutionResult(cost=cost, trial_records=trial_records)
 
     def _evaluate_cost_for_run(self, cost: Any, run_idx: int, seed: int,
@@ -328,6 +330,7 @@ class Experiment:
             eval_hyperparams = {'learning_rate': best_lr, 'reg_param': best_reg}
             print(f"\n")
             print(f"========== Cost: {cost} | Server: {server_type:<10} | Run: {run_idx+1} | LR: {best_lr:.5f} ========== ", end="")
+            print(f"\n")
             # Execute trial
             trial_metrics, model_states = self.single_run_executor.execute_trial(
                 server_type=server_type, hyperparams=eval_hyperparams,

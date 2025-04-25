@@ -141,7 +141,6 @@ class Server:
         self.history[MetricKey.TRAIN_LOSSES].append(round_metrics[MetricKey.TRAIN_LOSSES])
         self.history[MetricKey.VAL_LOSSES].append(round_metrics[MetricKey.VAL_LOSSES])
         self.history[MetricKey.VAL_SCORES].append(round_metrics[MetricKey.VAL_SCORES])
-
         # Update Server's Best Global Model State
         current_val_loss = round_metrics[MetricKey.VAL_LOSSES]
         if current_val_loss < self.best_global_loss:
@@ -188,28 +187,38 @@ class Server:
 class FLServer(Server):
     """Implements standard FedAvg aggregation and distribution (CPU-based)."""
     def aggregate_models(self, client_states_info: List[Dict[str, Any]]):
-        """Performs FedAvg aggregation on CPU using state dicts."""
-        if not client_states_info: return
-        global_model = self.serverstate.model # Operate on server's model (CPU)
+        """Performs FedAvg aggregation on CPU using state dicts by parameter name."""
+        global_model = self.serverstate.model  # Operate on server's model (CPU)
+        global_state_dict = global_model.state_dict()
+        
+        # Initialize accumulator state dict with zeros matching global model's shapes
+        accumulated_state_dict = {}
+        for key, param in global_state_dict.items():
+            if isinstance(param, torch.Tensor):
+                accumulated_state_dict[key] = torch.zeros_like(param)
+        
+        total_weight = 0.0
         with torch.no_grad():
-            for param in global_model.parameters(): param.zero_()
-            total_weight = 0.0
             for info in client_states_info:
                 state_dict = info.get('state_dict')
                 weight = info.get('weight', 0.0)
-                if state_dict is None: continue
                 total_weight += weight
-                for server_param, client_param_val in zip(global_model.parameters(), state_dict.values()):
-                     if isinstance(client_param_val, torch.Tensor):
-                          server_param.add_(client_param_val.cpu(), alpha=weight) # Ensure adding CPU tensors
-            # Optional normalization...
+                
+                # Accumulate each parameter by name
+                for key in accumulated_state_dict.keys():
+                    if key in state_dict:
+                        client_param = state_dict[key]
+                        if isinstance(client_param, torch.Tensor):
+                            accumulated_state_dict[key].add_(client_param.cpu(), alpha=weight)
+            
+            for key in accumulated_state_dict.keys():
+                accumulated_state_dict[key].div_(total_weight)
+                global_state_dict[key].copy_(accumulated_state_dict[key])
 
     def distribute_global_model(self, test: bool = False):
         """Distributes the appropriate CPU global model state dictionary."""
-        if not self.clients: return
         # Distribute current global model or server's tracked best global model
         state_dict_to_dist = self.get_best_model_state_dict() if test else self.serverstate.model.state_dict()
-        if state_dict_to_dist is None: return
         try:
             for client in self.clients.values():
                  client.set_model_state(state_dict_to_dist, test) # Client loads CPU state dict
