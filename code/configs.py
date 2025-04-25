@@ -38,7 +38,7 @@ COMMON_TABULAR_PARAMS = dict(
     learning_rates_try=[1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
     default_reg_param=0.1, # For FedProx, pFedMe, Ditto if added
     reg_params_try=[1, 0.1, 0.01], # For FedProx, pFedMe, Ditto
-    batch_size=64,
+    batch_size=32,
     epochs_per_round=3,
     rounds=100,
     rounds_tune_inner=20,
@@ -138,7 +138,7 @@ DEFAULT_PARAMS = {
         'fixed_classes': 10,
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
-        'batch_size': 128, 'epochs_per_round': 1, 'rounds': 100, 'rounds_tune_inner': 25,
+        'batch_size': 64, 'epochs_per_round': 3, 'rounds': 100, 'rounds_tune_inner': 25,
         'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42,
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
@@ -156,7 +156,7 @@ DEFAULT_PARAMS = {
         'fixed_classes': 10,
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
-        'batch_size': 128, 'epochs_per_round': 1, 'rounds': 100, 'rounds_tune_inner': 25,
+        'batch_size': 64, 'epochs_per_round': 3, 'rounds': 100, 'rounds_tune_inner': 25,
         'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42,
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
@@ -166,7 +166,7 @@ DEFAULT_PARAMS = {
         'dataset_name': 'Heart',
         'data_source': 'heart_site_loader',
         'partitioning_strategy': 'pre_split', # Uses cost as key for site_mappings
-        # REMOVED: cost_interpretation
+        'batch_size':16,
         'dataset_class': 'HeartDataset',
         'source_args': { # Loader uses cost_key directly to index site_mappings
             # data_dir passed by manager

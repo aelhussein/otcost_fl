@@ -8,6 +8,7 @@ code/archive/
 results/archive
 code/evaluation/logs/
 *.txt
+*json
 results/
 activations/
 saved_models/
