@@ -38,15 +38,15 @@ COMMON_TABULAR_PARAMS = dict(
     learning_rates_try=[1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
     default_reg_param=0.1, # For FedProx, pFedMe, Ditto if added
     reg_params_try=[1, 0.1, 0.01], # For FedProx, pFedMe, Ditto
-    batch_size=64,
-    epochs_per_round=3,
+    batch_size=32,
+    epochs_per_round=5,
     rounds=50,
     rounds_tune_inner=20,
     runs=10, # Number of evaluation runs
     runs_tune=3, # Number of tuning runs
     metric='Accuracy', # Default metric
     base_seed=42,
-    samples_per_client = 1000,
+    samples_per_client = 250,
     default_num_clients=5,
     max_clients=None,
     servers_tune_lr=ALGORITHMS,
@@ -68,11 +68,11 @@ DEFAULT_PARAMS = {
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for base generation (mode='baseline')
             'base_n_samples': 50000,
-            'n_features': 10,
-            'label_noise': 0.05,
+            'n_features': 15,
+            'label_noise': 0.1,
             'random_state': 42,
         },
-        'metric': 'Accuracy',
+        'metric': 'F1',
     },
     'Synthetic_Feature': {
         **COMMON_TABULAR_PARAMS,
@@ -83,11 +83,11 @@ DEFAULT_PARAMS = {
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for per-client generation (mode='feature_shift')
             'base_n_samples': 50000,
-            'n_features': 10,
-            'label_noise': 0.05,
+            'n_features': 15,
+            'label_noise': 0.01,
             # Feature shift specific config (passed as **kwargs to generator)
             'feature_shift_kind': 'mean',
-            'feature_shift_cols': 10,
+            'feature_shift_cols': 15,
             'feature_shift_mu': 3.0,
         },
     },
@@ -100,8 +100,8 @@ DEFAULT_PARAMS = {
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for base generation + concept shift (mode='concept_shift')
             'base_n_samples': 50000,
-            'n_features': 10,
-            'label_noise': 0.05,
+            'n_features': 15,
+            'label_noise': 0.01,
             'random_state': 42,
             # Concept shift specific config (passed as **kwargs to generator)
             'concept_label_option': 'threshold',
@@ -133,11 +133,11 @@ DEFAULT_PARAMS = {
         'source_args': {'dataset_name': 'CIFAR10'},
         'transform_config': {},
         'partitioner_args': {},
-        'samples_per_client': 3000,
+        'samples_per_client': 1000,
         'fixed_classes': 10,
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
-        'batch_size': 128, 'epochs_per_round': 3, 'rounds': 100, 'rounds_tune_inner': 25,
+        'batch_size': 64, 'epochs_per_round': 5, 'rounds': 100, 'rounds_tune_inner': 25,
         'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42,
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
@@ -152,11 +152,11 @@ DEFAULT_PARAMS = {
         'source_args': {'dataset_name': 'EMNIST', 'split': 'digits'},
         'transform_config': {},
         'partitioner_args': {},
-        'samples_per_client': 1000,
+        'samples_per_client': 750,
         'fixed_classes': 10,
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
-        'batch_size': 64, 'epochs_per_round': 3, 'rounds': 100, 'rounds_tune_inner': 25,
+        'batch_size': 48, 'epochs_per_round': 5, 'rounds': 100, 'rounds_tune_inner': 25,
         'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42,
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],

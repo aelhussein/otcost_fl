@@ -3,8 +3,8 @@
 # Default values
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR"  "ISIC" "IXITiny")
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR")
-#DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit")
-DEFAULT_DATASETS=("Synthetic_Label" "Credit")
+DEFAULT_DATASETS=("Credit")
+#DEFAULT_DATASETS=("Synthetic_Label" "Credit")
 #DEFAULT_DATASETS=("EMNIST" "CIFAR")
 #DEFAULT_EXP_TYPES=("learning_rate")
 DEFAULT_EXP_TYPES=("evaluation")

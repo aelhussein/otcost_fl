@@ -29,8 +29,7 @@ def set_seeds(seed_value: int = 42):
     np.random.seed(seed_value)
     random.seed(seed_value)
     os.environ['PYTHONHASHSEED'] = str(seed_value)
-    torch.backends.cudnn.deterministic = True,
-    torch.backends.cudnn.benchmark = False
+    
 # --- Device Handling ---
 @contextmanager
 def gpu_scope():
