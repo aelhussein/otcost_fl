@@ -44,7 +44,10 @@ class Server:
             MetricKey.TRAIN_LOSSES, MetricKey.VAL_LOSSES, MetricKey.VAL_SCORES,
             MetricKey.TEST_LOSSES, MetricKey.TEST_SCORES
         ]}
+        # Add tracking of client-specific metrics
+        self.client_metrics: Dict[str, Dict[str, List]] = {}
         self.round_0_state_dict: Optional[Dict] = None # Captured after round 0 training
+
 
     def set_server_type(self, name: str, tuning: bool):
         """Sets the server type name and tuning status."""
@@ -100,13 +103,16 @@ class Server:
                 print(f"** Round {current_round + 1} **")
         use_personal = self.personal_model_required_by_server
         def train_val_step(client: Client) -> Dict:
-             return client.train_and_validate(personal=use_personal)
+            return client.train_and_validate(personal=use_personal)
 
         client_outputs = self.run_clients(train_val_step)
 
         # Aggregate Metrics & States
         round_metrics = {k: 0.0 for k in [MetricKey.TRAIN_LOSSES, MetricKey.VAL_LOSSES, MetricKey.VAL_SCORES]}
         states_for_agg: List[Dict[str, Any]] = []
+        
+        # Store client metrics for this round
+        client_round_metrics = {}
 
         for client_id, output_dict in client_outputs:
             if not isinstance(output_dict, dict): continue
@@ -114,28 +120,41 @@ class Server:
             round_metrics[MetricKey.TRAIN_LOSSES] += output_dict.get('train_loss', 0.0) * weight
             round_metrics[MetricKey.VAL_LOSSES] += output_dict.get('val_loss', float('inf')) * weight
             round_metrics[MetricKey.VAL_SCORES] += output_dict.get('val_score', 0.0) * weight
+            
+            # Store individual client metrics
+            client_round_metrics[client_id] = {
+                'train_loss': output_dict.get('train_loss', 0.0),
+                'val_loss': output_dict.get('val_loss', float('inf')),
+                'val_score': output_dict.get('val_score', 0.0),
+                'weight': weight
+            }
+            
             if current_round % 10 == 0:
                 print(f"Client {client_id}, weight {weight:2f} - Train Loss: {output_dict.get('train_loss', 0.0):4f}, "
                     f"Val Loss: {output_dict.get('val_loss', float('inf')):4f}, "
                     f"Val Score: {output_dict.get('val_score', 0.0):4f}")
             # Collect current state dicts only if NOT a personal training round for this server type
             if not use_personal and 'state_dict' in output_dict and output_dict['state_dict'] is not None:
-                 states_for_agg.append({'state_dict': output_dict['state_dict'], 'weight': weight})
+                states_for_agg.append({'state_dict': output_dict['state_dict'], 'weight': weight})
 
-        # Server Model Updates (if applicable)ß
+        # Store client metrics for this round in the history
+        if 'client_metrics' not in self.history:
+            self.history['client_metrics'] = []
+        self.history['client_metrics'].append(client_round_metrics)
+
+        # Server Model Updates (if applicable)
         if not use_personal and states_for_agg:
-             self.aggregate_models(states_for_agg) # Implemented by FLServer
-             self.distribute_global_model(test=False) # Implemented by FLServer
+            self.aggregate_models(states_for_agg) # Implemented by FLServer
+            self.distribute_global_model(test=False) # Implemented by FLServer
         elif not use_personal:
-             print(f"Warning: No client states for aggregation round {current_round + 1}.")
+            print(f"Warning: No client states for aggregation round {current_round + 1}.")
 
         # Hooks
         self.after_step_hook(client_outputs)
 
         # Capture Round 0 State (Based on current global model after potential aggregation)
         if current_round == 0 and self.round_0_state_dict is None:
-            try: self.round_0_state_dict = self.serverstate.model.state_dict() # Already CPU
-            except: pass
+            self.round_0_state_dict = self.serverstate.model.state_dict() # Already CPU
 
         # Track Metrics
         self.history[MetricKey.TRAIN_LOSSES].append(round_metrics[MetricKey.TRAIN_LOSSES])
@@ -145,8 +164,7 @@ class Server:
         current_val_loss = round_metrics[MetricKey.VAL_LOSSES]
         if current_val_loss < self.best_global_loss:
             self.best_global_loss = current_val_loss
-            try: self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
-            except: pass
+            self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
 
     def test_global(self) -> None:
         """Tests the appropriate model (best global) on all clients."""
@@ -156,17 +174,33 @@ class Server:
         self.distribute_global_model(test=True) # Sends self.best_global_model_state_dict
 
         def test_step(client: Client) -> Tuple[float, float]:
-             return client.test(personal=test_personal) # Client internally loads best state
+            return client.test(personal=test_personal) # Client internally loads best state
 
         client_outputs = self.run_clients(test_step)
 
         # Aggregate Metrics
         round_test_loss, round_test_score = 0.0, 0.0
+        
+        # Store client test metrics
+        client_test_metrics = {}
+        
         for client_id, output_tuple in client_outputs:
-             if not isinstance(output_tuple, tuple) or len(output_tuple) != 2: continue
-             weight = getattr(self.clients[client_id].data, 'weight', 0.0)
-             round_test_loss += output_tuple[0] * weight
-             round_test_score += output_tuple[1] * weight
+            weight = getattr(self.clients[client_id].data, 'weight', 0.0)
+            test_loss, test_score = output_tuple
+            round_test_loss += test_loss * weight
+            round_test_score += test_score * weight
+            
+            # Store individual client test metrics
+            client_test_metrics[client_id] = {
+                'test_loss': test_loss,
+                'test_score': test_score,
+                'weight': weight
+            }
+
+        # Store client test metrics in the history
+        if 'client_test_metrics' not in self.history:
+            self.history['client_test_metrics'] = {}
+        self.history['client_test_metrics'] = client_test_metrics
 
         # Hooks
         self.after_step_hook(client_outputs)
@@ -317,7 +351,7 @@ class DittoServer(FLServer):
         self.after_step_hook(personal_client_outputs) # Hook after personal step
 
         # --- Capture Round 0 State ---
-        if current_round == 0 and self.round_0_state_dict is None:
+        if current_round == 10 and self.round_0_state_dict is None:
             try: self.round_0_state_dict = self.serverstate.model.state_dict()
             except: pass
 

@@ -19,17 +19,28 @@ from helper import MetricKey, ExperimentType
 
 @dataclass
 class TrialRecord:
-    """Represents the results of a single experimental trial (one run)."""
+    """Record of a single trial's execution and metrics."""
     cost: Any
-    run_idx: int  # The index of the run (e.g., 0, 1, 2...)
+    run_idx: int
     server_type: str
-    # Store tuning params if applicable, None otherwise
-    tuning_param_name: Optional[str] = None  # e.g., 'learning_rate', 'reg_param'
-    tuning_param_value: Optional[Any] = None
-    # Dictionary containing lists of metrics per round
-    metrics: Dict[str, List[Any]] = field(default_factory=dict)
-    # Optional error message if the trial failed
+    metrics: Optional[Dict] = None
     error: Optional[str] = None
+    tuning_param_name: Optional[str] = None  # For tuning records
+    tuning_param_value: Optional[float] = None  # For tuning records
+    
+    def to_dict(self) -> Dict:
+        """Converts record to a dictionary for JSON serialization."""
+        record_dict = {
+            'cost': self.cost, 'run_idx': self.run_idx, 'server_type': self.server_type,
+            'error': self.error
+        }
+        if self.tuning_param_name:
+            record_dict['tuning_param_name'] = self.tuning_param_name
+            record_dict['tuning_param_value'] = self.tuning_param_value
+        if self.metrics:
+            # Include all metrics including client-specific ones
+            record_dict['metrics'] = self.metrics
+        return record_dict
 
     # Helper to convert potentially non-JSON serializable types in metrics
     def _metrics_to_serializable(self) -> dict:
@@ -46,16 +57,6 @@ class TrialRecord:
             else:  # Handle cases where metrics might not be list
                 serializable_metrics[key] = value_list
         return serializable_metrics
-
-    def to_dict(self) -> dict:
-        """Converts the dataclass to a dictionary suitable for JSON."""
-        d = asdict(self)
-        # Overwrite metrics with serializable version
-        d['metrics'] = self._metrics_to_serializable()
-        # Convert cost to string if not basic type
-        if not isinstance(d['cost'], (str, int, float, bool, type(None))):
-            d['cost'] = str(d['cost'])
-        return d
     
     def matches_config(self, cost: Any, server_type: str, 
                       param_name: Optional[str] = None, 

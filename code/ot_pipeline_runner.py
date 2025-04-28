@@ -281,18 +281,19 @@ class PipelineRunner:
         elif method_type == 'direct_ot':
             row_data['DirectOT_Cost'] = ot_results.get('direct_ot_cost', np.nan)
             row_data['DirectOT_DistMethod'] = ot_results.get('feature_distance_method', None)
+            row_data['DirectOT_Weighting'] = ot_results.get('weighting_used', None)
 
     def _structure_output_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """Structures the output DataFrame with consistent column ordering."""
         cols_order = [
-            'Cost', 'Client_1', 'Client_2',  # Removed 'Round'
+            'Cost', 'Client_1', 'Client_2',
             'Param_Set_Name', 'OT_Method', 'Run_Status',
             'Local_Final_Loss', 'FedAvg_Final_Loss', 'Loss_Delta',
             'FeatureErrorOT_Cost', 'FeatureErrorOT_Weighting',
             'Decomposed_CombinedScore', 'Decomposed_LabelEMD', 'Decomposed_ConditionalOT',
             'FixedAnchor_SimScore', 'FixedAnchor_TotalCost',
             'FixedAnchor_CostL1', 'FixedAnchor_CostL2', 'FixedAnchor_CostX',
-            'DirectOT_Cost', 'DirectOT_DistMethod'  # New columns for DirectOT
+            'DirectOT_Cost', 'DirectOT_DistMethod', 'DirectOT_Weighting'
         ]
         
         # Get columns present in the DataFrame, maintaining the desired order

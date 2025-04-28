@@ -858,8 +858,11 @@ class FixedAnchorLOTCalculator(BaseOTCalculator):
 
 class DirectOTCalculator(BaseOTCalculator):
     """
-    Calculates direct OT cost between feature vectors.
-    This is a simple implementation that computes OT directly on normalized feature spaces.
+    Calculates direct OT cost between neural network activations.
+    
+    This method computes optimal transport directly between the activation spaces
+    of two clients, without decomposing by class or using anchors. It works with the 
+    raw feature activations extracted from the model's penultimate layer.
     """
     
     def _reset_results(self) -> None:
@@ -867,7 +870,8 @@ class DirectOTCalculator(BaseOTCalculator):
         self.results = {
             'direct_ot_cost': np.nan,
             'transport_plan': None,
-            'feature_distance_method': None
+            'feature_distance_method': None,
+            'weighting_used': None
         }
         self.cost_matrices = {'direct_ot': None}
     
@@ -875,30 +879,33 @@ class DirectOTCalculator(BaseOTCalculator):
                            data2: Dict[str, Optional[torch.Tensor]], 
                            params: Dict[str, Any]) -> None:
         """
-        Calculate direct OT similarity between client feature spaces.
+        Calculate direct OT similarity between client activation spaces.
+        
+        This method computes OT directly on the neural network activations ('h'),
+        which are the pre-logit feature representations from the model.
         
         Args:
-            data1: Processed data for client 1
-            data2: Processed data for client 2
+            data1: Processed data for client 1, including activations
+            data2: Processed data for client 2, including activations
             params: Configuration parameters
         """
         self._reset_results()
         
         # Extract parameters
         verbose = params.get('verbose', False)
-        normalize_features = params.get('normalize_features', True)
+        normalize_activations = params.get('normalize_activations', True)
         normalize_cost = params.get('normalize_cost', True)
         distance_method = params.get('distance_method', 'euclidean')
-        use_uniform_weights = params.get('use_uniform_weights', False)
-        reg = params.get('reg', DEFAULT_OT_REG)
-        max_iter = params.get('max_iter', DEFAULT_OT_MAX_ITER)
+        use_loss_weighting = params.get('use_loss_weighting', False)
+        reg = DEFAULT_OT_REG
+        max_iter =  DEFAULT_OT_MAX_ITER
         
         # Record feature distance method used
         self.results['feature_distance_method'] = distance_method
         
-        # Process inputs - require only h and weights
+        # Process inputs - require activations 'h' and optionally weights
         required_keys = ['h']
-        if not use_uniform_weights:
+        if use_loss_weighting:
             required_keys.append('weights')
             
         proc_data1 = self._preprocess_input(data1.get('h'), None, None, 
@@ -907,12 +914,14 @@ class DirectOTCalculator(BaseOTCalculator):
                                           data2.get('weights'), required_keys)
         
         if proc_data1 is None or proc_data2 is None:
-            warnings.warn("Direct OT calculation requires feature vectors (h). "
+            warnings.warn("Direct OT calculation requires neural network activations ('h'). "
                          "Preprocessing failed or data missing. Skipping.")
+            weight_type = "Loss" if use_loss_weighting else "Uniform"
+            self.results['weighting_used'] = weight_type
             return
             
-        h1 = proc_data1['h']
-        h2 = proc_data2['h']
+        h1 = proc_data1['h']  # Neural network activations for client 1
+        h2 = proc_data2['h']  # Neural network activations for client 2
         w1 = proc_data1.get('weights')
         w2 = proc_data2.get('weights')
         
@@ -921,10 +930,12 @@ class DirectOTCalculator(BaseOTCalculator):
         if N == 0 or M == 0:
             warnings.warn("Direct OT: One or both clients have zero samples. OT cost is 0.")
             self.results['direct_ot_cost'] = 0.0
+            weight_type = "Loss" if use_loss_weighting else "Uniform"
+            self.results['weighting_used'] = weight_type
             return
             
-        # Normalize features if requested
-        if normalize_features:
+        # Normalize activations if requested
+        if normalize_activations:
             h1_norm = F.normalize(h1.float(), p=2, dim=1, eps=self.eps_num)
             h2_norm = F.normalize(h2.float(), p=2, dim=1, eps=self.eps_num)
         else:
@@ -934,41 +945,49 @@ class DirectOTCalculator(BaseOTCalculator):
         # Compute cost matrix based on distance method
         if distance_method == 'euclidean':
             cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
-            max_cost = 2.0  # Max distance between normalized vectors is 2
+            max_cost = 2.0 if normalize_activations else float('inf')  # For normalized vectors, max distance is 2
         elif distance_method == 'cosine':
             # Compute cosine similarity and convert to distance
             cos_sim = torch.mm(h1_norm, h2_norm.t())
             cost_matrix = 1.0 - cos_sim
             max_cost = 2.0  # Max cosine distance is 2
+        elif distance_method == 'squared_euclidean':
+            cost_matrix = pairwise_euclidean_sq(h1_norm, h2_norm)
+            max_cost = 4.0 if normalize_activations else float('inf')  # For normalized vectors, max squared distance is 4
         else:
             warnings.warn(f"Unknown distance method: {distance_method}. Using euclidean.")
             cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
-            max_cost = 2.0
+            max_cost = 2.0 if normalize_activations else float('inf')
         
+        if cost_matrix is None:
+            warnings.warn(f"Failed to compute cost matrix with method: {distance_method}")
+            return
+            
         # Normalize cost matrix if requested
-        if normalize_cost:
+        if normalize_cost and np.isfinite(max_cost):
             cost_matrix = cost_matrix / max_cost
             
         self.cost_matrices['direct_ot'] = cost_matrix.cpu().numpy()
         
         # Prepare weights for OT
-        if use_uniform_weights or w1 is None or w2 is None:
+        if use_loss_weighting and w1 is not None and w2 is not None:
+            weights1_np = w1.cpu().numpy().astype(np.float64)
+            weights2_np = w2.cpu().numpy().astype(np.float64)
+            weight_type = "Loss-Weighted"
+            # Renormalize marginals
+            sum1 = weights1_np.sum(); sum2 = weights2_np.sum()
+            if not np.isclose(sum1, 1.0) and sum1 > self.eps_num: weights1_np /= sum1
+            elif sum1 <= self.eps_num: weights1_np = np.ones_like(weights1_np) / N; warnings.warn("Client 1 loss weights sum zero, using uniform.")
+            if not np.isclose(sum2, 1.0) and sum2 > self.eps_num: weights2_np /= sum2
+            elif sum2 <= self.eps_num: weights2_np = np.ones_like(weights2_np) / M; warnings.warn("Client 2 loss weights sum zero, using uniform.")
+            a, b = weights1_np, weights2_np
+        else:
+            if use_loss_weighting: warnings.warn("Loss weighting requested but weights unavailable. Using uniform.")
             a = np.ones(N, dtype=np.float64) / N
             b = np.ones(M, dtype=np.float64) / M
             weight_type = "Uniform"
-        else:
-            a = w1.cpu().numpy().astype(np.float64)
-            b = w2.cpu().numpy().astype(np.float64)
-            # Ensure valid distributions
-            if a.sum() <= self.eps_num:
-                a = np.ones_like(a) / N
-            else:
-                a = a / a.sum()
-            if b.sum() <= self.eps_num:
-                b = np.ones_like(b) / M
-            else:
-                b = b / b.sum()
-            weight_type = "Sample-Weighted"
+        
+        self.results['weighting_used'] = weight_type
         
         # Compute OT cost
         ot_cost, transport_plan = compute_ot_cost(
@@ -980,5 +999,6 @@ class DirectOTCalculator(BaseOTCalculator):
         self.results['transport_plan'] = transport_plan
         
         if verbose:
-            print(f"  Direct OT Cost ({weight_type} weights, dist={distance_method}): "
+            print(f"  Direct OT Cost ({weight_type} weights, dist={distance_method}, "
+                 f"normalized={normalize_activations}): "
                  f"{ot_cost:.4f if not np.isnan(ot_cost) else 'Failed'}")

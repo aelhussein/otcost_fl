@@ -78,18 +78,14 @@ class Credit(torch.nn.Module):
     def __init__(self, dropout_rate=0.3):
         super(Credit, self).__init__()
         self.input_size = 29
-        self.hidden_size = [56, 29]
+        self.hidden_size = [10]
         
         self.fc = nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size[0]),
             nn.LayerNorm(self.hidden_size[0]),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(self.hidden_size[0], self.hidden_size[1]),
-            nn.LayerNorm(self.hidden_size[1]),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(self.hidden_size[1], 2)
+            nn.Linear(self.hidden_size[0], 2)
         )
         
         self._initialize_weights()

@@ -156,7 +156,6 @@ class SingleRunExecutor:
                 metrics = self._train_and_evaluate(server, trainer_config.rounds)
                 # Retrieve model states from server if trial succeeded
                 if 'error' not in metrics:
-                    model_states['final'] = server.serverstate.get_current_model_state_dict()
                     model_states['best'] = server.get_best_model_state_dict()
                     model_states['round0'] = server.round_0_state_dict
 

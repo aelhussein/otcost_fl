@@ -40,18 +40,18 @@ COMMON_TABULAR_PARAMS = dict(
     reg_params_try=[1, 0.1, 0.01], # For FedProx, pFedMe, Ditto
     batch_size=64,
     epochs_per_round=3,
-    rounds=100,
+    rounds=50,
     rounds_tune_inner=20,
     runs=10, # Number of evaluation runs
     runs_tune=3, # Number of tuning runs
     metric='Accuracy', # Default metric
     base_seed=42,
+    samples_per_client = 1000,
     default_num_clients=5,
     max_clients=None,
     servers_tune_lr=ALGORITHMS,
     servers_tune_reg=[], # Tune Reg only for specified algos
     partitioner_args={}, # Extra args for partitioner
-    sampling_config={'type': 'fixed_total', 'size': 1000}, # Default sampling AFTER partitioning
 )
 
 # --- Default Hyperparameters & Data Handling Configuration ---
@@ -66,7 +66,7 @@ DEFAULT_PARAMS = {
         # REMOVED: cost_interpretation
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for base generation (mode='baseline')
-            'base_n_samples': 1000,
+            'base_n_samples': 50000,
             'n_features': 10,
             'label_noise': 0.05,
             'random_state': 42,
@@ -81,7 +81,7 @@ DEFAULT_PARAMS = {
         # REMOVED: cost_interpretation (Loader uses cost_key as shift_param)
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for per-client generation (mode='feature_shift')
-            'n_samples_per_client': 1000,
+            'base_n_samples': 50000,
             'n_features': 10,
             'label_noise': 0.05,
             # Feature shift specific config (passed as **kwargs to generator)
@@ -89,7 +89,6 @@ DEFAULT_PARAMS = {
             'feature_shift_cols': 10,
             'feature_shift_mu': 3.0,
         },
-        'sampling_config': None, # Data already generated per client size
     },
     'Synthetic_Concept': {
         **COMMON_TABULAR_PARAMS,
@@ -99,7 +98,7 @@ DEFAULT_PARAMS = {
         # REMOVED: cost_interpretation (Loader uses cost_key as shift_param)
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for base generation + concept shift (mode='concept_shift')
-            'base_n_samples': 1000,
+            'base_n_samples': 50000,
             'n_features': 10,
             'label_noise': 0.05,
             'random_state': 42,
@@ -107,7 +106,6 @@ DEFAULT_PARAMS = {
             'concept_label_option': 'threshold',
             'concept_threshold_range_factor': 0.4
         },
-        'sampling_config': {'type': 'fixed_total', 'size': 1000},
     },
 
     # === Other Datasets ===
@@ -134,7 +132,7 @@ DEFAULT_PARAMS = {
         'source_args': {'dataset_name': 'CIFAR10'},
         'transform_config': {},
         'partitioner_args': {},
-        'sampling_config': {'type': 'fixed_total', 'size': 3000},
+        'samples_per_client': 3000,
         'fixed_classes': 10,
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
@@ -152,7 +150,7 @@ DEFAULT_PARAMS = {
         'source_args': {'dataset_name': 'EMNIST', 'split': 'digits'},
         'transform_config': {},
         'partitioner_args': {},
-        'sampling_config': {'type': 'fixed_total', 'size': 1000},
+        'samples_per_client': 1000,
         'fixed_classes': 10,
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
@@ -177,7 +175,7 @@ DEFAULT_PARAMS = {
             'scale_values': { 'age': (53.0872973, 7.01459463e+01), 'chest_pain_type': (3.23702703, 8.17756772e-01), 'resting_bp': (132.74405405, 3.45493057e+02), 'cholesterol': (220.23648649, 4.88430934e+03), 'ecg': (0.64513514, 5.92069868e-01), 'max_hr': (138.75459459, 5.29172208e+02), 'exercise_ST_depression': (0.89532432, 1.11317517e+00) },
             'site_mappings': { 1: [['cleveland'], ['hungarian']], 2: [['cleveland'], ['switzerland']], 3: [['cleveland'], ['va']], 4: [['hungarian'], ['switzerland']], 5: [['hungarian'], ['va']], 6: [['switzerland'], ['va']] }
         },
-        'sampling_config': None,
+        'samples_per_client': None,
         'metric': 'F1',
         'default_num_clients': 2,
         'max_clients': 2,
@@ -194,7 +192,7 @@ DEFAULT_PARAMS = {
         },
         'transform_config': {},
         'partitioner_args': {},
-        'sampling_config': {'type': 'fixed_total', 'size': 2000},
+        'samples_per_client': 2000,
         'fixed_classes': 8,
         'default_lr': 1e-3, 'learning_rates_try': [5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
@@ -231,15 +229,15 @@ DEFAULT_PARAMS = {
 # These are the raw values used directly by loaders/partitioners
 DATASET_COSTS = {
     # Alpha values (label skew) - Used directly by partition_dirichlet_indices
-    'Synthetic_Label': [1000.0, 10.0, 1.0, 0.5, 0.1],
-    'Credit': [1000.0, 10.0, 1.0, 0.5, 0.1],
-    'EMNIST': [1000.0, 10.0, 1.0, 0.5, 0.1],
-    'CIFAR': [1000.0, 10.0, 1.0, 0.5, 0.1],
+    'Synthetic_Label': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
+    'Credit': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
+    'EMNIST': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
+    'CIFAR': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
 
     # Feature shift parameter (0=baseline) - Used directly by load_synthetic_raw
-    'Synthetic_Feature': [0.0, 0.5, 1.0, 5.0, 10.0],
+    'Synthetic_Feature': [0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 5.0, 10.0],
     # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
-    'Synthetic_Concept': [0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0],
+    'Synthetic_Concept': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 
     # Site mapping keys - Used directly by load_heart_raw, load_isic_paths_raw, load_ixi_paths_raw
     'IXITiny': [0.08, 0.28, 0.30, 'all'],

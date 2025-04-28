@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from typing import Dict, Tuple, Any, Optional, List, Union, Callable
 from sklearn.model_selection import train_test_split
-
+import random
 # Project Imports
 from configs import N_WORKERS
 from helper import get_parameters_for_dataset
@@ -91,6 +91,7 @@ class DataPreprocessor:
         if not self.dataset_class_name:
              raise ValueError(f"Config for '{self.dataset_name}' missing 'dataset_class'.")
 
+        
     def _get_dataset_instance(self, data_args: dict, split_type: str):
         """Instantiates the correct Dataset class based on config name."""
         common_args = {'split_type': split_type, 'dataset_config': self.dataset_config}
@@ -217,6 +218,7 @@ class DataManager:
         self.data_source_type = self.config['data_source']
         self.partitioning_strategy = self.config['partitioning_strategy']
         self.batch_size = self.config['batch_size']
+        self.py_random_sampler = random.Random(base_seed + 100)
 
     def _create_client_bundle(self, loaded_data):
         """Helper to convert loaded data to a standardized client bundle format."""
@@ -268,70 +270,159 @@ class DataManager:
             return data[1], len(data[0])  # labels, num_samples
             
         raise ValueError(f"Cannot extract partitioner input from data type: {type(data)}")
+    
+    def _sample_data_for_client(self,
+                                data_or_indices: Union[Tuple[np.ndarray, np.ndarray], Tuple[List[str], Union[np.ndarray, List[str]]], List[int]],
+                                target_size: Optional[int]
+                               ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[List[str], Union[np.ndarray, List[str]]], List[int]]:
+        if target_size is None or target_size <= 0:
+            return data_or_indices # No sampling requested
+
+        current_size = 0
+        is_indices = False
+        is_numpy = False
+        is_paths = False
+        # Determine type and current size
+        if isinstance(data_or_indices, list) and all(isinstance(i, int) for i in data_or_indices):
+            is_indices = True
+            current_size = len(data_or_indices)
+        elif isinstance(data_or_indices, tuple) and len(data_or_indices) == 2:
+            if isinstance(data_or_indices[0], np.ndarray):
+                is_numpy = True
+                current_size = len(data_or_indices[0])
+            elif isinstance(data_or_indices[0], list):
+                is_paths = True
+                current_size = len(data_or_indices[0])
+
+        # Perform sampling if needed
+        if current_size > target_size:
+            # Use the instance's sampler for reproducibility across calls within a run
+            sampled_indices = self.py_random_sampler.sample(range(current_size), target_size)
+            sampled_indices.sort() # Optional: Keep original order for numpy/paths
+
+            if is_indices:
+                original_indices = np.array(data_or_indices) # Convert to numpy for easy indexing
+                return original_indices[sampled_indices].tolist()
+            elif is_numpy:
+                X, y = data_or_indices
+                return X[sampled_indices], y[sampled_indices]
+            elif is_paths:
+                X_paths, y_data = data_or_indices
+                X_sampled = [X_paths[i] for i in sampled_indices]
+                y_sampled = [y_data[i] for i in sampled_indices] if isinstance(y_data, list) else y_data[sampled_indices]
+                return X_sampled, y_sampled
+            else:
+                 print("Warning: Could not determine data type for sampling.")
+                 return data_or_indices # Return original if type unknown
+        else:
+            # Keep all data if already at or below target size
+            return data_or_indices
 
     def get_dataloaders(self, cost: Any, run_seed: int, num_clients_override: Optional[int] = None
-                    ) -> Dict[str, Tuple[DataLoader, DataLoader, DataLoader]]:
+                        ) -> Dict[str, Tuple[DataLoader, DataLoader, DataLoader]]:
         """Gets DataLoaders for all clients for a specific run configuration."""
         num_clients = num_clients_override or self.config.get('default_num_clients', 2)
         loader_func = get_loader(self.data_source_type)
         partitioner_func = get_partitioner(self.partitioning_strategy)
-        client_raw_bundles = {}
-        
-        # Handle pre-split datasets (separate data per client)
+        client_final_data_bundles = {} # Store bundles AFTER potential sampling
+        target_samples_per_client = self.config.get('samples_per_client')
+
+        # --- Seed the instance sampler for this specific run/cost ---
+        # Ensures sampling is deterministic per run, even if DataManager is reused
+        self.py_random_sampler.seed(run_seed + 101 + hash(str(cost)))
+
+        base_data_for_partitioning = None
+        labels_np_full = None
+
         if self.partitioning_strategy == 'pre_split':
+            print(f"Loading pre-split data for {num_clients} clients...")
             for client_idx in range(1, num_clients + 1):
                 client_id = f"client_{client_idx}"
-                
-                # Load data for this client
                 try:
+                    # 1. Load raw data for the client
                     loader_args = self._prepare_loader_args(cost, client_idx, num_clients)
-                    loaded_data = loader_func(**loader_args)
-                    bundle = self._create_client_bundle(loaded_data)
-                    if bundle:
-                        client_raw_bundles[client_id] = bundle
+                    # For Synthetic_Feature/Concept, this now loads base_n_samples with client-specific shift/seed
+                    loaded_data = loader_func(**loader_args) # e.g., (X_np, y_np) or (paths, labels)
+                    # 2. Sample the loaded data down to target size (if applicable)
+                    sampled_data = self._sample_data_for_client(loaded_data, target_samples_per_client)
+
+                    # 3. Create the final bundle from sampled data
+                    bundle = self._create_client_bundle(sampled_data)
+                    if bundle and sampled_data[0] is not None and len(sampled_data[0]) > 0: # Check if sampling resulted in data
+                        client_final_data_bundles[client_id] = bundle
+                    else:
+                        print(f"Warning: Client {client_id} has no data after loading/sampling.")
+
                 except Exception as e:
-                    print(f"Error loading pre-split data for client {client_idx}: {e}")
-                    
-        # Handle datasets requiring partitioning (Dirichlet, IID)
-        else:
-            # Load the base dataset
+                    print(f"Error loading/sampling pre-split data for client {client_id}: {e}")
+                    # Optionally continue or raise
+
+        else: # Handle datasets requiring partitioning (Dirichlet, IID)
+            print(f"Loading and partitioning base data ({self.partitioning_strategy})...")
             try:
+                # 1. Load base data
                 loader_args = self._prepare_loader_args(cost)
-                base_data = loader_func(**loader_args)
-                
-                # Extract data for partitioning
-                partitioner_input, num_samples = self._extract_partitioner_input(base_data)
-                
-                # Configure partitioner
+                base_data_for_partitioning = loader_func(**loader_args)
+                partitioner_input, num_samples = self._extract_partitioner_input(base_data_for_partitioning)
+                if isinstance(partitioner_input, np.ndarray):
+                    labels_np_full = partitioner_input
+
+                # 2. Run partitioner - gets FULL index assignments per client
                 partitioner_kwargs = {**self.config.get('partitioner_args', {})}
                 if self.partitioning_strategy == 'dirichlet_indices':
                     partitioner_kwargs['alpha'] = float(cost)
-                    if 'sampling_config' in self.config:
-                        partitioner_kwargs['sampling_config'] = self.config['sampling_config']
-                
-                # Partition the data
-                client_indices = partitioner_func(partitioner_input, num_clients, seed=run_seed, **partitioner_kwargs)
-                
-                # Create client bundles
-                for i, indices in client_indices.items():
-                    client_id = f"client_{i+1}"
-                    client_raw_bundles[client_id] = {
-                        'type': 'subset', 
-                        'data': {'indices': indices, 'base_data': base_data}
+                client_indices_full = partitioner_func(partitioner_input, num_clients, seed=run_seed, **partitioner_kwargs)
+                # 3. Sample the *indices* for each client down to target size
+                client_indices_final = {}
+                for client_id_idx, indices_list in client_indices_full.items():
+                    sampled_indices = self._sample_data_for_client(indices_list, target_samples_per_client)
+                    if sampled_indices: # Only add if sampling resulted in indices
+                        client_indices_final[client_id_idx] = sampled_indices
+
+                # --- Print Class Breakdown AFTER Sampling (if labels available) ---
+                if labels_np_full is not None:
+                    print("\n--- Client class distribution ---")
+                    total_assigned = 0
+                    unique_labels_global = np.unique(labels_np_full)
+                    for cid, idxs in sorted(client_indices_final.items()):
+                        total_assigned += len(idxs)
+                        if len(idxs) == 0:
+                            dist_str = "No samples"
+                        else:
+                            client_labels = labels_np_full[idxs]
+                            unique_l, counts = np.unique(client_labels, return_counts=True)
+                            # build "Class 0: 123" style string in label order
+                            label2count = {l: c for l, c in zip(unique_l, counts)}
+                            dist_str = ", ".join(
+                                [f"Class {l}: {label2count.get(l,0)}"
+                                for l in unique_labels_global]
+                            )
+                        print(f"  Client {cid+1}: {len(idxs)} samples ({dist_str})")
+                    print("-" * 50)
+                # 4. Create client bundles using the FINAL sampled indices
+                for client_id_idx, final_indices in client_indices_final.items():
+                    client_id = f"client_{client_id_idx+1}"
+                    client_final_data_bundles[client_id] = {
+                        'type': 'subset',
+                        'data': {'indices': final_indices, 'base_data': base_data_for_partitioning}
                     }
+
             except Exception as e:
-                print(f"Error partitioning data: {e}")
-        
-        # Process client data into DataLoaders
+                print(f"Error partitioning or sampling data: {e}")
+                raise
+
+        # --- Process Final Bundles into DataLoaders ---
         preprocessor = DataPreprocessor(self.config, self.batch_size)
         client_dataloaders = {}
-        # print('\n')
-        for client_id, bundle in client_raw_bundles.items():
-            dataloaders = preprocessor.preprocess_client_data(bundle)
-            client_dataloaders[client_id] = dataloaders
-        #     print(f"Client {client_id}: "
-        #           f"Train size: {len(dataloaders[0].dataset)}, "
-        #           f"Val size: {len(dataloaders[1].dataset)}, "
-        #           f"Test size: {len(dataloaders[2].dataset)}")
-        # print('\n')      
+        for client_id, bundle in client_final_data_bundles.items():
+            try:
+                # preprocess_client_data performs the train/val/test split on the (already sampled) data
+                dataloaders = preprocessor.preprocess_client_data(bundle)
+                if dataloaders[0] and hasattr(dataloaders[0], 'dataset') and len(dataloaders[0].dataset) > 0:
+                    client_dataloaders[client_id] = dataloaders
+                else:
+                    print(f"Warning: Client {client_id} has no training samples after preprocessing, skipping.")
+            except Exception as e:
+                print(f"Error preprocessing data for client {client_id}: {e}")
+
         return client_dataloaders
