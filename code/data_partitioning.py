@@ -47,17 +47,12 @@ def partition_iid_indices(n_samples: int, num_clients: int, seed: int) -> Dict[i
         client_indices[i] = indices[start:end]
     return client_indices
 
-from typing import Dict, List
-import numpy as np, random
-
-
 def partition_dirichlet_indices(
     labels_np: np.ndarray,
     num_clients: int,
     alpha: float,
     seed: int = 42,
-    *,
-    equal_total_samples: bool = False,
+    **kwargs: Any,
 ) -> Dict[int, List[int]]:
     """
     Dirichlet label-skew partition (Hsu et al., 2019) with optional quantity-skew removal.
@@ -108,18 +103,12 @@ def partition_dirichlet_indices(
                 client_indices[client_id].extend(pool[start:start + n_take])
                 start += n_take
 
-    # optional: remove quantity skew
-    if equal_total_samples:
-        target = min(len(v) for v in client_indices.values())
-        for cid, idxs in client_indices.items():
-            client_indices[cid] = py_rng.sample(idxs, target)
 
     # final per-client shuffle
     for idxs in client_indices.values():
         py_rng.shuffle(idxs)
 
     return client_indices
-
 
 
 # =============================================================================

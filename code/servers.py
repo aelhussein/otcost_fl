@@ -9,6 +9,7 @@ import copy
 import numpy as np
 import torch
 from typing import Dict, Optional, List, Tuple, Any, Callable
+import concurrent.futures
 
 # Get core types from helper
 from helper import (MetricKey, TrainerConfig, SiteData, ModelState, # Import types
@@ -87,13 +88,51 @@ class Server:
              client.data.weight = getattr(client.data, 'num_samples', 0) / total_samples if total_samples > 0 else default_weight
 
     def run_clients(self, step_fn: Callable[[Client], Any]) -> List[Tuple[str, Any]]:
-        """Runs step_fn on all clients, returns [(client_id, result), ...]."""
+        """
+        Runs step_fn on all clients, with optional parallelism.
+        
+        Args:
+            step_fn: Function to execute on each client
+        
+        Returns:
+            List of (client_id, result) tuples in deterministic order
+        """
+        max_parallel = getattr(self.config, 'max_parallel_clients', None)
+        
+        # If max_parallel is None or 1, run serially (original behavior)
+        if max_parallel is None or max_parallel <= 1 or len(self.clients) <= 1:
+            results = []
+            for client_id, client in self.clients.items():
+                try:
+                    client_result = step_fn(client)
+                    results.append((client_id, client_result))
+                except Exception as e: 
+                    print(f"ERROR step_fn client {client_id}: {e}")
+            return results
+        
+        # For parallel execution using ThreadPoolExecutor
         results = []
-        for client_id, client in self.clients.items():
-            try:
-                client_result = step_fn(client)
-                results.append((client_id, client_result))
-            except Exception as e: print(f"ERROR step_fn client {client_id}: {e}")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            # Prepare the futures with deterministic client ordering
+            client_items = sorted(self.clients.items())  # Sort by client_id for reproducibility
+            future_to_client = {}
+            
+            for client_id, client in client_items:
+                future = executor.submit(step_fn, client)
+                future_to_client[future] = client_id
+            
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(future_to_client):
+                client_id = future_to_client[future]
+                try:
+                    client_result = future.result()
+                    results.append((client_id, client_result))
+                except Exception as e:
+                    print(f"ERROR step_fn client {client_id}: {e}")
+        
+        # Sort results by client_id to ensure deterministic aggregation order
+        # regardless of thread completion order
+        results.sort(key=lambda x: x[0]) 
         return results
 
     def train_round(self) -> None:

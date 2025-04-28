@@ -29,7 +29,8 @@ def set_seeds(seed_value: int = 42):
     np.random.seed(seed_value)
     random.seed(seed_value)
     os.environ['PYTHONHASHSEED'] = str(seed_value)
-
+    torch.backends.cudnn.deterministic = True,
+    torch.backends.cudnn.benchmark = False
 # --- Device Handling ---
 @contextmanager
 def gpu_scope():
@@ -108,6 +109,8 @@ class TrainerConfig:
     rounds: int = 1
     requires_personal_model: bool = False
     algorithm_params: Dict[str, Any] = field(default_factory=dict)
+    max_parallel_clients: Optional[int] = None  # Maximum number of clients to train in parallel
+
 
 @dataclass
 class SiteData:

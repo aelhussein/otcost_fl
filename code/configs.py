@@ -52,6 +52,7 @@ COMMON_TABULAR_PARAMS = dict(
     servers_tune_lr=ALGORITHMS,
     servers_tune_reg=[], # Tune Reg only for specified algos
     partitioner_args={}, # Extra args for partitioner
+    max_parallel_clients=None,
 )
 
 # --- Default Hyperparameters & Data Handling Configuration ---
@@ -140,6 +141,7 @@ DEFAULT_PARAMS = {
         'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42,
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
+        'max_parallel_clients' : None,
     },
     'EMNIST': {
         'dataset_name': 'EMNIST',
@@ -158,6 +160,7 @@ DEFAULT_PARAMS = {
         'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42,
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
+        'max_parallel_clients' : None,
     },
     'Heart': {
         **COMMON_TABULAR_PARAMS,
@@ -200,6 +203,7 @@ DEFAULT_PARAMS = {
         'runs': 5, 'runs_tune': 1, 'metric': 'Balanced_accuracy', 'base_seed': 42,
         'default_num_clients': 2, 'max_clients': 4,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
+        'max_parallel_clients' : 2,
     },
     'IXITiny': {
         'dataset_name': 'IXITiny',
@@ -222,6 +226,7 @@ DEFAULT_PARAMS = {
         'runs': 10, 'runs_tune': 3, 'metric': 'DICE', 'base_seed': 42,
         'default_num_clients': 2, 'max_clients': 3,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
+        'max_parallel_clients' : 2,
     }
 }
 

@@ -74,11 +74,17 @@ class SingleRunExecutor:
         algo_params = {'reg_param': reg} if server_type in ['fedprox', 'pfedme', 'ditto'] and reg is not None else {}
         requires_personal_model = server_type in ['pfedme', 'ditto'] # Info for client init
         rounds = self.default_params.get('rounds_tune_inner') if tuning else self.default_params['rounds']
+        max_parallel = self.default_params.get('max_parallel_clients', None) 
 
         return TrainerConfig(
-            dataset_name=self.dataset_name, device=str(self.device), learning_rate=lr,
-            batch_size=self.default_params['batch_size'], epochs=self.default_params.get('epochs_per_round', 1),
-            rounds=rounds, requires_personal_model=requires_personal_model, algorithm_params=algo_params
+            dataset_name=self.dataset_name, device=str(self.device), 
+            learning_rate=lr,
+            batch_size=self.default_params['batch_size'], 
+            epochs=self.default_params.get('epochs_per_round', 1),
+            rounds=rounds, 
+            requires_personal_model=requires_personal_model, 
+            algorithm_params=algo_params,
+            max_parallel_clients=max_parallel
         )
 
     def _create_server_instance(self, server_type: str, config: TrainerConfig, tuning: bool) -> Server:
