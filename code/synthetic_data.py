@@ -10,7 +10,6 @@ from typing import Tuple, Dict, Any, Optional
 # =============================================================================
 # == Helper Functions for Shifts ==
 # =============================================================================
-
 def _apply_feature_shift(X: np.ndarray,
                          delta: float,
                          kind: str = "mean",
@@ -19,13 +18,13 @@ def _apply_feature_shift(X: np.ndarray,
                          sigma: float = 1.5,
                          rng: Optional[np.random.Generator] = None) -> np.ndarray:
     """
-    Applies a feature distribution shift to the input data X.
+    Applies a feature distribution shift to the input data X with balanced direction.
 
     Args:
         X (np.ndarray): Input features (standard normal recommended).
         delta (float): Shift intensity parameter [0, 1].
-        kind (str): Type of shift ('mean', 'scale', 'tilt').
-        cols (Optional[int]): Number of initial columns to affect. Defaults to min(5, n_features).
+        kind (str): Type of shift ('mean', 'scale', 'tilt', 'balanced_mean').
+        cols (Optional[int]): Number of initial columns to affect. Defaults to min(10, n_features).
         mu (float): Mean shift factor (for kind='mean').
         sigma (float): Scale shift factor (for kind='scale').
         rng (Optional[np.random.Generator]): Random number generator for 'tilt'.
@@ -35,21 +34,43 @@ def _apply_feature_shift(X: np.ndarray,
     """
     n_samples, n_features = X.shape
     if cols is None:
-        cols = min(10, n_features) # Default to affect first 10 cols or fewer
+        cols = min(10, n_features)  # Default to affect first 10 cols or fewer
 
+    # mean shift - alternates shift direction for features
     if kind == "mean" and cols > 0:
-        X[:, :cols] += delta * mu
+        half_cols = cols // 2  # Half features shift positive, half negative
+        
+        # First half of features shift positive
+        if half_cols > 0:
+            X[:, :half_cols] += delta * mu
+            
+        # Second half of features shift negative
+        if cols - half_cols > 0:
+            X[:, half_cols:cols] -= delta * mu
+            
+    # Balanced scale shift - some scale up, some scale down
     elif kind == "scale" and cols > 0:
-        X[:, :cols] *= (1.0 + delta * sigma) # Ensure scaling factor is >= 1
+        half_cols = cols // 2
+        
+        # First half scales up
+        if half_cols > 0:
+            X[:, :half_cols] *= (1.0 + delta * sigma)
+            
+        # Second half scales down (carefully to avoid division by zero)
+        if cols - half_cols > 0:
+            scale_down = 1.0 / (1.0 + delta * sigma) if delta * sigma < 0.9 else 0.1
+            X[:, half_cols:cols] *= scale_down
+            
+        
+    # Tilt mode (already fairly balanced due to orthogonal transformation)
     elif kind == "tilt":
         if rng is None:
-            rng = np.random.default_rng() # Use default if none provided
+            rng = np.random.default_rng()  # Use default if none provided
         # Generate a random orthogonal matrix Q via QR decomposition
         H = rng.standard_normal((n_features, n_features))
         Q, _ = np.linalg.qr(H)
         # Apply convex combination: (1-delta)*X + delta*(X @ Q)
         X[:] = (1.0 - delta) * X + delta * (X @ Q)
-    # else: kind not recognized or cols=0, no change
 
     return X
 
@@ -115,60 +136,79 @@ def _make_concept_labels(X: np.ndarray,
 # == Main Public Generation Function ==
 # =============================================================================
 
-def generate_synthetic_data(mode: str,
-                            n_samples: int,
-                            n_features: int,
-                            shift_param: float = 0.0,
-                            label_noise: float = 0.0,
-                            seed: int = 42,
-                            **shift_config: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+def generate_synthetic_data(
+    mode: str,
+    n_samples: int,
+    n_features: int,
+    shift_param: float = 0.0,
+    label_noise: float = 0.0,
+    base_seed: int = 42,
+    client_seed: int | None = None,
+    **shift_config: Dict[str, Any]
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generates synthetic (features, labels) based on mode and shift parameter.
+    Generates synthetic (X, y) pairs with optional feature/​concept shift and a
+    selectable label-generation rule (linear, quadratic, piece-wise, mlp).
 
-    Args:
-        mode (str): Generation mode ('baseline', 'feature_shift', 'concept_shift').
-        n_samples (int): Number of samples.
-        n_features (int): Number of features.
-        shift_param (float): Intensity of the shift [0, 1] (delta or gamma).
-        label_noise (float): Probability of flipping a label [0, 1].
-        seed (int): Random seed.
-        **shift_config (Dict[str, Any]): Additional configuration for the specific
-                                         shift type (passed to helper functions).
-                                         E.g., feature_shift_kind='mean',
-                                                feature_shift_cols=5,
-                                                concept_label_option='threshold'.
-
-    Returns:
-        Tuple[np.ndarray, np.ndarray]: Generated features X and labels y.
+    New kwarg in shift_config
+    -------------------------
+    label_rule : str, default 'linear'
+        One of {'linear', 'quadratic', 'piecewise', 'mlp'}.
     """
-    rng = np.random.default_rng(seed)
+    # ---------------- RNG setup ------------------------------------------------
+    base_rng   = np.random.default_rng(base_seed)
+    client_rng = np.random.default_rng(client_seed)
 
-    # 1. Generate Base Features (Standard Normal)
-    X = rng.standard_normal((n_samples, n_features))
+    # ---------------- base features -------------------------------------------
+    X = client_rng.standard_normal((n_samples, n_features))
 
-    # 2. Generate Base Weight Vector (fixed for this seed)
-    w = rng.standard_normal(n_features)
-
-    # 3. Apply Feature Shift (if applicable)
+    # ---------------- optional feature shift ----------------------------------
     if mode == "feature_shift":
-        # Extract relevant keys for apply_feature_shift, avoid passing unrelated keys
-        feature_shift_keys = ['kind', 'cols', 'mu', 'sigma']
-        feature_shift_args = {k: shift_config[k] for k in feature_shift_keys if k in shift_config}
-        X = _apply_feature_shift(X, delta=shift_param, rng=rng, **feature_shift_args)
+        f_keys = ['kind', 'cols', 'mu', 'sigma']
+        f_args = {k: shift_config[k] for k in f_keys if k in shift_config}
+        X = _apply_feature_shift(X, delta=shift_param, rng=client_rng, **f_args)
 
-    # 4. Generate Labels
+    # ---------------- label generation ----------------------------------------
+    label_rule = shift_config.get("label_rule", "linear")
+    w          = base_rng.standard_normal(n_features)     # shared weight vector
+
     if mode == "concept_shift":
-        # Extract relevant keys for _make_concept_labels
-        concept_label_keys = ['option', 'threshold_range_factor']
-        concept_label_args = {k: shift_config[k] for k in concept_label_keys if k in shift_config}
-        y = _make_concept_labels(X, gamma=shift_param, w=w, **concept_label_args)
-    else: # baseline or feature_shift mode uses baseline labels
-        y = (X @ w > 0).astype(int) # Simple linear threshold at 0
+        c_keys = ['option', 'threshold_range_factor']
+        c_args = {k: shift_config[k] for k in c_keys if k in shift_config}
+        y = _make_concept_labels(X, gamma=shift_param, w=w, **c_args)
 
-    # 5. Apply Label Noise
+    else:  # baseline or feature_shift -> choose rule
+        if label_rule == "linear":
+            y = (X @ w > 0).astype(int)
+
+        elif label_rule == "quadratic":
+            k     = min(5, n_features // 2)
+            beta  = 0.2
+            z_lin = X @ w
+            z_quad = (X[:, :k] * X[:, k:2*k]).sum(1)
+            y = ((z_lin + beta * z_quad) > 0).astype(int)
+
+        elif label_rule == "piecewise":
+            score  = X @ w
+            segments = np.digitize(score, [-1.0, 0.0, 1.0])   # 3 bins
+            y = (segments % 2).astype(int)                    # pattern 0-1-0
+
+        elif label_rule == "mlp":
+            h  = 50                                            # hidden size
+            W1 = base_rng.standard_normal((n_features, h))
+            b1 = base_rng.standard_normal(h)
+            W2 = base_rng.standard_normal(h)
+            b2 = base_rng.standard_normal()
+            hidden = np.tanh(X @ W1 + b1)
+            logit  = hidden @ W2 + b2
+            y = (logit > 0).astype(int)
+
+        else:
+            raise ValueError(f"Unknown label_rule '{label_rule}'")
+
+    # ---------------- optional label noise ------------------------------------
     if label_noise > 0:
-        flip_mask = rng.random(n_samples) < label_noise
-        # Use XOR (^) to flip binary labels (0->1, 1->0)
-        y[flip_mask] = 1 - y[flip_mask] # Alternative: y[flip_mask] ^= 1
+        flip_mask = client_rng.random(n_samples) < label_noise
+        y[flip_mask] = 1 - y[flip_mask]
 
-    return X, y
+    return X.astype(np.float32), y.astype(np.int64)

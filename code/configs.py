@@ -71,6 +71,7 @@ DEFAULT_PARAMS = {
             'n_features': 15,
             'label_noise': 0.1,
             'random_state': 42,
+            'label_rule': 'mlp'
         },
         'metric': 'F1',
     },
@@ -89,6 +90,7 @@ DEFAULT_PARAMS = {
             'feature_shift_kind': 'mean',
             'feature_shift_cols': 15,
             'feature_shift_mu': 3.0,
+            'label_rule': 'mlp',
         },
     },
     'Synthetic_Concept': {
@@ -105,7 +107,8 @@ DEFAULT_PARAMS = {
             'random_state': 42,
             # Concept shift specific config (passed as **kwargs to generator)
             'concept_label_option': 'threshold',
-            'concept_threshold_range_factor': 0.4
+            'concept_threshold_range_factor': 0.4,
+            'label_rule': 'mlp',
         },
     },
 

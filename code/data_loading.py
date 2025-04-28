@@ -35,16 +35,15 @@ def load_synthetic_raw(dataset_name: str,
         'Synthetic_Label': 'baseline'
     }
     mode = mode_mapping.get(dataset_name, 'baseline')
-    seed = source_args.get('random_state', base_seed)
+    base_seed = source_args.get('random_state', base_seed)
+    client_seed = base_seed + client_num
     n_samples = source_args.get('base_n_samples', 50000)
     # Set shift parameter if applicable (for feature/concept shift)
     shift_param = 0.0
     if mode in ['feature_shift', 'concept_shift'] and isinstance(cost_key, (int, float)):
         n_clients = num_clients if num_clients is not None else source_args.get('n_clients', 5)
         shift_param = float(cost_key)  * (client_num - 1) / (n_clients - 1)
-        seed_string = f"synth-{dataset_name}-{base_seed}-{client_num}-{cost_key}"
-        seed = int(hashlib.sha256(seed_string.encode('utf-8')).hexdigest(), 16) % (2**32)
-
+    
     # Basic parameters
     n_features = source_args.get('n_features', 10)
     label_noise = source_args.get('label_noise', 0.05)
@@ -58,11 +57,12 @@ def load_synthetic_raw(dataset_name: str,
     # Extract only the keys needed for this mode
     relevant_keys = shift_configs.get(mode, [])
     shift_config = {k: source_args[k] for k in relevant_keys if k in source_args}
+    shift_config['label_rule'] = source_args.get('label_rule', 'linear')
     
     # Generate data
     X_np, y_np = generate_synthetic_data(
         mode=mode, n_samples=n_samples, n_features=n_features,
-        shift_param=shift_param, label_noise=label_noise, seed=seed, **shift_config
+        shift_param=shift_param, label_noise=label_noise, base_seed=base_seed, client_seed = client_seed, **shift_config
     )
     
     return X_np, y_np

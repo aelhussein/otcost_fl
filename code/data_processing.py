@@ -379,26 +379,6 @@ class DataManager:
                     if sampled_indices: # Only add if sampling resulted in indices
                         client_indices_final[client_id_idx] = sampled_indices
 
-                # --- Print Class Breakdown AFTER Sampling (if labels available) ---
-                if labels_np_full is not None:
-                    print("\n--- Client class distribution ---")
-                    total_assigned = 0
-                    unique_labels_global = np.unique(labels_np_full)
-                    for cid, idxs in sorted(client_indices_final.items()):
-                        total_assigned += len(idxs)
-                        if len(idxs) == 0:
-                            dist_str = "No samples"
-                        else:
-                            client_labels = labels_np_full[idxs]
-                            unique_l, counts = np.unique(client_labels, return_counts=True)
-                            # build "Class 0: 123" style string in label order
-                            label2count = {l: c for l, c in zip(unique_l, counts)}
-                            dist_str = ", ".join(
-                                [f"Class {l}: {label2count.get(l,0)}"
-                                for l in unique_labels_global]
-                            )
-                        print(f"  Client {cid+1}: {len(idxs)} samples ({dist_str})")
-                    print("-" * 50)
                 # 4. Create client bundles using the FINAL sampled indices
                 for client_id_idx, final_indices in client_indices_final.items():
                     client_id = f"client_{client_id_idx+1}"
@@ -410,6 +390,9 @@ class DataManager:
             except Exception as e:
                 print(f"Error partitioning or sampling data: {e}")
                 raise
+        
+
+        print_class_dist(client_final_data_bundles, base_data_for_partitioning)
 
         # --- Process Final Bundles into DataLoaders ---
         preprocessor = DataPreprocessor(self.config, self.batch_size)
@@ -426,3 +409,34 @@ class DataManager:
                 print(f"Error preprocessing data for client {client_id}: {e}")
 
         return client_dataloaders
+    
+
+
+def print_class_dist(client_final_data_bundles, base_data_for_partitioning):
+        print("\n--- Client class distribution (after sampling) ---")
+        for client_id in sorted(client_final_data_bundles):
+            bundle = client_final_data_bundles[client_id]
+
+            # ---------------------------------------------------
+            # 1. Extract label array y_client for this client
+            # ---------------------------------------------------
+            if bundle.get("type") == "subset":                    # IID / Dirichlet path
+                indices       = bundle["data"]["indices"]
+                _, base_y     = base_data_for_partitioning        # base_data is (X, y)
+                y_client      = base_y[indices]
+
+            else:                                                 # pre-split path
+                payload = bundle["data"]                          # what _create_client_bundle returned
+                if isinstance(payload, tuple):                    # (X, y)
+                    _, y_client = payload
+                else:                                             # {"X": X_np, "y": y_np}
+                    y_client = payload["y"]
+
+            # ---------------------------------------------------
+            # 2. Build pretty distribution string and print
+            # ---------------------------------------------------
+            uniq, cnts = np.unique(y_client, return_counts=True)
+            dist = ", ".join(f"Class {u}: {c}" for u, c in zip(uniq, cnts))
+            print(f"  {client_id}: {len(y_client)} samples ({dist})")
+
+        print("-" * 50)
