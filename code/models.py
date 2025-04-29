@@ -19,8 +19,8 @@ class L2Normalize(torch.nn.Module):
 class Synthetic(torch.nn.Module):
     def __init__(self, dropout_rate=0.3):
         super(Synthetic, self).__init__()
-        self.input_size = 15
-        self.hidden_size = 15
+        self.input_size = 14
+        self.hidden_size = 14
         
         self.fc = torch.nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size),

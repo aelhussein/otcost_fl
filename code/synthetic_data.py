@@ -62,15 +62,13 @@ def apply_feature_shift(X: np.ndarray,
             X[:, half_cols:cols] *= scale_down
             
         
-    # Tilt mode (already fairly balanced due to orthogonal transformation)
-    elif kind == "tilt":
-        if rng is None:
-            rng = np.random.default_rng()  # Use default if none provided
-        # Generate a random orthogonal matrix Q via QR decomposition
-        H = rng.standard_normal((n_features, n_features))
-        Q, _ = np.linalg.qr(H)
-        # Apply convex combination: (1-delta)*X + delta*(X @ Q)
-        X[:] = (1.0 - delta) * X + delta * (X @ Q)
+    if rng is None:
+        rng = np.random.default_rng()  # Use default if none provided
+    # Generate a random orthogonal matrix Q via QR decomposition
+    H = rng.standard_normal((n_features, n_features))
+    Q, _ = np.linalg.qr(H)
+    # Apply convex combination: (1-delta)*X + delta*(X @ Q)
+    X[:] = (1.0 - delta) * X + delta * (X @ Q)
 
     return X
 
@@ -113,31 +111,43 @@ def apply_concept_shift(
     """
     # Generate score using same function used in data generation
     score, params = generate_score(X, label_rule, base_seed)
-    
     # Get the weight vector (for rotation method)
     w = params['w']
-    
     if option == "threshold":
         # Shift the threshold based on gamma
         target_quantile = 0.5 + threshold_range_factor * (gamma)
+        target_quantile = np.clip(target_quantile, 1e-6, 1.0 - 1e-6)
         threshold = np.quantile(score, target_quantile)
         y = (score > threshold).astype(int)
-    
     elif option == "rotation":
         if X.shape[1] < 2:
             print("Warning: Rotation concept shift requires at least 2 features. Using baseline.")
             y = (score > 0).astype(int)
         else:
-            # Rotate weight vector - must use original w from params
-            angle = (gamma - 0.5) * np.pi * 0.8
+            # Determine how many features to rotate
+            num_features = X.shape[1]
+            num_rotation_pairs = num_features // 2  # How many pairs of features to rotate
+            
+            # Rotate weight vector across multiple feature planes
+            angle = (gamma - 0.5) * np.pi * 0.6
             c, s = np.cos(angle), np.sin(angle)
             
             # Re-calculate score with rotated weights (only for linear rule)
             if label_rule == "linear":
                 w_rot = w.copy()
-                w0_orig, w1_orig = w[0], w[1]
-                w_rot[0] = c * w0_orig - s * w1_orig
-                w_rot[1] = s * w0_orig + c * w1_orig
+                
+                # Apply rotation to multiple feature pairs
+                for i in range(num_rotation_pairs):
+                    idx1, idx2 = i*2, i*2+1  # Pair features (0,1), (2,3), (4,5), etc.
+                    
+                    # Skip if we've reached the end of our features
+                    if idx2 >= num_features:
+                        break
+                        
+                    # Apply rotation to this feature pair
+                    w1_orig, w2_orig = w[idx1], w[idx2]
+                    w_rot[idx1] = c * w1_orig - s * w2_orig
+                    w_rot[idx2] = s * w1_orig + c * w2_orig
                 
                 rot_score = X @ w_rot
                 y = (rot_score > 0).astype(int)
@@ -213,14 +223,28 @@ def generate_score(X: np.ndarray,
     n_samples, n_features = X.shape
     base_rng = np.random.default_rng(base_seed)
     params = {}
-    
+
     # Generate weight vector (store for all models)
-    w = base_rng.standard_normal(n_features)
+    w = base_rng.standard_normal(n_features) 
     params['w'] = w
-    
     if label_rule == "linear":
+        lin_rng = np.random.default_rng(base_seed + 1)
+        # Calculate feature importance scale factor
+        importance = np.abs(w)
+        importance_scale = importance / np.max(importance)  # Normalize to [0,1]
+
+        # Inverse scaling - more important features get less noise
+        noise_scale = 1.0 - (importance_scale) 
+
+        # Generate feature-specific noise
+        noise = lin_rng.standard_normal((n_samples, n_features)) * 2
+
+        # Apply scaled noise
+        for i in range(n_features):
+            X[:, i] += noise[:, i] * noise_scale[i]
+
+
         score = X @ w
-        
     elif label_rule == "quadratic":
         k = min(5, n_features // 2)
         beta = 0.2
@@ -235,24 +259,15 @@ def generate_score(X: np.ndarray,
         params['bin_edges'] = [-1., 0., 1.]
         
     elif label_rule == "mlp":
-        h = 50
-        W1 = base_rng.standard_normal((n_features, h))
-        b1 = base_rng.standard_normal(h) 
-        W2 = base_rng.standard_normal(h)
-        b2 = base_rng.standard_normal()
-        
-        params['W1'] = W1
-        params['b1'] = b1
-        params['W2'] = W2
-        params['b2'] = b2
-        
-        hidden = np.tanh(X @ W1 + b1)
-        score = hidden @ W2 + b2
-        
+        h = 100
+        n_layers = 2
+        params, forward_pass = create_multilayer_nn(n_features, h, n_layers, base_rng)
+        score = forward_pass(X, params)
     else:
         raise ValueError(f"Unknown label_rule '{label_rule}'")
     
     score = _centre_and_scale(score, target_iqr=2.0, rng=base_rng)
+    #score = np.sin(score)
     return score, params
 
 def generate_synthetic_data(
@@ -266,7 +281,7 @@ def generate_synthetic_data(
     # Create RNG and features
     base_rng = np.random.default_rng(base_seed)
     X = base_rng.standard_normal((n_samples, n_features)) / np.sqrt(n_features)
-    
+    #X = create_nonlinear_features(X, transformation_level='very_high')
     # Generate scores using the common function
     label_rule = shift_config.get("label_rule", "linear")
     score, _ = generate_score(X, label_rule, base_seed)
@@ -279,3 +294,62 @@ def generate_synthetic_data(
         y[flip] = 1 - y[flip]
         
     return X.astype(np.float32), y.astype(np.int64)
+
+
+def create_multilayer_nn(n_features, h, n_layers, base_rng):
+    """
+    Creates a multi-layer neural network with a specified number of hidden layers.
+
+    Args:
+        n_features: Number of input features.
+        h: Number of neurons in each hidden layer.
+        n_layers: Number of hidden layers.
+        base_rng: A NumPy random number generator.
+
+    Returns:
+        A tuple containing:
+        - params (dict): Dictionary of weight matrices and bias vectors.
+        - forward_pass (function): A function that performs the forward pass
+          through the network, taking input X and the params dictionary.
+    """
+    params = {}
+
+    # Input layer to first hidden layer
+    W1 = base_rng.standard_normal((n_features, h))
+    b1 = base_rng.standard_normal(h)
+    params['W1'] = W1
+    params['b1'] = b1
+
+    # Hidden layers
+    for i in range(2, n_layers + 1):
+        W = base_rng.standard_normal((h, h))
+        b = base_rng.standard_normal(h)
+        params[f'W{i}'] = W
+        params[f'b{i}'] = b
+
+    # Last hidden layer to output
+    W_out = base_rng.standard_normal((h, 1))  # Assuming a single output for 'score'
+    b_out = base_rng.standard_normal()
+    params[f'W{n_layers + 1}'] = W_out
+    params[f'b{n_layers + 1}'] = b_out
+
+    def forward_pass(X, params):
+        """
+        Performs the forward pass through the neural network.
+
+        Args:
+            X: Input data (shape: (n_samples, n_features)).
+            params: Dictionary of weight matrices and bias vectors.
+
+        Returns:
+            The output of the network (score).
+        """
+        hidden = np.tanh(X @ params['W1'] + params['b1'])
+        for i in range(2, n_layers + 1):
+            if i % 2 == 0:
+                hidden = np.tanh(hidden @ params[f'W{i}'] + params[f'b{i}'])
+            else:
+                hidden = np.maximum(-0.1, hidden @ params[f'W{i}'] + params[f'b{i}'])
+        score = hidden @ params[f'W{n_layers + 1}'] + params[f'b{n_layers + 1}']
+        return score
+    return params, forward_pass

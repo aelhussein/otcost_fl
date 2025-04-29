@@ -46,7 +46,8 @@ COMMON_TABULAR_PARAMS = dict(
     runs_tune=3, # Number of tuning runs
     metric='F1', # Default metric
     base_seed=42,
-    samples_per_client = 250,
+    #samples_per_client = 10000,
+    samples_per_client = 500,
     default_num_clients=5,
     max_clients=None,
     servers_tune_lr=ALGORITHMS,
@@ -68,7 +69,7 @@ DEFAULT_PARAMS = {
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for base generation (mode='baseline')
             'base_n_samples': 50000,
-            'n_features': 15,
+            'n_features': 14,
             'label_noise': 0.1,
             'random_state': 42,
             'label_rule': 'mlp'
@@ -85,11 +86,11 @@ DEFAULT_PARAMS = {
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for per-client generation (mode='feature_shift')
             'base_n_samples': 50000,
-            'n_features': 15,
+            'n_features': 14,
             'label_noise': 0.01,
             # Feature shift specific config (passed as **kwargs to generator)
             'feature_shift_kind': 'mean',
-            'feature_shift_cols': 15,
+            'feature_shift_cols': 14,
             'feature_shift_mu': 1.0,
             'label_rule': 'mlp',
         },
@@ -104,19 +105,20 @@ DEFAULT_PARAMS = {
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for base generation + concept shift (mode='concept_shift')
             'base_n_samples': 50000,
-            'n_features': 15,
+            'n_features': 14,
             'label_noise': 0.01,
             'random_state': 42,
             # Concept shift specific config (passed as **kwargs to generator)
-            'concept_label_option': 'threshold',
-            'concept_threshold_range_factor': 0.4,
-            'label_rule': 'mlp',
+            'concept_label_option': 'rotation',
+            'concept_threshold_range_factor': 0.5,
+            'label_rule': 'linear',
         },
     },
 
     # === Other Datasets ===
     'Credit': {
         **COMMON_TABULAR_PARAMS,
+        'samples_per_client' : 3000,
         'dataset_name': 'Credit',
         'data_source': 'credit_csv',
         'partitioning_strategy': 'dirichlet_indices', # Needs alpha passed directly
@@ -245,9 +247,9 @@ DATASET_COSTS = {
     'CIFAR': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
 
     # Feature shift parameter (0=baseline) - Used directly by load_synthetic_raw
-    'Synthetic_Feature': [0.0, 0.25, 0.5, 0.75, 1.0],
+    'Synthetic_Feature': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
-    'Synthetic_Concept': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
+    'Synthetic_Concept': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 
     # Site mapping keys - Used directly by load_heart_raw, load_isic_paths_raw, load_ixi_paths_raw
     'IXITiny': [0.08, 0.28, 0.30, 'all'],

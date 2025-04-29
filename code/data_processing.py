@@ -388,11 +388,12 @@ class DataManager:
 
                     for c_idx, idx_list in client_indices_final.items():
                         # Same spacing rule you used before
-                        gamma_i = float(cost) * c_idx / max(n_c - 1, 1)
+                        symmetric_shift = (2 * c_idx / max(n_c - 1, 1)) - 1
+                        gamma_i = float(cost) * symmetric_shift
 
                         if self.dataset_name == "Synthetic_Feature":
                             X_pool[idx_list] = apply_feature_shift(
-                                X_pool[idx_list].copy(),  # Work on a copy to avoid view issues
+                                X_pool[idx_list],  # Work on a copy to avoid view issues
                                 delta=gamma_i,
                                 kind=self.config["source_args"].get("feature_shift_kind", "mean"),
                                 cols=self.config["source_args"].get("feature_shift_cols"),
@@ -407,12 +408,14 @@ class DataManager:
                                 X_pool[idx_list],
                                 gamma=gamma_i,
                                 option=source_args.get("concept_label_option", "threshold"),
-                                threshold_range_factor=source_args.get("threshold_range_factor", 0.4),
+                                threshold_range_factor=source_args.get("concept_threshold_range_factor", 0.5),
                                 label_noise=source_args.get("label_noise", 0.0),
                                 base_seed=self.base_seed,  # Same base seed ensures consistent model
                                 label_rule=source_args.get("label_rule", "linear"),
                                 rng=np.random.default_rng(self.base_seed)
                             )
+                    base_data_for_partitioning = (X_pool, y_pool)  # Update the base data with shifted values
+                    all_labels = y_pool
                 # ---------------------------------------------------------------------------
 
                 # 5. NOW create client bundles using the shifted data
