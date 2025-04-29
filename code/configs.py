@@ -44,7 +44,7 @@ COMMON_TABULAR_PARAMS = dict(
     rounds_tune_inner=20,
     runs=10, # Number of evaluation runs
     runs_tune=3, # Number of tuning runs
-    metric='Accuracy', # Default metric
+    metric='F1', # Default metric
     base_seed=42,
     samples_per_client = 250,
     default_num_clients=5,
@@ -79,7 +79,8 @@ DEFAULT_PARAMS = {
         **COMMON_TABULAR_PARAMS,
         'dataset_name': 'Synthetic_Feature',
         'data_source': 'synthetic',
-        'partitioning_strategy': 'pre_split', # Data generated per client
+        'partitioning_strategy': 'iid_indices', # Shift in features after data creation 
+        'shift_after_split': True, # Shift after partitioning
         # REMOVED: cost_interpretation (Loader uses cost_key as shift_param)
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for per-client generation (mode='feature_shift')
@@ -97,7 +98,8 @@ DEFAULT_PARAMS = {
         **COMMON_TABULAR_PARAMS,
         'dataset_name': 'Synthetic_Concept',
         'data_source': 'synthetic',
-        'partitioning_strategy': 'pre_split', # Partition baseline data IID
+        'partitioning_strategy': 'iid_indices', # Partition baseline data IID and then add shift
+        'shift_after_split': True,
         # REMOVED: cost_interpretation (Loader uses cost_key as shift_param)
         'dataset_class': 'SyntheticDataset',
         'source_args': { # Params for base generation + concept shift (mode='concept_shift')
@@ -136,11 +138,11 @@ DEFAULT_PARAMS = {
         'source_args': {'dataset_name': 'CIFAR10'},
         'transform_config': {},
         'partitioner_args': {},
-        'samples_per_client': 1000,
+        'samples_per_client': 2000,
         'fixed_classes': 10,
-        'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
+        'default_lr': 3e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
-        'batch_size': 64, 'epochs_per_round': 5, 'rounds': 100, 'rounds_tune_inner': 25,
+        'batch_size': 96, 'epochs_per_round': 3, 'rounds': 20, 'rounds_tune_inner': 20,
         'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42,
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
@@ -155,11 +157,11 @@ DEFAULT_PARAMS = {
         'source_args': {'dataset_name': 'EMNIST', 'split': 'digits'},
         'transform_config': {},
         'partitioner_args': {},
-        'samples_per_client': 750,
+        'samples_per_client': 1000,
         'fixed_classes': 10,
-        'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
+        'default_lr': 3e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3, 5e-4],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
-        'batch_size': 48, 'epochs_per_round': 5, 'rounds': 100, 'rounds_tune_inner': 25,
+        'batch_size': 64, 'epochs_per_round': 3, 'rounds': 20, 'rounds_tune_inner': 20,
         'runs': 10, 'runs_tune': 3, 'metric': 'Accuracy', 'base_seed': 42,
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],

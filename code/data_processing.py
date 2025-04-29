@@ -17,6 +17,7 @@ from configs import N_WORKERS
 from helper import get_parameters_for_dataset
 from data_loading import get_loader
 from data_partitioning import get_partitioner
+from synthetic_data import apply_feature_shift, apply_concept_shift
 # Import all final Dataset classes
 from data_sets import (SyntheticDataset, CreditDataset, EMNISTDataset,
                       CIFARDataset, ISICDataset, IXITinyDataset, HeartDataset)
@@ -364,6 +365,7 @@ class DataManager:
                 # Extract labels correctly ONCE for both partitioning and display
                 partitioner_input, num_samples = self._extract_partitioner_input(base_data_for_partitioning)
                 all_labels = copy.deepcopy(partitioner_input)
+                
                 # 2. Run partitioner with the extracted labels
                 partitioner_kwargs = {**self.config.get('partitioner_args', {})}
                 if self.partitioning_strategy == 'dirichlet_indices':
@@ -376,7 +378,44 @@ class DataManager:
                     sampled_indices = self._sample_data_for_client(indices_list, target_samples_per_client)
                     if sampled_indices: # Only add if sampling resulted in indices
                         client_indices_final[client_id_idx] = sampled_indices
-                # 4. Create client bundles using the FINAL sampled indices
+
+                # 4. Apply shifts BEFORE creating client bundles
+                # -------------------------------- shift-after-split ------------------------
+                if self.config.get("shift_after_split", False) and base_data_for_partitioning:
+                    # Unpack the shared pool so we can mutate in-place
+                    X_pool, y_pool = base_data_for_partitioning
+                    n_c = num_clients
+
+                    for c_idx, idx_list in client_indices_final.items():
+                        # Same spacing rule you used before
+                        gamma_i = float(cost) * c_idx / max(n_c - 1, 1)
+
+                        if self.dataset_name == "Synthetic_Feature":
+                            X_pool[idx_list] = apply_feature_shift(
+                                X_pool[idx_list].copy(),  # Work on a copy to avoid view issues
+                                delta=gamma_i,
+                                kind=self.config["source_args"].get("feature_shift_kind", "mean"),
+                                cols=self.config["source_args"].get("feature_shift_cols"),
+                                mu=self.config["source_args"].get("feature_shift_mu", 1.0),
+                                sigma=self.config["source_args"].get("feature_shift_sigma", 1.5),
+                                rng=np.random.default_rng(self.base_seed),
+                            )
+
+                        elif self.dataset_name == "Synthetic_Concept":
+                            source_args = self.config.get('source_args', {})
+                            y_pool[idx_list] = apply_concept_shift(
+                                X_pool[idx_list],
+                                gamma=gamma_i,
+                                option=source_args.get("concept_label_option", "threshold"),
+                                threshold_range_factor=source_args.get("threshold_range_factor", 0.4),
+                                label_noise=source_args.get("label_noise", 0.0),
+                                base_seed=self.base_seed,  # Same base seed ensures consistent model
+                                label_rule=source_args.get("label_rule", "linear"),
+                                rng=np.random.default_rng(self.base_seed)
+                            )
+                # ---------------------------------------------------------------------------
+
+                # 5. NOW create client bundles using the shifted data
                 for client_id_idx, final_indices in client_indices_final.items():
                     client_id = f"client_{client_id_idx+1}"
                     client_final_data_bundles[client_id] = {
@@ -389,6 +428,7 @@ class DataManager:
                 raise
 
         print_class_dist(client_final_data_bundles, all_labels)
+        
         # --- Process Final Bundles into DataLoaders ---
         preprocessor = DataPreprocessor(self.config, self.batch_size)
         client_dataloaders = {}

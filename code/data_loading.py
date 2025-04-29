@@ -20,52 +20,17 @@ from synthetic_data import generate_synthetic_data
 # == Raw Data Loader Functions ==
 # =============================================================================
 
-def load_synthetic_raw(dataset_name: str,
-                       source_args: dict,
-                       client_num: Optional[int] = None,
-                       cost_key: Optional[Any] = None,
-                       base_seed: int = 42,
-                       num_clients: Optional[int] = None
-                      ) -> Tuple[np.ndarray, np.ndarray]:
-    """Generates raw synthetic data (features, labels) using the unified generator."""
-    # Simplified dataset-to-mode mapping 
-    mode_mapping = {
-        'Synthetic_Feature': 'feature_shift',
-        'Synthetic_Concept': 'concept_shift',
-        'Synthetic_Label': 'baseline'
-    }
-    mode = mode_mapping.get(dataset_name, 'baseline')
-    base_seed = source_args.get('random_state', base_seed)
-    client_seed = base_seed
-    n_samples = source_args.get('base_n_samples', 50000)
-    # Set shift parameter if applicable (for feature/concept shift)
-    shift_param = 0.0
-    if mode in ['feature_shift', 'concept_shift'] and isinstance(cost_key, (int, float)):
-        n_clients = num_clients if num_clients is not None else source_args.get('n_clients', 5)
-        shift_param = float(cost_key)  * (client_num - 1) / (n_clients - 1)
-        client_seed = base_seed + client_num
-    # Basic parameters
-    n_features = source_args.get('n_features', 10)
-    label_noise = source_args.get('label_noise', 0.05)
-    
-    # Extract relevant configuration keys for each shift type
-    shift_configs = {
-        'feature_shift': ['feature_shift_kind', 'feature_shift_cols', 'feature_shift_mu', 'feature_shift_sigma'],
-        'concept_shift': ['concept_label_option', 'concept_threshold_range_factor']
-    }
-    
-    # Extract only the keys needed for this mode
-    relevant_keys = shift_configs.get(mode, [])
-    shift_config = {k: source_args[k] for k in relevant_keys if k in source_args}
-    shift_config['label_rule'] = source_args.get('label_rule', 'linear')
-    
-    # Generate data
-    X_np, y_np = generate_synthetic_data(
-        mode=mode, n_samples=n_samples, n_features=n_features,
-        shift_param=shift_param, label_noise=label_noise, base_seed=base_seed, client_seed = client_seed, **shift_config
+
+# data_loading.py
+def load_synthetic_raw(dataset_name, source_args, cost_key, base_seed, **_):                   
+    X, y = generate_synthetic_data(
+        n_samples=source_args['base_n_samples'],
+        n_features=source_args['n_features'],
+        label_noise=source_args.get('label_noise', 0.0),
+        base_seed=base_seed,               # one RNG
+        label_rule=source_args.get('label_rule', 'linear')
     )
-    
-    return X_np, y_np
+    return X, y
 
 
 def load_torchvision_raw(source_args: dict,
