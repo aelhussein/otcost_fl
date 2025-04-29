@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, Subset
 from typing import Dict, Tuple, Any, Optional, List, Union, Callable
 from sklearn.model_selection import train_test_split
 import random
+import copy
 # Project Imports
 from configs import N_WORKERS
 from helper import get_parameters_for_dataset
@@ -329,9 +330,7 @@ class DataManager:
         # Ensures sampling is deterministic per run, even if DataManager is reused
         self.py_random_sampler.seed(run_seed + 101 + hash(str(cost)))
 
-        base_data_for_partitioning = None
-        labels_np_full = None
-
+        base_data_for_partitioning, all_labels = None, None
         if self.partitioning_strategy == 'pre_split':
             print(f"Loading pre-split data for {num_clients} clients...")
             for client_idx in range(1, num_clients + 1):
@@ -361,12 +360,16 @@ class DataManager:
                 # 1. Load base data
                 loader_args = self._prepare_loader_args(cost)
                 base_data_for_partitioning = loader_func(**loader_args)
+                
+                # Extract labels correctly ONCE for both partitioning and display
                 partitioner_input, num_samples = self._extract_partitioner_input(base_data_for_partitioning)
-                # 2. Run partitioner - gets FULL index assignments per client
+                all_labels = copy.deepcopy(partitioner_input)
+                # 2. Run partitioner with the extracted labels
                 partitioner_kwargs = {**self.config.get('partitioner_args', {})}
                 if self.partitioning_strategy == 'dirichlet_indices':
                     partitioner_kwargs['alpha'] = float(cost)
                 client_indices_full = partitioner_func(partitioner_input, num_clients, seed=run_seed, **partitioner_kwargs)
+        
                 # 3. Sample the *indices* for each client down to target size
                 client_indices_final = {}
                 for client_id_idx, indices_list in client_indices_full.items():
@@ -385,7 +388,7 @@ class DataManager:
                 print(f"Error partitioning or sampling data: {e}")
                 raise
 
-        print_class_dist(client_final_data_bundles, base_data_for_partitioning)
+        print_class_dist(client_final_data_bundles, all_labels)
         # --- Process Final Bundles into DataLoaders ---
         preprocessor = DataPreprocessor(self.config, self.batch_size)
         client_dataloaders = {}
@@ -403,31 +406,36 @@ class DataManager:
         return client_dataloaders
 
 
-def print_class_dist(client_final_data_bundles, base_data_for_partitioning):
-        print("\n--- Client class distribution (after sampling) ---")
-        for client_id in sorted(client_final_data_bundles):
-            bundle = client_final_data_bundles[client_id]
+def print_class_dist(client_final_data_bundles, all_labels=None):
+    print("\n--- Client class distribution (after sampling) ---")
+    for client_id in sorted(client_final_data_bundles):
+        bundle = client_final_data_bundles[client_id]
 
-            # ---------------------------------------------------
-            # 1. Extract label array y_client for this client
-            # ---------------------------------------------------
-            if bundle.get("type") == "subset":                    # IID / Dirichlet path
-                indices       = bundle["data"]["indices"]
-                _, base_y     = base_data_for_partitioning        # base_data is (X, y)
-                y_client      = base_y[indices]
+        # Extract label array y_client for this client
+        if bundle.get("type") == "subset":                    
+            indices = bundle["data"]["indices"]
+            # Use the pre-extracted labels instead of trying to unpack base_data
+            if all_labels is not None:
+                y_client = all_labels[indices]  
+            else:
+                # Fallback for pre-split case
+                try:
+                    _, base_y = bundle["data"]["base_data"]
+                    y_client = base_y[indices]
+                except Exception as e:
+                    print(f"  {client_id}: Unable to extract labels: {e}")
+                    continue
+        else:                                                 
+            # pre-split path remains unchanged
+            payload = bundle["data"]                          
+            if isinstance(payload, dict):                   
+                y_client = payload.get("y", [])
+            else:                                            
+                _, y_client = payload
 
-            else:                                                 # pre-split path
-                payload = bundle["data"]                          # what _create_client_bundle returned
-                if isinstance(payload, tuple):                    # (X, y)
-                    _, y_client = payload
-                else:                                             # {"X": X_np, "y": y_np}
-                    y_client = payload["y"]
+        # Build pretty distribution string and print
+        uniq, cnts = np.unique(y_client, return_counts=True)
+        dist = ", ".join(f"Class {u}: {c}" for u, c in zip(uniq, cnts))
+        print(f"  {client_id}: {len(y_client)} samples ({dist})")
 
-            # ---------------------------------------------------
-            # 2. Build pretty distribution string and print
-            # ---------------------------------------------------
-            uniq, cnts = np.unique(y_client, return_counts=True)
-            dist = ", ".join(f"Class {u}: {c}" for u, c in zip(uniq, cnts))
-            print(f"  {client_id}: {len(y_client)} samples ({dist})")
-
-        print("-" * 50)
+    print("-" * 50)
