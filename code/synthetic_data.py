@@ -38,7 +38,7 @@ def _apply_feature_shift(X: np.ndarray,
 
     # mean shift - alternates shift direction for features
     if kind == "mean" and cols > 0:
-        half_cols = cols // 2  # Half features shift positive, half negative
+        half_cols = 10
         
         # First half of features shift positive
         if half_cols > 0:
@@ -143,72 +143,89 @@ def generate_synthetic_data(
     shift_param: float = 0.0,
     label_noise: float = 0.0,
     base_seed: int = 42,
-    client_seed: int | None = None,
-    **shift_config: Dict[str, Any]
+    client_seed: int = 42,
+    **shift_config: Dict[str, Any],
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generates synthetic (X, y) pairs with optional feature/​concept shift and a
-    selectable label-generation rule (linear, quadratic, piece-wise, mlp).
+    Generate synthetic data with optional feature / concept shift and a selectable
+    label rule (linear, quadratic, piecewise, mlp).
 
-    New kwarg in shift_config
-    -------------------------
-    label_rule : str, default 'linear'
-        One of {'linear', 'quadratic', 'piecewise', 'mlp'}.
+    Parameters
+    ----------
+    mode : {'baseline','feature_shift','concept_shift'}
+    label_rule : str in shift_config, default 'linear'
+        {'linear','quadratic','piecewise','mlp'}
+    Other args unchanged.
+
+    Returns
+    -------
+    X : (n_samples, n_features) float32
+    y : (n_samples,) int64  (binary classes 0 / 1)
     """
-    # ---------------- RNG setup ------------------------------------------------
+    # ------------------------------------------------ RNG ------------------------------------------------
     base_rng   = np.random.default_rng(base_seed)
     client_rng = np.random.default_rng(client_seed)
 
-    # ---------------- base features -------------------------------------------
+    # ---------------------------------------------- base X ----------------------------------------------
     X = client_rng.standard_normal((n_samples, n_features))
 
-    # ---------------- optional feature shift ----------------------------------
+    # -------------------------------------- optional feature shift --------------------------------------
     if mode == "feature_shift":
-        f_keys = ['kind', 'cols', 'mu', 'sigma']
-        f_args = {k: shift_config[k] for k in f_keys if k in shift_config}
+        keys = ['kind', 'cols', 'mu', 'sigma']
+        f_args = {k: shift_config[k] for k in keys if k in shift_config}
         X = _apply_feature_shift(X, delta=shift_param, rng=client_rng, **f_args)
 
-    # ---------------- label generation ----------------------------------------
+    # -------------------------------------------- label score -------------------------------------------
     label_rule = shift_config.get("label_rule", "linear")
-    w          = base_rng.standard_normal(n_features)     # shared weight vector
+    w          = base_rng.standard_normal(n_features)
 
+    if label_rule == "linear":
+        score = X @ w
+
+    elif label_rule == "quadratic":
+        k     = min(5, n_features // 2)
+        beta  = 0.2
+        score = X @ w + beta * (X[:, :k] * X[:, k:2*k]).sum(1)
+
+    elif label_rule == "piecewise":
+        raw   = X @ w
+        bins  = np.digitize(raw, [-1., 0., 1.])            # 0-1-2
+        score = bins.astype(float)                         # piece-wise encoded as 0/1/2
+
+    elif label_rule == "mlp":
+        h  = 50
+        W1 = base_rng.standard_normal((n_features, h))
+        b1 = base_rng.standard_normal(h)
+        W2 = base_rng.standard_normal(h)
+        b2 = base_rng.standard_normal()
+        hidden = np.tanh(X @ W1 + b1)
+        score  = hidden @ W2 + b2
+
+    else:
+        raise ValueError(f"Unknown label_rule '{label_rule}'")
+
+    # -------------------------------------- map score → label y -----------------------------------------
     if mode == "concept_shift":
-        c_keys = ['option', 'threshold_range_factor']
-        c_args = {k: shift_config[k] for k in c_keys if k in shift_config}
-        y = _make_concept_labels(X, gamma=shift_param, w=w, **c_args)
+        option  = shift_config.get("option", "threshold")
+        if option == "rotation":      # keeps original behaviour
+            y = _make_concept_labels(
+                    X, gamma=shift_param, w=w,
+                    option="rotation",
+                    threshold_range_factor=shift_config.get("threshold_range_factor", 0.4),
+                )
+        else:                         # THRESHOLD shift on *same* score function
+            gamma = shift_param
+            factor = shift_config.get("threshold_range_factor", 0.4)
+            target_q = np.clip(0.5 + factor * (gamma - 0.5), 1e-6, 1 - 1e-6)
+            thresh   = np.quantile(score, target_q)
+            y = (score > thresh).astype(int)
+    else:
+        # baseline / feature_shift: fixed threshold 0
+        y = (score > 0).astype(int)
 
-    else:  # baseline or feature_shift -> choose rule
-        if label_rule == "linear":
-            y = (X @ w > 0).astype(int)
-
-        elif label_rule == "quadratic":
-            k     = min(5, n_features // 2)
-            beta  = 0.2
-            z_lin = X @ w
-            z_quad = (X[:, :k] * X[:, k:2*k]).sum(1)
-            y = ((z_lin + beta * z_quad) > 0).astype(int)
-
-        elif label_rule == "piecewise":
-            score  = X @ w
-            segments = np.digitize(score, [-1.0, 0.0, 1.0])   # 3 bins
-            y = (segments % 2).astype(int)                    # pattern 0-1-0
-
-        elif label_rule == "mlp":
-            h  = 50                                            # hidden size
-            W1 = base_rng.standard_normal((n_features, h))
-            b1 = base_rng.standard_normal(h)
-            W2 = base_rng.standard_normal(h)
-            b2 = base_rng.standard_normal()
-            hidden = np.tanh(X @ W1 + b1)
-            logit  = hidden @ W2 + b2
-            y = (logit > 0).astype(int)
-
-        else:
-            raise ValueError(f"Unknown label_rule '{label_rule}'")
-
-    # ---------------- optional label noise ------------------------------------
+    # ------------------------------------------- label noise --------------------------------------------
     if label_noise > 0:
-        flip_mask = client_rng.random(n_samples) < label_noise
-        y[flip_mask] = 1 - y[flip_mask]
+        flip = client_rng.random(n_samples) < label_noise
+        y[flip] = 1 - y[flip]
 
     return X.astype(np.float32), y.astype(np.int64)

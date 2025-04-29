@@ -39,7 +39,7 @@ COMMON_TABULAR_PARAMS = dict(
     default_reg_param=0.1, # For FedProx, pFedMe, Ditto if added
     reg_params_try=[1, 0.1, 0.01], # For FedProx, pFedMe, Ditto
     batch_size=32,
-    epochs_per_round=5,
+    epochs_per_round=3,
     rounds=50,
     rounds_tune_inner=20,
     runs=10, # Number of evaluation runs
@@ -89,7 +89,7 @@ DEFAULT_PARAMS = {
             # Feature shift specific config (passed as **kwargs to generator)
             'feature_shift_kind': 'mean',
             'feature_shift_cols': 15,
-            'feature_shift_mu': 3.0,
+            'feature_shift_mu': 1.0,
             'label_rule': 'mlp',
         },
     },
@@ -243,7 +243,7 @@ DATASET_COSTS = {
     'CIFAR': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
 
     # Feature shift parameter (0=baseline) - Used directly by load_synthetic_raw
-    'Synthetic_Feature': [0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 5.0, 10.0],
+    'Synthetic_Feature': [0.0, 0.25, 0.5, 0.75, 1.0],
     # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
     'Synthetic_Concept': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 

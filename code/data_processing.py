@@ -66,7 +66,7 @@ def _split_indices(indices: List[int], test_size: float = 0.2, val_size: float =
     np_indices = np.array(indices)
     
     if num_samples < 5: 
-        return indices, [], []
+        return indices, [], [] 
         
     idx_train_val, idx_test = train_test_split(np_indices, test_size=test_size, random_state=seed, shuffle=True)
     relative_val_size = val_size / (1.0 - test_size) if (1.0 - test_size) > 1e-6 else 0.0
@@ -234,7 +234,6 @@ class DataManager:
     def _prepare_loader_args(self, cost, client_num=None, num_clients=None):
         """Prepare common loader arguments with dataset-specific adjustments."""
         args = {'source_args': self.config.get('source_args', {}), 'cost_key': cost}
-        
         # Add dataset-specific arguments
         if self.data_source_type == 'synthetic':
             args['dataset_name'] = self.dataset_name
@@ -250,7 +249,6 @@ class DataManager:
         # Add client number if specified
         if client_num is not None:
             args['client_num'] = client_num
-            
         return args
 
     def _extract_partitioner_input(self, data):
@@ -364,9 +362,6 @@ class DataManager:
                 loader_args = self._prepare_loader_args(cost)
                 base_data_for_partitioning = loader_func(**loader_args)
                 partitioner_input, num_samples = self._extract_partitioner_input(base_data_for_partitioning)
-                if isinstance(partitioner_input, np.ndarray):
-                    labels_np_full = partitioner_input
-
                 # 2. Run partitioner - gets FULL index assignments per client
                 partitioner_kwargs = {**self.config.get('partitioner_args', {})}
                 if self.partitioning_strategy == 'dirichlet_indices':
@@ -378,7 +373,6 @@ class DataManager:
                     sampled_indices = self._sample_data_for_client(indices_list, target_samples_per_client)
                     if sampled_indices: # Only add if sampling resulted in indices
                         client_indices_final[client_id_idx] = sampled_indices
-
                 # 4. Create client bundles using the FINAL sampled indices
                 for client_id_idx, final_indices in client_indices_final.items():
                     client_id = f"client_{client_id_idx+1}"
@@ -390,10 +384,8 @@ class DataManager:
             except Exception as e:
                 print(f"Error partitioning or sampling data: {e}")
                 raise
-        
 
         print_class_dist(client_final_data_bundles, base_data_for_partitioning)
-
         # --- Process Final Bundles into DataLoaders ---
         preprocessor = DataPreprocessor(self.config, self.batch_size)
         client_dataloaders = {}
@@ -409,7 +401,6 @@ class DataManager:
                 print(f"Error preprocessing data for client {client_id}: {e}")
 
         return client_dataloaders
-    
 
 
 def print_class_dist(client_final_data_bundles, base_data_for_partitioning):

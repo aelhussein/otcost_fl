@@ -36,14 +36,14 @@ def load_synthetic_raw(dataset_name: str,
     }
     mode = mode_mapping.get(dataset_name, 'baseline')
     base_seed = source_args.get('random_state', base_seed)
-    client_seed = base_seed + client_num
+    client_seed = base_seed
     n_samples = source_args.get('base_n_samples', 50000)
     # Set shift parameter if applicable (for feature/concept shift)
     shift_param = 0.0
     if mode in ['feature_shift', 'concept_shift'] and isinstance(cost_key, (int, float)):
         n_clients = num_clients if num_clients is not None else source_args.get('n_clients', 5)
         shift_param = float(cost_key)  * (client_num - 1) / (n_clients - 1)
-    
+        client_seed = base_seed + client_num
     # Basic parameters
     n_features = source_args.get('n_features', 10)
     label_noise = source_args.get('label_noise', 0.05)

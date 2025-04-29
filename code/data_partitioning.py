@@ -60,13 +60,11 @@ def partition_dirichlet_indices(
     n_samples = len(labels_np)
     if n_samples == 0:
         return {i: [] for i in range(num_clients)}
-
     rng = np.random.RandomState(seed)
     py_rng = random.Random(seed + 1)
 
     classes, class_counts = np.unique(labels_np, return_counts=True)
     n_classes = len(classes)
-
     if alpha >= 1e6 or n_classes <= 1:
         all_idx = list(range(n_samples))
         py_rng.shuffle(all_idx)
@@ -96,7 +94,6 @@ def partition_dirichlet_indices(
         # ----------------------------------------------------
 
         counts = rng.multinomial(len(pool), pvals)
-
         start = 0
         for client_id, n_take in enumerate(counts):
             if n_take:
