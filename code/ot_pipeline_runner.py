@@ -31,7 +31,7 @@ class PipelineRunner:
             num_clients=num_clients,
             activation_dir=act_dir
         )
-        print(f"Pipeline runner initialized for {num_clients} clients")
+        #print(f"Pipeline runner initialized for {num_clients} clients")
 
     def run_pipeline(
         self,
@@ -86,16 +86,16 @@ class PipelineRunner:
             # Generate all unique pairs
             pairs_to_run = list(combinations(client_ids, 2))
 
-        print(f"--- Starting OT Pipeline ---")
-        print(f"Dataset: {dataset_name}, Total Clients: {self.num_clients}")
-        print(f"Analyzing {len(pairs_to_run)} client pairs")
-        print(f"Costs/Alphas: {costs_list}")
-        print(f"OT Configurations: {len(ot_configurations)}")
-        print("-" * 60)
+        #print(f"--- Starting OT Pipeline ---")
+        #print(f"Dataset: {dataset_name}, Total Clients: {self.num_clients}")
+        #print(f"Analyzing {len(pairs_to_run)} client pairs")
+        #print(f"Costs/Alphas: {costs_list}")
+        #print(f"OT Configurations: {len(ot_configurations)}")
+        #print("-" * 60)
 
         # Main loop: Iterate through costs first, then pairs
         for i, cost in enumerate(costs_list):
-            print(f"\nProcessing Cost/Alpha: {cost} ({i+1}/{len(costs_list)})...")
+            #print(f"\nProcessing Cost/Alpha: {cost} ({i+1}/{len(costs_list)})...")
             
             # Load performance metrics for this cost
             final_local_score, final_fedavg_score = self.data_manager.get_performance(
@@ -104,14 +104,14 @@ class PipelineRunner:
             
             loss_delta = final_local_score - final_fedavg_score if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score) else np.nan
             
-            print(f"  Performance: Local={f'{final_local_score:.4f}' if np.isfinite(final_local_score) else 'NaN'}, "
-                  f"FedAvg={f'{final_fedavg_score:.4f}' if np.isfinite(final_fedavg_score) else 'NaN'}, "
-                  f"Delta={f'{loss_delta:.4f}' if np.isfinite(loss_delta) else 'NaN'}")
+            # print(f"  Performance: Local={f'{final_local_score:.4f}' if np.isfinite(final_local_score) else 'NaN'}, "
+            #       f"FedAvg={f'{final_fedavg_score:.4f}' if np.isfinite(final_fedavg_score) else 'NaN'}, "
+            #       f"Delta={f'{loss_delta:.4f}' if np.isfinite(loss_delta) else 'NaN'}")
             
             # Process each client pair
             for j, pair in enumerate(pairs_to_run):
                 cid1_str, cid2_str = pair
-                print(f"  Processing Pair ({j+1}/{len(pairs_to_run)}): ({cid1_str}, {cid2_str})")
+                #print(f"  Processing Pair ({j+1}/{len(pairs_to_run)}): ({cid1_str}, {cid2_str})")
                 
                 # Using base_seed directly
                 current_seed = base_seed
@@ -227,7 +227,7 @@ class PipelineRunner:
                 data2 = None
         
         # Create final DataFrame
-        print("\n--- OT Pipeline Finished ---")
+        #print("\n--- OT Pipeline Finished ---")
         if not results_list:
             print("WARNING: No results were generated")
             return pd.DataFrame()

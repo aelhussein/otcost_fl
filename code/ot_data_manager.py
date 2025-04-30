@@ -42,7 +42,7 @@ class OTDataManager:
         # ResultsManager is initialized per-dataset in methods that need it
         self.results_manager = None
         
-        print(f"DataManager initialized targeting results for {self.num_clients} clients on device {self.device}.")
+        pass#print(f"DataManager initialized targeting results for {self.num_clients} clients on device {self.device}.")
     
     def _initialize_results_manager(self, dataset_name: str):
         """Initialize ResultsManager for a specific dataset."""
@@ -82,10 +82,10 @@ class OTDataManager:
         try:
             data = torch.load(path, map_location='cpu')
             if isinstance(data, tuple) and len(data) == 6 and data[0] is not None and data[3] is not None:
-                print(f"  Successfully loaded activations from cache: {os.path.basename(path)}")
+                pass#print(f"  Successfully loaded activations from cache: {os.path.basename(path)}")
                 return data
         except Exception as e:
-            print(f"Failed loading activation cache {path}: {e}")
+            pass#print(f"Failed loading activation cache {path}: {e}")
         
         return None
 
@@ -96,9 +96,9 @@ class OTDataManager:
             cpu_data = tuple(d.cpu() if isinstance(d, torch.Tensor) else d for d in data)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             torch.save(cpu_data, path)
-            print(f"  Saved activations to cache: {os.path.basename(path)}")
+            pass#print(f"  Saved activations to cache: {os.path.basename(path)}")
         except Exception as e:
-            print(f"Failed saving activation cache {path}: {e}")
+            pass#print(f"Failed saving activation cache {path}: {e}")
 
     def _get_model_path(self, dataset: str, cost: Any, seed: int, model_type: str = 'round0') -> str:
         """
@@ -124,7 +124,7 @@ class OTDataManager:
             cost_counts = metadata.get('cost_client_counts', {})
             if cost in cost_counts:
                 actual_clients = cost_counts[cost]
-                print(f"Found actual client count in metadata: {actual_clients} for cost {cost}")
+                pass#print(f"Found actual client count in metadata: {actual_clients} for cost {cost}")
         
         # Get path from ResultsManager
         return self.results_manager.path_builder.get_model_save_path(
@@ -150,21 +150,21 @@ class OTDataManager:
         Returns:
             Tuple of (model, dataloaders, actual_client_count)
         """
-        print(f"  Loading model for activation generation:")
-        print(f"    Dataset: {dataset}, Cost: {cost}, Seed: {seed}, Target Clients: {num_clients}")
+        pass#print(f"  Loading model for activation generation:")
+        pass#print(f"    Dataset: {dataset}, Cost: {cost}, Seed: {seed}, Target Clients: {num_clients}")
         
         # Try ONLY the round0 model as required
         model_path = self._get_model_path(dataset, cost, seed, model_type)
                     
         if not os.path.exists(model_path):
-            print(f"Round0 model not found for {dataset}, cost {cost}, seed {seed}")
+            pass#print(f"Round0 model not found for {dataset}, cost {cost}, seed {seed}")
             return None, None, num_clients
             
         # Load model
         try:
             # Load state dict and instantiate model
             model_state_dict = torch.load(model_path, map_location=self.device)
-            print(f"    Loaded {model_type} model state from: {os.path.basename(model_path)}")
+            pass#print(f"    Loaded {model_type} model state from: {os.path.basename(model_path)}")
             
             # Initialize model architecture based on dataset name
             model_name = 'Synthetic' if 'Synthetic_' in dataset else dataset
@@ -189,7 +189,7 @@ class OTDataManager:
             return model, dataloaders, actual_clients
             
         except Exception as e:
-            print(f"Error loading model/dataloaders: {e}")
+            #print(f"Error loading model/dataloaders: {e}")
             traceback.print_exc()
             return None, None, num_clients
 
@@ -202,7 +202,7 @@ class OTDataManager:
         Extracts activations for a client using the loaded model.
         """
         client_id_str = str(client_id)
-        print(f"    Extracting activations for client {client_id_str} using {loader_type} loader")
+        pass#print(f"    Extracting activations for client {client_id_str} using {loader_type} loader")
         
         # Set model to eval mode
         model.to(self.device)
@@ -225,18 +225,18 @@ class OTDataManager:
                 pass
                 
         if loader_key is None:
-            print(f"Client {client_id_str} not found in dataloaders")
+            pass#print(f"Client {client_id_str} not found in dataloaders")
             return None, None, None
             
         # Get loader by type
         loader_idx = {'train': 0, 'val': 1, 'test': 2}.get(loader_type.lower())
         if loader_idx is None or not isinstance(dataloaders[loader_key], (list, tuple)) or len(dataloaders[loader_key]) <= loader_idx:
-            print(f"Invalid loader structure for client {client_id_str}")
+            pass#print(f"Invalid loader structure for client {client_id_str}")
             return None, None, None
             
         data_loader = dataloaders[loader_key][loader_idx]
         if data_loader is None or len(data_loader.dataset) == 0:
-            print(f"Empty {loader_type} loader for client {client_id_str}")
+            pass#print(f"Empty {loader_type} loader for client {client_id_str}")
             return None, None, None
             
         # Find final linear layer for hooks
@@ -247,7 +247,7 @@ class OTDataManager:
                 final_linear = module
                 break
             elif isinstance(module, torch.nn.Sequential) and len(module) > 0 and isinstance(module[-1], torch.nn.Linear):
-                first_linear = module[0]
+                first_linear = module[-1]
                 final_linear = module[-1]
                 break
                 
@@ -256,11 +256,11 @@ class OTDataManager:
             for module in reversed(list(model.modules())):
                 if isinstance(module, torch.nn.Linear):
                     final_linear = module
-                    print(f"Using last found Linear layer for hooks")
+                    pass#print(f"Using last found Linear layer for hooks")
                     break
                     
         if final_linear is None:
-            print(f"Could not find linear layer for hooking in model")
+            pass#print(f"Could not find linear layer for hooking in model")
             return None, None, None
             
         # Set up storage for activations
@@ -338,7 +338,7 @@ class OTDataManager:
             
         # Check if any data was collected
         if not all_pre_activations:
-            print(f"No activations collected for client {client_id_str}")
+            pass#print(f"No activations collected for client {client_id_str}")
             return None, None, None
             
         # Concatenate results
@@ -346,10 +346,10 @@ class OTDataManager:
             final_h = torch.cat(all_pre_activations, dim=0)
             final_p = torch.cat(all_post_activations, dim=0)
             final_y = torch.cat(all_labels, dim=0)
-            print(f"    Extracted activations: h={final_h.shape}, p={final_p.shape}, y={final_y.shape}")
+            pass#print(f"    Extracted activations: h={final_h.shape}, p={final_p.shape}, y={final_y.shape}")
             return final_h, final_p, final_y
         except Exception as e:
-            print(f"Error concatenating activation results: {e}")
+            pass#print(f"Error concatenating activation results: {e}")
             return None, None, None
 
     def _generate_activations(
@@ -363,8 +363,8 @@ class OTDataManager:
         Returns:
             Tuple of (h1, p1, y1, h2, p2, y2) or None if generation failed
         """
-        print(f"  Generating activations for clients ({client_id_1}, {client_id_2})")
-        print(f"  Dataset: {dataset}, Cost: {cost},  Seed: {seed}")
+        pass#print(f"  Generating activations for clients ({client_id_1}, {client_id_2})")
+        pass#print(f"  Dataset: {dataset}, Cost: {cost},  Seed: {seed}")
         
         try:
             # Load the model and dataloaders
@@ -391,7 +391,7 @@ class OTDataManager:
             return (h1, p1, y1, h2, p2, y2)
             
         except Exception as e:
-            print(f"Error during activation generation: {e}")
+            pass#print(f"Error during activation generation: {e}")
             traceback.print_exc()
             return None
 
@@ -491,7 +491,7 @@ class OTDataManager:
             raw_activations = self._load_activations_from_cache(cache_path)
             
         if raw_activations is None:
-            print(f"  Cache {'miss' if not force_regenerate else 'bypass'} for {os.path.basename(cache_path)}")
+            pass#print(f"  Cache {'miss' if not force_regenerate else 'bypass'} for {os.path.basename(cache_path)}")
             
             # Generate activations by loading model
             raw_activations = self._generate_activations(
@@ -508,7 +508,7 @@ class OTDataManager:
                 
         # Unpack and process the raw activations
         h1_raw, p1_raw, y1_raw, h2_raw, p2_raw, y2_raw = raw_activations
-        print(f"  Processing activations for clients ({cid1_str}, {cid2_str})")
+        pass#print(f"  Processing activations for clients ({cid1_str}, {cid2_str})")
         
         processed_data1 = self._process_client_data(h1_raw, p1_raw, y1_raw, cid1_str, num_classes)
         processed_data2 = self._process_client_data(h2_raw, p2_raw, y2_raw, cid2_str, num_classes)
@@ -537,14 +537,14 @@ class OTDataManager:
         all_records, _ = self.results_manager.load_results(ExperimentType.EVALUATION)
         
         if not all_records:
-            print(f"No performance results found for {dataset_name}")
+            pass#print(f"No performance results found for {dataset_name}")
             return np.nan, np.nan
         
         # Filter records by cost
         cost_records = [r for r in all_records if r.cost == cost]
         
         if not cost_records:
-            print(f"Cost {cost} not found in results for {dataset_name}")
+            pass#print(f"Cost {cost} not found in results for {dataset_name}")
             return np.nan, np.nan
         
         # Extract final losses for local and fedavg
@@ -578,5 +578,5 @@ class OTDataManager:
             else:  # Default to mean
                 fedavg_score = float(np.mean(fedavg_losses))
                 
-        print(f"Performance for {dataset_name}, cost {cost}: Local={local_score:.4f}, FedAvg={fedavg_score:.4f}")
+        pass#print(f"Performance for {dataset_name}, cost {cost}: Local={local_score:.4f}, FedAvg={fedavg_score:.4f}")
         return local_score, fedavg_score

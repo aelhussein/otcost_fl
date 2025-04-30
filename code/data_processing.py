@@ -333,7 +333,7 @@ class DataManager:
 
         base_data_for_partitioning, all_labels = None, None
         if self.partitioning_strategy == 'pre_split':
-            print(f"Loading pre-split data for {num_clients} clients...")
+            #print(f"Loading pre-split data for {num_clients} clients...")
             for client_idx in range(1, num_clients + 1):
                 client_id = f"client_{client_idx}"
                 try:
@@ -356,7 +356,7 @@ class DataManager:
                     # Optionally continue or raise
 
         else: # Handle datasets requiring partitioning (Dirichlet, IID)
-            print(f"Loading and partitioning base data ({self.partitioning_strategy})...")
+            #print(f"Loading and partitioning base data ({self.partitioning_strategy})...")
             try:
                 # 1. Load base data
                 loader_args = self._prepare_loader_args(cost)
@@ -448,7 +448,7 @@ class DataManager:
                 print(f"Error partitioning or sampling data: {e}")
                 raise
 
-        print_class_dist(client_final_data_bundles, all_labels)
+        #print_class_dist(client_final_data_bundles, all_labels)
         
         # --- Process Final Bundles into DataLoaders ---
         preprocessor = DataPreprocessor(self.config, self.batch_size)

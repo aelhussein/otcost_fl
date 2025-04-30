@@ -191,7 +191,7 @@ DEFAULT_PARAMS = {
             'feature_names': ['age', 'sex', 'chest_pain_type', 'resting_bp', 'cholesterol', 'sugar', 'ecg', 'max_hr', 'exercise_angina', 'exercise_ST_depression'],
             'cols_to_scale': ['age', 'chest_pain_type', 'resting_bp', 'cholesterol', 'ecg', 'max_hr', 'exercise_ST_depression'],
             'scale_values': { 'age': (53.0872973, 7.01459463e+01), 'chest_pain_type': (3.23702703, 8.17756772e-01), 'resting_bp': (132.74405405, 3.45493057e+02), 'cholesterol': (220.23648649, 4.88430934e+03), 'ecg': (0.64513514, 5.92069868e-01), 'max_hr': (138.75459459, 5.29172208e+02), 'exercise_ST_depression': (0.89532432, 1.11317517e+00) },
-            'site_mappings': { 1: [['cleveland'], ['hungarian']], 2: [['cleveland'], ['switzerland']], 3: [['cleveland'], ['va']], 4: [['hungarian'], ['switzerland']], 5: [['hungarian'], ['va']], 6: [['switzerland'], ['va']] }
+            'site_mappings': { 1: [['cleveland'], ['hungarian']], 2: [['cleveland'], ['switzerland']], 3: [['cleveland'], ['va']], 4: [['hungarian'], ['switzerland']], 5: [['hungarian'], ['va']], 6: [['switzerland'], ['va']], 'all': [['cleveland'], ['hungarian'], ['switzerland'], ['va']] },
         },
         'samples_per_client': None,
         'metric': 'F1',

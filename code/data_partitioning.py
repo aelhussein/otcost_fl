@@ -36,7 +36,7 @@ def partition_iid_indices(
     if n_samples == 0:
         return {i: [] for i in range(num_clients)}
     
-    print(f"IID partitioning: {n_samples} samples -> {num_clients} clients.")
+    #print(f"IID partitioning: {n_samples} samples -> {num_clients} clients.")
     
     # Use same random number generators as dirichlet for consistency
     rng = np.random.RandomState(seed)

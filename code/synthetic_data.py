@@ -240,9 +240,9 @@ def generate_score(X: np.ndarray,
         noise = lin_rng.standard_normal((n_samples, n_features)) * 2
 
         # Apply scaled noise
-        for i in range(n_features):
-            X[:, i] += noise[:, i] * noise_scale[i]
-
+        # for i in range(n_features):
+        #     X[:, i] += noise[:, i] * noise_scale[i]
+        print('NO NOISE ADDED')
 
         score = X @ w
     elif label_rule == "quadratic":
