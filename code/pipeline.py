@@ -54,14 +54,12 @@ class SingleRunExecutor:
         model = model_class()
 
         metric_name = self.default_params.get('metric', 'Accuracy').upper()
-        fixed_classes = self.default_params.get('fixed_classes')
         criterion: Union[nn.Module, Callable]
-
         if metric_name == 'DICE':
             from helper import get_dice_score; criterion = get_dice_score
         elif metric_name in ['ACCURACY', 'F1', 'BALANCED_ACCURACY']:
-            if fixed_classes and fixed_classes > 1: criterion = nn.CrossEntropyLoss()
-            else: raise NotImplementedError(f"Criterion mapping failed: {metric_name}/{fixed_classes}")
+            from losses import WeightedCELoss
+            criterion = WeightedCELoss()
         else: raise ValueError(f"Criterion not defined for metric {metric_name}")
 
         return model, criterion
@@ -75,6 +73,7 @@ class SingleRunExecutor:
         requires_personal_model = server_type in ['pfedme', 'ditto'] # Info for client init
         rounds = self.default_params.get('rounds_tune_inner') if tuning else self.default_params['rounds']
         max_parallel = self.default_params.get('max_parallel_clients', None) 
+        use_weighted_loss = self.default_params.get('use_weighted_loss', False)
 
         return TrainerConfig(
             dataset_name=self.dataset_name, device=str(self.device), 
@@ -84,7 +83,8 @@ class SingleRunExecutor:
             rounds=rounds, 
             requires_personal_model=requires_personal_model, 
             algorithm_params=algo_params,
-            max_parallel_clients=max_parallel
+            max_parallel_clients=max_parallel,
+            use_weighted_loss=use_weighted_loss
         )
 
     def _create_server_instance(self, server_type: str, config: TrainerConfig, tuning: bool) -> Server:

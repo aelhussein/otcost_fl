@@ -28,6 +28,7 @@ class Client:
         self.site_id = data.site_id
         self.requires_personal_model = personal_model
         self.training_manager = TrainingManager(config.device)
+        self.class_weights = self._calculate_class_weights()
 
         # Initialize ModelStates
         self.global_state = ModelState(
@@ -55,7 +56,23 @@ class Client:
         state = self.personal_state if personal and self.requires_personal_model else self.global_state
         if state is None: raise RuntimeError(f"State {'personal' if personal else 'global'} not available.")
         return state
-
+    
+    def _calculate_class_weights(self):
+        """
+        Calculate class weights based on training data distribution.
+        """
+        all_labels = []
+        for batch in self.data.train_loader:
+            y = batch[1]
+            all_labels.append(y.cpu())
+        all_labels_tensor = torch.cat(all_labels)
+        label_counts = torch.bincount(all_labels_tensor.flatten())
+        label_counts = torch.clamp(label_counts, min=1)
+        weights = 1.0 / label_counts.float()
+        total_weight = weights.sum()
+        weights = weights * len(weights) / total_weight
+        return weights if self.config.use_weighted_loss else None
+    
     def set_model_state(self, state_dict: Dict, test: bool = False):
         """Loads state dict into the client's global model state (CPU)."""
         self.global_state.load_current_model_state_dict(state_dict)
@@ -67,7 +84,7 @@ class Client:
         """
         optimizer.zero_grad()
         outputs = model(batch_x)
-        loss = criterion(outputs, batch_y)
+        loss = criterion(outputs, batch_y, self.class_weights)
         loss.backward()
         optimizer.step()
         return loss.item()
@@ -113,7 +130,7 @@ class Client:
                         epoch_loss += batch_loss
                     else:  # Evaluation
                         outputs = model(batch_x_dev)
-                        loss = criterion(outputs, batch_y_dev)
+                        loss = criterion(outputs, batch_y_dev, self.class_weights)
                         epoch_loss += loss.item()
                         epoch_predictions_cpu.append(outputs.detach().cpu())
                         epoch_labels_cpu.append(batch_y_orig_cpu)
@@ -213,7 +230,7 @@ class FedProxClient(Client):
         """Adds FedProx proximal term to the loss before backward."""
         optimizer.zero_grad()
         outputs = model(batch_x)
-        task_loss = criterion(outputs, batch_y)
+        task_loss = criterion(outputs, batch_y, self.class_weights)
         proximal_term = torch.tensor(0.0, device=self.training_manager.compute_device)
         if self._initial_global_state_dict_cpu:
             initial_params_iter = iter(self._initial_global_state_dict_cpu.values())
@@ -264,7 +281,7 @@ class PFedMeClient(Client):
                     temp_model_state = copy.deepcopy(model.state_dict())
                     for _ in range(self.k_steps):
                          outputs = model(batch_x_dev)
-                         loss = criterion(outputs, batch_y_dev)
+                         loss = criterion(outputs, batch_y_dev, self.class_weights)
                          optimizer.zero_grad(); loss.backward(); optimizer.step()
 
                     # Proximal update step
@@ -278,7 +295,7 @@ class PFedMeClient(Client):
                     # Track task loss after update
                     with torch.no_grad():
                         outputs = model(batch_x_dev)
-                        task_loss_post_update = criterion(outputs, batch_y_dev)
+                        task_loss_post_update = criterion(outputs, batch_y_dev, self.class_weights)
                         epoch_task_loss += task_loss_post_update.item()
                     num_batches_processed += 1
                     del batch_x_dev, batch_y_dev, outputs, task_loss_post_update
@@ -302,7 +319,7 @@ class DittoClient(Client):
 
         optimizer.zero_grad()
         outputs = model(batch_x)
-        loss = criterion(outputs, batch_y)
+        loss = criterion(outputs, batch_y, self.class_weights)
         loss.backward() # Calculate standard gradients
 
         # --- Ditto Logic ---

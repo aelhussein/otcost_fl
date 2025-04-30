@@ -393,7 +393,7 @@ class DataManager:
 
                         if self.dataset_name == "Synthetic_Feature":
                             X_pool[idx_list] = apply_feature_shift(
-                                X_pool[idx_list],  # Work on a copy to avoid view issues
+                                X_pool[idx_list],
                                 delta=gamma_i,
                                 kind=self.config["source_args"].get("feature_shift_kind", "mean"),
                                 cols=self.config["source_args"].get("feature_shift_cols"),
@@ -401,7 +401,6 @@ class DataManager:
                                 sigma=self.config["source_args"].get("feature_shift_sigma", 1.5),
                                 rng=np.random.default_rng(self.base_seed),
                             )
-
                         elif self.dataset_name == "Synthetic_Concept":
                             source_args = self.config.get('source_args', {})
                             y_pool[idx_list] = apply_concept_shift(
@@ -410,10 +409,29 @@ class DataManager:
                                 option=source_args.get("concept_label_option", "threshold"),
                                 threshold_range_factor=source_args.get("concept_threshold_range_factor", 0.5),
                                 label_noise=source_args.get("label_noise", 0.0),
-                                base_seed=self.base_seed,  # Same base seed ensures consistent model
+                                base_seed=self.base_seed,
                                 label_rule=source_args.get("label_rule", "linear"),
                                 rng=np.random.default_rng(self.base_seed)
                             )
+                        # Add Credit feature shift handling
+                        elif self.dataset_name == "Credit":
+                            # Get feature strategy configuration
+                            feature_strategy = self.config.get("feature_strategy", {})
+                            # Determine number of columns to affect
+                            n_features = X_pool.shape[1]
+                            cols_percentage = feature_strategy.get("cols_percentage", 0.5)
+                            cols = int(n_features * cols_percentage)
+                            
+                            X_pool[idx_list] = apply_feature_shift(
+                                X_pool[idx_list],
+                                delta=gamma_i,
+                                kind=feature_strategy.get("kind", "mean"),
+                                cols=cols,
+                                mu=feature_strategy.get("mu", 1.0),
+                                sigma=feature_strategy.get("sigma", 1.5),
+                                rng=np.random.default_rng(self.base_seed),
+                            )
+                        
                     base_data_for_partitioning = (X_pool, y_pool)  # Update the base data with shifted values
                     all_labels = y_pool
                 # ---------------------------------------------------------------------------

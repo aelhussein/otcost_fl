@@ -7,6 +7,7 @@
 
 import random
 import torch
+from torch import nn
 from torch.nn import functional as F
 from torch.nn.modules.loss import _Loss
 
@@ -33,3 +34,45 @@ class ISICLoss(_Loss):
         loss = -1 * (1 - pt) ** self.gamma * logpt
 
         return loss.mean()
+    
+
+
+# Add this class to helper.py
+class WeightedCELoss(nn.Module):
+    """
+    Weighted Cross Entropy Loss that accepts per-sample weights.
+    This allows clients to calculate their own class weights based on local data.
+    """
+    def __init__(self):
+        super(WeightedCELoss, self).__init__()
+        self.__name__ = 'WeightedCELoss'
+        
+    def forward(self, inputs, targets, weights=None):
+        """
+        Calculate weighted cross entropy loss.
+        
+        Args:
+            inputs: Model predictions (logits)
+            targets: Ground truth labels
+            weights: Optional sample weights tensor of shape matching targets
+                    or class weights tensor of shape [num_classes]
+        
+        Returns:
+            Weighted loss value
+        """
+        # Standard cross entropy with log_softmax + nll_loss for numerical stability
+        log_probs = F.log_softmax(inputs, dim=1)
+        
+        if weights is None:
+            # Fall back to regular cross entropy loss when not weighted loss
+            return F.nll_loss(log_probs, targets)
+            
+        # Handle different weight types
+        if weights.dim() == 1:
+            if len(weights) == inputs.size(1):  # Class weights [num_classes]
+                return F.nll_loss(log_probs, targets, weight=weights.to(inputs.device), reduction='mean')
+            else:  # Sample weights [batch_size]
+                return (F.nll_loss(log_probs, targets, reduction='none') * weights.to(inputs.device)).mean()
+        
+        
+        return

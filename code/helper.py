@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import copy
 from functools import partial
 import sklearn.metrics as metrics
+from losses import WeightedCELoss # Custom loss function
 
 # Import global config directly
 from configs import DEFAULT_PARAMS # Needed for config helpers
@@ -108,7 +109,8 @@ class TrainerConfig:
     rounds: int = 1
     requires_personal_model: bool = False
     algorithm_params: Dict[str, Any] = field(default_factory=dict)
-    max_parallel_clients: Optional[int] = None  # Maximum number of clients to train in parallel
+    max_parallel_clients: Optional[int] = None,
+    use_weighted_loss: bool = False 
 
 
 @dataclass
@@ -192,7 +194,7 @@ class TrainingManager:
         batch_y_orig_cpu = batch_y_orig.cpu() if isinstance(batch_y_orig, torch.Tensor) else batch_y_orig
 
         # Process labels on device based on criterion type
-        if isinstance(criterion, nn.CrossEntropyLoss):
+        if isinstance(criterion, nn.CrossEntropyLoss) or isinstance(criterion, WeightedCELoss):
              if batch_y_dev.ndim == 2 and batch_y_dev.shape[1] == 1: batch_y_dev = batch_y_dev.squeeze(1)
              batch_y_dev = batch_y_dev.long()
         elif callable(criterion) and criterion.__name__ == 'get_dice_score':
@@ -213,7 +215,7 @@ class ModelDiversity:
             if weights: return torch.cat(weights)
         return None
     def calculate_weight_divergence(self) -> Tuple[float, float]:
-        w1, w2 = self._get_weights(self.client_1), self._get_weights(self.client_2)
+        w1, w2 = self._get_weights(self.client_1), self._get_wseights(self.client_2)
         if w1 is None or w2 is None or w1.numel()==0 or w2.numel()==0: return np.nan, np.nan
         n1, n2 = torch.norm(w1), torch.norm(w2)
         w1n, w2n = w1 / (n1 + 1e-9), w2 / (n2 + 1e-9)

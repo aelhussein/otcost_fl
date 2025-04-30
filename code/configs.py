@@ -40,20 +40,21 @@ COMMON_TABULAR_PARAMS = dict(
     reg_params_try=[1, 0.1, 0.01], # For FedProx, pFedMe, Ditto
     batch_size=32,
     epochs_per_round=3,
-    rounds=50,
+    rounds=25,
     rounds_tune_inner=20,
-    runs=10, # Number of evaluation runs
+    runs=20, # Number of evaluation runs
     runs_tune=3, # Number of tuning runs
     metric='F1', # Default metric
     base_seed=42,
     #samples_per_client = 10000,
-    samples_per_client = 500,
+    samples_per_client = 300,
     default_num_clients=5,
     max_clients=None,
     servers_tune_lr=ALGORITHMS,
     servers_tune_reg=[], # Tune Reg only for specified algos
     partitioner_args={}, # Extra args for partitioner
     max_parallel_clients=None,
+    use_weighted_loss=False,  # Enable weighted loss by default for all datasets
 )
 
 # --- Default Hyperparameters & Data Handling Configuration ---
@@ -118,10 +119,15 @@ DEFAULT_PARAMS = {
     # === Other Datasets ===
     'Credit': {
         **COMMON_TABULAR_PARAMS,
-        'samples_per_client' : 3000,
         'dataset_name': 'Credit',
         'data_source': 'credit_csv',
-        'partitioning_strategy': 'dirichlet_indices', # Needs alpha passed directly
+        'partitioning_strategy': 'iid_indices',
+        'shift_after_split': True, # Set to True to enable feature shifts
+        'feature_strategy': {
+            'kind': 'mean',  # or 'scale', 'tilt'
+            'cols': None,    # Automatically determine based on features
+            'shift_mu': 1.0, 
+            'shift_sigma': 1.5},
         # REMOVED: cost_interpretation
         'dataset_class': 'CreditDataset',
         'source_args': {
@@ -149,6 +155,7 @@ DEFAULT_PARAMS = {
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
         'max_parallel_clients' : None,
+        'use_weighted_loss' :True,  # Enable weighted loss by default for all datasets
     },
     'EMNIST': {
         'dataset_name': 'EMNIST',
@@ -168,6 +175,7 @@ DEFAULT_PARAMS = {
         'default_num_clients': 5, 'max_clients': None,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
         'max_parallel_clients' : None,
+        'use_weighted_loss' :True,  # Enable weighted loss by default for all datasets
     },
     'Heart': {
         **COMMON_TABULAR_PARAMS,
@@ -242,12 +250,13 @@ DEFAULT_PARAMS = {
 DATASET_COSTS = {
     # Alpha values (label skew) - Used directly by partition_dirichlet_indices
     'Synthetic_Label': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
-    'Credit': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
+    #'Credit': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
     'EMNIST': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
     'CIFAR': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
 
     # Feature shift parameter (0=baseline) - Used directly by load_synthetic_raw
     'Synthetic_Feature': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
+    'Credit': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
     'Synthetic_Concept': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 

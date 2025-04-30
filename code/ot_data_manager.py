@@ -164,7 +164,7 @@ class OTDataManager:
         try:
             # Load state dict and instantiate model
             model_state_dict = torch.load(model_path, map_location=self.device)
-            print(f"    Loaded round0 model state from: {os.path.basename(model_path)}")
+            print(f"    Loaded {model_type} model state from: {os.path.basename(model_path)}")
             
             # Initialize model architecture based on dataset name
             model_name = 'Synthetic' if 'Synthetic_' in dataset else dataset
@@ -247,6 +247,7 @@ class OTDataManager:
                 final_linear = module
                 break
             elif isinstance(module, torch.nn.Sequential) and len(module) > 0 and isinstance(module[-1], torch.nn.Linear):
+                first_linear = module[0]
                 final_linear = module[-1]
                 break
                 
@@ -281,7 +282,7 @@ class OTDataManager:
                 current_batch_post_logits.append(out.detach())
                 
         # Register hooks
-        pre_handle = final_linear.register_forward_pre_hook(pre_hook)
+        pre_handle = first_linear.register_forward_pre_hook(pre_hook)
         post_handle = final_linear.register_forward_hook(post_hook)
         
         # Process data through model
@@ -507,11 +508,10 @@ class OTDataManager:
                 
         # Unpack and process the raw activations
         h1_raw, p1_raw, y1_raw, h2_raw, p2_raw, y2_raw = raw_activations
-        
         print(f"  Processing activations for clients ({cid1_str}, {cid2_str})")
+        
         processed_data1 = self._process_client_data(h1_raw, p1_raw, y1_raw, cid1_str, num_classes)
         processed_data2 = self._process_client_data(h2_raw, p2_raw, y2_raw, cid2_str, num_classes)
-        
         if processed_data1 is None or processed_data2 is None:
             return None
             
