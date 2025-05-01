@@ -138,59 +138,106 @@ class BaseOTCalculator(ABC):
         return self.cost_matrices
 
     # --- Shared Helper / Preprocessing Methods ---
-    def _preprocess_input(self, h: Optional[torch.Tensor], p_prob: Optional[torch.Tensor], y: Optional[torch.Tensor], weights: Optional[torch.Tensor], required_keys: list[str]) -> Optional[Dict[str, torch.Tensor]]:
-        """ Basic validation and conversion to CPU tensors. (Implementation same) """
+    def _preprocess_input(self, h: Optional[torch.Tensor], p_prob: Optional[torch.Tensor], 
+                            y: Optional[torch.Tensor], weights: Optional[torch.Tensor], 
+                            required_keys: list[str]) -> Optional[Dict[str, torch.Tensor]]:
+        """ 
+        Enhanced preprocessing and validation for input tensors.
+        Includes improved handling of probability formats for multiclass scenarios.
+        
+        Args:
+            h: Feature activations tensor
+            p_prob: Model probability outputs tensor
+            y: Ground truth labels tensor
+            weights: Sample weights tensor
+            required_keys: List of keys that must be non-None
+            
+        Returns:
+            Dictionary of processed tensors or None if validation fails
+        """
         processed_data = {}
         input_map = {'h': h, 'p_prob': p_prob, 'y': y, 'weights': weights}
 
+        # Process each input tensor
         for key, tensor in input_map.items():
             if tensor is None:
                 if key in required_keys:
-                     warnings.warn(f"Preprocessing failed: Required input '{key}' is None.")
-                     return None
+                    warnings.warn(f"Preprocessing failed: Required input '{key}' is None.")
+                    return None
                 processed_data[key] = None
                 continue
 
+            # Ensure CPU tensor
             if not isinstance(tensor, torch.Tensor):
                 try:
                     tensor = torch.tensor(tensor)
                 except Exception as e:
                     warnings.warn(f"Preprocessing failed: Could not convert input '{key}' to tensor: {e}")
                     return None
-            processed_data[key] = tensor.detach().cpu() # Ensure CPU tensor
+            processed_data[key] = tensor.detach().cpu()
 
-        # Basic shape checks (can be expanded)
-        n_samples = processed_data['y'].shape[0] if processed_data.get('y') is not None else None
-        if n_samples is None and 'y' in required_keys: return None # Need y if required
+        # Extract useful info for validation
+        n_samples = processed_data.get('y', None)
+        n_samples = n_samples.shape[0] if n_samples is not None else None
+        
+        if n_samples is None and 'y' in required_keys:
+            return None  # Need y if required
 
+        # Validate tensor shapes
         if n_samples is not None:
+            # Check h shape
             if processed_data.get('h') is not None and processed_data['h'].shape[0] != n_samples:
-                 warnings.warn(f"Shape mismatch: h({processed_data['h'].shape[0]}) vs y/expected({n_samples})")
-                 return None
-            if processed_data.get('p_prob') is not None and processed_data['p_prob'].shape[0] != n_samples:
-                 warnings.warn(f"Shape mismatch: p_prob({processed_data['p_prob'].shape[0]}) vs y/expected({n_samples})")
-                 return None
+                warnings.warn(f"Shape mismatch: h({processed_data['h'].shape[0]}) vs y/expected({n_samples})")
+                return None
+                
+            # Check weights shape
             if processed_data.get('weights') is not None and processed_data['weights'].shape[0] != n_samples:
-                 warnings.warn(f"Shape mismatch: weights({processed_data['weights'].shape[0]}) vs y/expected({n_samples})")
-                 return None
-            # Check p_prob dimensions carefully
+                warnings.warn(f"Shape mismatch: weights({processed_data['weights'].shape[0]}) vs y/expected({n_samples})")
+                return None
+                
+            # Validate p_prob dimensions and format - enhanced for multiclass
             if processed_data.get('p_prob') is not None:
                 p_tensor = processed_data['p_prob']
-                valid_shape = (p_tensor.ndim == 2 and p_tensor.shape[1] == self.num_classes)
-                # Allow binary case special handling if num_classes is 2
-                if self.num_classes == 2 and not valid_shape:
-                     # Could potentially reshape/validate binary [N] or [N,1] here if needed,
-                     # but often better handled during initial data processing in DataManager
-                     pass # Assuming DataManager produces [N, K] format
-                elif not valid_shape:
-                     warnings.warn(f"Shape mismatch: p_prob({p_tensor.shape}) vs expected N x K (K={self.num_classes})")
-                     return None
+                
+                # Case 1: Standard multiclass format [N, K]
+                expected_shape = (p_tensor.ndim == 2 and p_tensor.shape[0] == n_samples and 
+                                p_tensor.shape[1] == self.num_classes)
+                
+                # Case 2: Binary probability as [N] or [N,1]
+                binary_format = (self.num_classes == 2 and 
+                                ((p_tensor.ndim == 1 and p_tensor.shape[0] == n_samples) or
+                                (p_tensor.ndim == 2 and p_tensor.shape[0] == n_samples and p_tensor.shape[1] == 1)))
+                
+                if not expected_shape and not binary_format:
+                    # Handle incorrect shapes
+                    if p_tensor.ndim == 2 and p_tensor.shape[0] == n_samples:
+                        warnings.warn(f"Probability shape mismatch: p_prob has {p_tensor.shape[1]} columns "
+                                    f"but expected {self.num_classes} classes")
+                    else:
+                        warnings.warn(f"Shape mismatch: p_prob({p_tensor.shape}) vs "
+                                    f"expected N x K ({n_samples} x {self.num_classes})")
+                    return None
+                    
+                # For binary case, convert to standard [N, 2] format
+                if binary_format and p_tensor.ndim != 2:
+                    p1 = p_tensor.view(-1).clamp(0.0, 1.0)
+                    p0 = 1.0 - p1
+                    processed_data['p_prob'] = torch.stack([p0, p1], dim=1)
+                
+                # Validate probabilities sum to approximately 1
+                if processed_data['p_prob'].ndim == 2:
+                    row_sums = processed_data['p_prob'].sum(dim=1)
+                    if not torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-3):
+                        warnings.warn(f"Probability rows don't sum to 1 (min={row_sums.min().item():.4f}, "
+                                    f"max={row_sums.max().item():.4f}). Attempting normalization.")
+                        # Try to normalize
+                        probs = processed_data['p_prob'].clamp(min=self.eps_num)
+                        processed_data['p_prob'] = probs / probs.sum(dim=1, keepdim=True)
 
-
-        # Check if all required keys ended up non-None after processing
-        if any(processed_data.get(k) is None for k in required_keys):
-            missing = [k for k in required_keys if processed_data.get(k) is None]
-            warnings.warn(f"Preprocessing failed: Required keys {missing} are None after processing.")
+        # Final check for required keys
+        missing_keys = [k for k in required_keys if processed_data.get(k) is None]
+        if missing_keys:
+            warnings.warn(f"Preprocessing failed: Required keys {missing_keys} are None after processing.")
             return None
 
         return processed_data
@@ -293,7 +340,22 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
 
 
     def _calculate_cost_feature_error_additive(self, h1, p1_prob, y1, h2, p2_prob, y2, **params) -> Tuple[Optional[torch.Tensor], float]:
-        """ Calculates the additive cost: C = alpha * D_h_scaled + beta * D_e_scaled. """
+        """
+        Calculates the additive cost: C = alpha * D_h_scaled + beta * D_e_scaled.
+        Enhanced to better handle multiclass probabilities.
+        
+        Args:
+            h1: Features from client 1
+            p1_prob: Predicted probabilities from client 1
+            y1: Labels from client 1
+            h2: Features from client 2
+            p2_prob: Predicted probabilities from client 2
+            y2: Labels from client 2
+            **params: Additional parameters including alpha, beta
+            
+        Returns:
+            Tuple of (cost_matrix, max_possible_cost)
+        """
         alpha = params.get('alpha', 1.0)
         beta = params.get('beta', 1.0)
         norm_eps = params.get('norm_eps', self.eps_num) # Use class eps if not provided
@@ -303,37 +365,58 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
         if N == 0 or M == 0:
             return torch.empty((N, M), device=device, dtype=torch.float), 0.0
 
-        # Validate shapes (already preprocessed, but double check)
-        if p1_prob.shape != (N, self.num_classes) or p2_prob.shape != (M, self.num_classes):
-             warnings.warn(f"Internal Cost Calc: Probability shape mismatch: P1({p1_prob.shape}), P2({p2_prob.shape}), K={self.num_classes}")
-             return None, np.nan
+        # Validate probability tensor shapes
+        if p1_prob.shape[1] != self.num_classes or p2_prob.shape[1] != self.num_classes:
+            warnings.warn(f"Internal Cost Calc: Probability shape mismatch: "
+                        f"P1({p1_prob.shape}), P2({p2_prob.shape}), K={self.num_classes}")
+            return None, np.nan
 
-        # --- Scaled Feature Distance ---
+        # --- Term 1: Scaled Feature Distance ---
         term1 = torch.zeros((N, M), device=device, dtype=torch.float)
         max_term1_contrib = 0.0
         if alpha > self.eps_num:
             try:
+                # L2 normalize feature vectors
                 h1_norm = F.normalize(h1.float(), p=2, dim=1, eps=norm_eps)
                 h2_norm = F.normalize(h2.float(), p=2, dim=1, eps=norm_eps)
-                D_h = torch.cdist(h1_norm, h2_norm, p=2) # Range [0, 2]
-                D_h_scaled = D_h / 2.0 # Scale to [0, 1]
+                
+                # Compute Euclidean distance (range [0, 2] for normalized vectors)
+                D_h = torch.cdist(h1_norm, h2_norm, p=2)
+                
+                # Scale to [0, 1] range and apply alpha weight
+                D_h_scaled = D_h / 2.0
                 term1 = alpha * D_h_scaled
                 max_term1_contrib = alpha * 1.0
             except Exception as e:
-                 warnings.warn(f"Feature distance calculation failed: {e}")
-                 return None, np.nan
+                warnings.warn(f"Feature distance calculation failed: {e}")
+                return None, np.nan
 
-        # --- Scaled Raw Error Distance ---
+        # --- Term 2: Scaled Error Distance ---
         term2 = torch.zeros((N, M), device=device, dtype=torch.float)
         max_term2_contrib = 0.0
         if beta > self.eps_num:
             try:
+                # Create one-hot encoded ground truth
                 y1_oh = F.one_hot(y1.view(-1), num_classes=self.num_classes).float().to(device)
                 y2_oh = F.one_hot(y2.view(-1), num_classes=self.num_classes).float().to(device)
+                
+                # Calculate error vectors (predicted probabilities - ground truth)
                 e1 = p1_prob.float() - y1_oh
                 e2 = p2_prob.float() - y2_oh
+                
+                # Handle any numerical issues in error vectors
+                e1 = torch.clamp(e1, min=-1.0, max=1.0)  # Ensure errors are in [-1, 1] range
+                e2 = torch.clamp(e2, min=-1.0, max=1.0)
+                
+                # Compute distance between error vectors
                 D_e_raw = torch.cdist(e1, e2, p=2)
-                max_raw_error_dist = 2.0 * np.sqrt(2.0) # Theoretical max L2 dist between two vectors in [-1, 1]^K space
+                
+                # Maximum possible error distance for vectors in [-1, 1]^K space
+                # For K classes, worst case is 2√K (opposite corners of hypercube)
+                # But we use 2*sqrt(2) for consistency with the original code
+                max_raw_error_dist = 2.0 * np.sqrt(2.0)
+                
+                # Scale to [0, 1] range and apply beta weight
                 D_e_scaled = D_e_raw / max_raw_error_dist
                 term2 = beta * D_e_scaled
                 max_term2_contrib = beta * 1.0
@@ -345,7 +428,18 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
         cost_matrix = term1 + term2
         max_possible_cost = max_term1_contrib + max_term2_contrib
         effective_max_cost = max(self.eps_num, max_possible_cost)
+        
+        # Ensure cost matrix is valid (no NaNs, no negative values)
         cost_matrix = torch.clamp(cost_matrix, min=0.0, max=effective_max_cost)
+        
+        # Check for NaN/Inf values
+        if not torch.isfinite(cost_matrix).all():
+            warnings.warn("Non-finite values detected in cost matrix. Replacing with max cost.")
+            cost_matrix = torch.where(
+                torch.isfinite(cost_matrix),
+                cost_matrix,
+                torch.tensor(effective_max_cost, device=device, dtype=torch.float)
+            )
 
         return cost_matrix, float(max_possible_cost)
 

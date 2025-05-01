@@ -94,9 +94,10 @@ class DataPreprocessor:
              raise ValueError(f"Config for '{self.dataset_name}' missing 'dataset_class'.")
 
         
-    def _get_dataset_instance(self, data_args: dict, split_type: str):
+    def _get_dataset_instance(self, data_args: dict, split_type: str, **extra_kwargs):
         """Instantiates the correct Dataset class based on config name."""
         common_args = {'split_type': split_type, 'dataset_config': self.dataset_config}
+        common_args.update(extra_kwargs)
         try:
             # Dataset class mapping
             dataset_classes = {
@@ -124,14 +125,15 @@ class DataPreprocessor:
              print(f"Error instantiating Dataset '{self.dataset_class_name}' for split '{split_type}': {e}")
              return None
 
-    def preprocess_client_data(self, client_data_bundle: dict) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    def preprocess_client_data(self, client_id: str, client_data_bundle: dict) -> Tuple[DataLoader, DataLoader, DataLoader]:
         """Processes raw data bundle for one client into DataLoaders."""
         # Extract data type and content from bundle
         data_type = client_data_bundle.get('type')
         raw_data = client_data_bundle.get('data')
-        
+        client_dataset_args = {k.split('-')[-1]: v for k, v in client_data_bundle.items() if k not in ['type', 'data'] and client_id in k}
         # Extract and split data based on type
         if data_type == 'subset':
+            
             indices, base_data = raw_data.get('indices', []), raw_data.get('base_data')
             train_indices, val_indices, test_indices = _split_indices(indices)
             
@@ -140,13 +142,15 @@ class DataPreprocessor:
                 train_dataset = Subset(base_data, train_indices) if train_indices else None
                 val_dataset = Subset(base_data, val_indices) if val_indices else None
                 test_dataset = Subset(base_data, test_indices) if test_indices else None
+            
             # Handle tuple of torch datasets (e.g., torchvision train/test datasets)
             elif isinstance(base_data, tuple) and all(isinstance(d, torch.utils.data.Dataset) for d in base_data):
                 # Use the first dataset (typically train) for all splits
-                train_dataset = Subset(base_data[0], train_indices) if train_indices else None
-                val_dataset = Subset(base_data[0], val_indices) if val_indices else None
-                test_dataset = Subset(base_data[0], test_indices) if test_indices else None
-            # Handle numpy array subset
+                angle = client_dataset_args.get('rotation_angle', 0.0)
+                train_dataset = self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :train_indices}, 'train', rotation_angle=angle)
+                val_dataset   =self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :val_indices}, 'val', rotation_angle=angle)
+                test_dataset  = self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :test_indices}, 'test', rotation_angle=angle)
+            
             elif isinstance(base_data, tuple) and len(base_data) == 2 and isinstance(base_data[0], np.ndarray):
                 base_X, base_y = base_data
                 train_data = (base_X[train_indices], base_y[train_indices]) if train_indices else None
@@ -182,8 +186,8 @@ class DataPreprocessor:
             val_args = {'image_paths': X_val, y_key: y_val}
             test_args = {'image_paths': X_test, y_key: y_test}
             
-            train_dataset = self._get_dataset_instance(train_args, 'train') if len(X_train) > 0 else None
-            val_dataset = self._get_dataset_instance(val_args, 'val') if len(X_val) > 0 else None
+            train_dataset = self._get_dataset_instance(train_args, 'train',) if len(X_train) > 0 else None
+            val_dataset = self._get_dataset_instance(val_args, 'val',) if len(X_val) > 0 else None
             test_dataset = self._get_dataset_instance(test_args, 'test') if len(X_test) > 0 else None
         else:
             return DataLoader([]), DataLoader([]), DataLoader([])
@@ -226,25 +230,26 @@ class DataManager:
         """Helper to convert loaded data to a standardized client bundle format."""
         # Create appropriate bundle based on data type
         if isinstance(loaded_data[0], list):
-            return {'type': 'paths', 'data': {'X_paths': loaded_data[0], 'y_data': loaded_data[1]}}
+            bundle = {'type': 'paths', 'data': {'X_paths': loaded_data[0], 'y_data': loaded_data[1]}}
         elif isinstance(loaded_data[0], np.ndarray):
-            return {'type': 'direct', 'data': {'X': loaded_data[0], 'y': loaded_data[1]}}
+            bundle = {'type': 'direct', 'data': {'X': loaded_data[0], 'y': loaded_data[1]}}
         elif isinstance(loaded_data[0], torch.utils.data.Dataset):
-            print(loaded_data)
-        return None
-
+            bundle = {'type': 'torchvision_raw', 'data': loaded_data}
+        else:
+            print(f"Warning: Could not determine bundle type for data: {type(loaded_data[0])}")
+            return None
+        return bundle
+    
     def _prepare_loader_args(self, cost, client_num=None, num_clients=None):
         """Prepare common loader arguments with dataset-specific adjustments."""
-        args = {'source_args': self.config.get('source_args', {}), 'cost_key': cost}
+        args = {'source_args': self.config.get('source_args', {}), 'cost_key': cost, 'base_seed' : self.base_seed}
         # Add dataset-specific arguments
         if self.data_source_type == 'synthetic':
             args['dataset_name'] = self.dataset_name
-            args['base_seed'] = self.base_seed
             if num_clients is not None:
                 args['num_clients'] = num_clients
         elif self.data_source_type == 'torchvision':
             args['data_dir'] = self.data_dir_root
-            args['transform_config'] = self.config.get('transform_config', {})
         else:
             args['data_dir'] = os.path.join(self.data_dir_root, self.dataset_name)
             
@@ -326,7 +331,9 @@ class DataManager:
         partitioner_func = get_partitioner(self.partitioning_strategy)
         client_final_data_bundles = {} # Store bundles AFTER potential sampling
         target_samples_per_client = self.config.get('samples_per_client')
-
+        source_args = self.config.get('source_args', {})
+        apply_shift = self.config.get("shift_after_split", False)
+        
         # --- Seed the instance sampler for this specific run/cost ---
         # Ensures sampling is deterministic per run, even if DataManager is reused
         self.py_random_sampler.seed(run_seed + 101 + hash(str(cost)))
@@ -381,28 +388,47 @@ class DataManager:
 
                 # 4. Apply shifts BEFORE creating client bundles
                 # -------------------------------- shift-after-split ------------------------
-                if self.config.get("shift_after_split", False) and base_data_for_partitioning:
-                    # Unpack the shared pool so we can mutate in-place
-                    X_pool, y_pool = base_data_for_partitioning
-                    n_c = num_clients
-
+                if apply_shift and base_data_for_partitioning:
+                    if isinstance(base_data_for_partitioning[0], np.ndarray):
+                        # Unpack the shared pool so we can mutate in-place
+                        X_pool, y_pool = base_data_for_partitioning
+    
                     for c_idx, idx_list in client_indices_final.items():
-                        # Same spacing rule you used before
-                        symmetric_shift = (2 * c_idx / max(n_c - 1, 1)) - 1
+                        # Same spacing rule for all datasets
+                        symmetric_shift = (2 * c_idx / max(num_clients - 1, 1)) - 1
                         gamma_i = float(cost) * symmetric_shift
-
-                        if self.dataset_name == "Synthetic_Feature":
-                            X_pool[idx_list] = apply_feature_shift(
-                                X_pool[idx_list],
-                                delta=gamma_i,
-                                kind=self.config["source_args"].get("feature_shift_kind", "mean"),
-                                cols=self.config["source_args"].get("feature_shift_cols"),
-                                mu=self.config["source_args"].get("feature_shift_mu", 1.0),
-                                sigma=self.config["source_args"].get("feature_shift_sigma", 1.5),
-                                rng=np.random.default_rng(self.base_seed),
-                            )
-                        elif self.dataset_name == "Synthetic_Concept":
-                            source_args = self.config.get('source_args', {})
+                        
+                        # Get source arguments from config
+                        source_args = self.config.get('source_args', {})
+                        
+                        if 'feature_shift_kind' in source_args:
+                            if source_args.get('feature_shift_kind') in ['mean','scale', 'tilt']:
+                                # Determine the number of columns to affect
+                                n_features = X_pool.shape[1]
+                                cols = source_args.get("feature_shift_cols")
+                                
+                                # For Credit dataset or if cols is None, calculate based on percentage
+                                if cols is None:
+                                    cols_percentage = source_args.get("cols_percentage", 0.5)
+                                    cols = int(n_features * cols_percentage)
+                                
+                                # Apply feature shift with standardized parameters
+                                X_pool[idx_list] = apply_feature_shift(
+                                    X_pool[idx_list],
+                                    delta=gamma_i,
+                                    kind=source_args.get("feature_shift_kind", "mean"),
+                                    cols=cols,
+                                    mu=source_args.get("feature_shift_mu", 1.0),
+                                    sigma=source_args.get("feature_shift_sigma", 1.5),
+                                    rng=np.random.default_rng(self.base_seed),
+                                )
+                            elif source_args.get('feature_shift_kind') in ['image_rotation']:
+                                max_angle = source_args.get('max_rotation_angle', 90.0)
+                                angle = max_angle * gamma_i
+                                source_args[f'client_{c_idx+1}-rotation_angle'] = angle
+                        # Apply concept shift if specifie
+                        elif 'concept_label_option' in source_args:
+                            # Concept shift remains unchanged
                             y_pool[idx_list] = apply_concept_shift(
                                 X_pool[idx_list],
                                 gamma=gamma_i,
@@ -413,27 +439,14 @@ class DataManager:
                                 label_rule=source_args.get("label_rule", "linear"),
                                 rng=np.random.default_rng(self.base_seed)
                             )
-                        # Add Credit feature shift handling
-                        elif self.dataset_name == "Credit":
-                            # Get feature strategy configuration
-                            feature_strategy = self.config.get("feature_strategy", {})
-                            # Determine number of columns to affect
-                            n_features = X_pool.shape[1]
-                            cols_percentage = feature_strategy.get("cols_percentage", 0.5)
-                            cols = int(n_features * cols_percentage)
-                            
-                            X_pool[idx_list] = apply_feature_shift(
-                                X_pool[idx_list],
-                                delta=gamma_i,
-                                kind=feature_strategy.get("kind", "mean"),
-                                cols=cols,
-                                mu=feature_strategy.get("mu", 1.0),
-                                sigma=feature_strategy.get("sigma", 1.5),
-                                rng=np.random.default_rng(self.base_seed),
-                            )
-                        
-                    base_data_for_partitioning = (X_pool, y_pool)  # Update the base data with shifted values
-                    all_labels = y_pool
+                    
+                    # Update the base data with shifted values
+                    try:
+                        base_data_for_partitioning = (X_pool, y_pool)
+                        all_labels = y_pool  # Update labels reference
+                    except NameError:
+                        pass
+    
                 # ---------------------------------------------------------------------------
 
                 # 5. NOW create client bundles using the shifted data
@@ -441,7 +454,8 @@ class DataManager:
                     client_id = f"client_{client_id_idx+1}"
                     client_final_data_bundles[client_id] = {
                         'type': 'subset',
-                        'data': {'indices': final_indices, 'base_data': base_data_for_partitioning}
+                        'data': {'indices': final_indices, 'base_data': base_data_for_partitioning},
+                        **source_args
                     }
 
             except Exception as e:
@@ -456,7 +470,7 @@ class DataManager:
         for client_id, bundle in client_final_data_bundles.items():
             try:
                 # preprocess_client_data performs the train/val/test split on the (already sampled) data
-                dataloaders = preprocessor.preprocess_client_data(bundle)
+                dataloaders = preprocessor.preprocess_client_data(client_id, bundle)
                 if dataloaders[0] and hasattr(dataloaders[0], 'dataset') and len(dataloaders[0].dataset) > 0:
                     client_dataloaders[client_id] = dataloaders
                 else:

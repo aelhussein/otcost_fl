@@ -241,13 +241,12 @@ class OTDataManager:
             
         # Find final linear layer for hooks
         final_linear = None
-        for name in ['output_layer', 'fc', 'linear', 'classifier', 'output']:
+        for name in ['output_layer', 'fc2', 'linear', 'classifier', 'output']:
             module = getattr(model, name, None)
             if isinstance(module, torch.nn.Linear):
                 final_linear = module
                 break
             elif isinstance(module, torch.nn.Sequential) and len(module) > 0 and isinstance(module[-1], torch.nn.Linear):
-                first_linear = module[-1]
                 final_linear = module[-1]
                 break
                 
@@ -282,7 +281,7 @@ class OTDataManager:
                 current_batch_post_logits.append(out.detach())
                 
         # Register hooks
-        pre_handle = first_linear.register_forward_pre_hook(pre_hook)
+        pre_handle = final_linear.register_forward_pre_hook(pre_hook)
         post_handle = final_linear.register_forward_hook(post_hook)
         
         # Process data through model
@@ -401,6 +400,16 @@ class OTDataManager:
     ) -> Optional[Dict[str, Optional[torch.Tensor]]]:
         """
         Processes raw data for one client: validates probs, calculates loss & weights.
+        
+        Args:
+            h: Feature activations tensor
+            p_prob_in: Model probability outputs tensor
+            y: Ground truth labels tensor
+            client_id: Client identifier
+            num_classes: Number of classes in the dataset
+            
+        Returns:
+            Dictionary of processed tensors or None if processing fails
         """
         if h is None or y is None:
             return None
@@ -415,43 +424,67 @@ class OTDataManager:
         if n_samples == 0:
             return None
             
-        # Validate probabilities
+        # Validate and normalize probabilities
         p_prob_validated = None
         if p_prob_cpu is not None:
             with torch.no_grad():
+                # Convert to float for numerical stability
                 p_prob_float = p_prob_cpu.float()
-                # Handle different probability formats
+                # Case 1: Standard multiclass probabilities [N, K]
                 if p_prob_float.ndim == 2 and p_prob_float.shape[0] == n_samples and p_prob_float.shape[1] == num_classes:
-                    # Check if valid probability distribution
-                    if torch.all(p_prob_float >= -1e-5) and torch.all(p_prob_float <= 1 + 1e-5) and \
-                       torch.allclose(p_prob_float.sum(dim=1), torch.ones(n_samples), atol=1e-3):
+                    # Check if already approximately valid probability distribution
+                    row_sums = p_prob_float.sum(dim=1)
+                    is_valid_dist = torch.all(p_prob_float >= -1e-5) and torch.all(p_prob_float <= 1 + 1e-5) and \
+                                    torch.allclose(row_sums, torch.ones(n_samples), atol=1e-3)
+                    
+                    if is_valid_dist:
+                        # Already valid, just clamp to ensure exact [0,1] range
                         p_prob_validated = torch.clamp(p_prob_float, 0.0, 1.0)
                     else:
-                        # Renormalize probabilities
-                        p_prob_validated = torch.relu(p_prob_float)
-                        p_prob_validated = p_prob_validated / p_prob_validated.sum(dim=1, keepdim=True).clamp(min=self.loss_eps)
-                        p_prob_validated = torch.clamp(p_prob_validated, 0.0, 1.0)
-                # Handle binary case separately
-                elif num_classes == 2 and (p_prob_float.ndim == 1 or p_prob_float.shape[1] == 1) and p_prob_float.shape[0] == n_samples:
-                    p1 = torch.clamp(p_prob_float.view(-1), 0.0, 1.0)
-                    p0 = 1.0 - p1
-                    p_prob_validated = torch.stack([p0, p1], dim=1)
-            
+                        # Need to normalize - first ensure non-negative values
+                        p_prob_temp = torch.relu(p_prob_float)
+                        # Compute row sums with epsilon to avoid division by zero
+                        row_sums = p_prob_temp.sum(dim=1, keepdim=True).clamp(min=self.loss_eps)
+                        # Normalize and clamp
+                        p_prob_validated = torch.clamp(p_prob_temp / row_sums, 0.0, 1.0)
+                
+                # Case 2: Binary classification with single value [N] or [N,1]
+                elif num_classes == 2:
+                    if (p_prob_float.ndim == 1 and p_prob_float.shape[0] == n_samples) or \
+                    (p_prob_float.ndim == 2 and p_prob_float.shape[0] == n_samples and p_prob_float.shape[1] == 1):
+                        # Reshape to ensure [N] format first
+                        p_prob_1d = p_prob_float.view(-1)
+                        # Clamp to [0,1] range
+                        p1 = torch.clamp(p_prob_1d, 0.0, 1.0)
+                        p0 = 1.0 - p1
+                        # Stack to create [N,2] format
+                        p_prob_validated = torch.stack([p0, p1], dim=1)
+                
+                # Case 3: Logits (pre-softmax) - add this if needed
+                # elif is_logits condition (e.g., large values or values outside [0,1]):
+                #     p_prob_validated = torch.softmax(p_prob_float, dim=1)
+                
+                # If no cases matched, p_prob_validated remains None
+                if p_prob_validated is None:
+                    print(f"Warning: Unable to validate probability tensor with shape {p_prob_float.shape} "
+                        f"for client {client_id} (n_samples={n_samples}, num_classes={num_classes})")
+        
         # Calculate loss and weights
         loss = None
         weights = None
         
         if p_prob_validated is not None:
             loss = calculate_sample_loss(p_prob_validated, y_cpu, num_classes, self.loss_eps)
-            
+        
+        # Handle weights assignment
         if loss is None or not torch.isfinite(loss).all() or loss.sum().item() <= self.loss_eps:
             # Use uniform weights if loss is invalid
-            weights = torch.ones_like(y_cpu, dtype=torch.float) / n_samples
-            loss = torch.full_like(y_cpu, float('nan'), dtype=torch.float) if loss is None else loss
+            weights = torch.ones(n_samples, dtype=torch.float32) / n_samples
+            loss = torch.full_like(y_cpu, float('nan'), dtype=torch.float32) if loss is None else loss
         else:
             # Use loss for weighting
             weights = loss / loss.sum()
-            
+        
         return {
             'h': h_cpu, 
             'p_prob': p_prob_validated, 

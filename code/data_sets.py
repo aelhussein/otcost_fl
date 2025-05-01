@@ -85,60 +85,91 @@ class HeartDataset(TorchDataset):
         return feature_tensor, label_tensor
 
 
-class EMNISTDataset(TorchDataset):
-    """Final EMNIST dataset wrapper."""
-    def __init__(self, X_np: np.ndarray, y_np: np.ndarray, split_type: str, **kwargs): # Accept kwargs
-        self.images = X_np
-        self.labels = y_np.astype(np.int64)
-        self.is_train = (split_type == 'train')
-        self.transform = self._get_transform()
+# ===========================
+#  Unified base image wrapper
+# ===========================
+from torchvision import transforms
+from torchvision.transforms import functional as F
 
-    def _get_transform(self) -> Callable:
-        mean, std = (0.1307,), (0.3081,)
-        transforms_list = [transforms.ToPILImage(), transforms.Resize((28, 28))]
-        if self.is_train:
-            transforms_list.extend([
-                transforms.RandomRotation((-15, 15)),
-                transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1))
-            ])
-        transforms_list.extend([transforms.ToTensor(), transforms.Normalize(mean, std)])
-        return transforms.Compose(transforms_list)
+class _BaseImgDS(TorchDataset):
+    MEAN_STD   = None          # override
+    TRAIN_AUG  = None          # list[transform]  – override
+    RESIZE_TO  = None          # (H,W) – EMNIST only
 
-    def __len__(self) -> int: return len(self.labels)
+    def __init__(self,
+                 split_type        : str,
+                 rotation_angle    : float = 0.0,
+                 X_np              : np.ndarray = None,
+                 y_np              : np.ndarray = None,
+                 base_tv_dataset   = None,
+                 indices           = None,
+                 **_):
+        self.is_train  = split_type == "train"
+        self.rot_angle = rotation_angle
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        image, label = self.images[idx], self.labels[idx]
-        image_tensor = self.transform(image)
-        label_tensor = torch.tensor(label, dtype=torch.long)
-        return image_tensor, label_tensor
+        if X_np is not None:                      # -------- NumPy path
+            self.mode = "numpy"
+            self.images = X_np
+            self.labels = y_np.astype(np.int64)
+        elif base_tv_dataset is not None:         # -------- torchvision path
+            self.mode   = "tv"
+            self.base   = base_tv_dataset
+            self.indices = indices
+        else:
+            raise ValueError("Provide either (X_np,y_np) or (base_tv_dataset,indices)")
+
+        self.transform = self._build_transform()
+
+    # -----------------------------------------------------------
+    def _build_transform(self):
+        mean, std = self.MEAN_STD
+        t = []
+
+        # add ToPIL *only* for NumPy / tensor inputs
+        if self.mode == "numpy":
+            t.append(transforms.ToPILImage())
+
+        if self.RESIZE_TO is not None:
+            t.append(transforms.Resize(self.RESIZE_TO))
+
+        if abs(self.rot_angle) > 1e-6:
+            t.append(transforms.RandomAffine(
+                     degrees=(self.rot_angle, self.rot_angle)))
+
+        if self.is_train and self.TRAIN_AUG:
+            t.extend(self.TRAIN_AUG)
+
+        t.extend([transforms.ToTensor(), transforms.Normalize(mean, std)])
+        return transforms.Compose(t)
+
+    # -----------------------------------------------------------
+    def __len__(self):
+        return len(self.images) if self.mode == "numpy" else len(self.indices)
+
+    def __getitem__(self, idx):
+        if self.mode == "numpy":
+            img, label = self.images[idx], int(self.labels[idx])
+        else:  # torchvision
+            base_idx = self.indices[idx]
+            img, label = self.base[base_idx]
+
+        img = self.transform(img)
+        return img, torch.tensor(label, dtype=torch.long)
 
 
-class CIFARDataset(TorchDataset):
-    """Final CIFAR-10 dataset wrapper."""
-    def __init__(self, X_np: np.ndarray, y_np: np.ndarray, split_type: str, **kwargs): # Accept kwargs
-        self.images = X_np
-        self.labels = y_np.astype(np.int64)
-        self.is_train = (split_type == 'train')
-        self.transform = self._get_transform()
+# ------------------------ concrete datasets --------------------
+class EMNISTDataset(_BaseImgDS):
+    MEAN_STD  = ((0.1307,), (0.3081,))
+    TRAIN_AUG = [transforms.RandomRotation((-0, 0))]
+    RESIZE_TO = (28, 28)
 
-    def _get_transform(self) -> Callable:
-        mean, std = (0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)
-        transforms_list = [transforms.ToPILImage()]
-        if self.is_train:
-            transforms_list.extend([
-                transforms.RandomCrop(32, padding=4, padding_mode='reflect'),
-                transforms.RandomHorizontalFlip(),
-            ])
-        transforms_list.extend([transforms.ToTensor(), transforms.Normalize(mean, std)])
-        return transforms.Compose(transforms_list)
 
-    def __len__(self) -> int: return len(self.labels)
+class CIFARDataset(_BaseImgDS):
+    MEAN_STD  = ((0.4914, 0.4822, 0.4465),
+                 (0.2470, 0.2435, 0.2616))
+    TRAIN_AUG = [transforms.RandomCrop(32, padding=4, padding_mode="reflect")]
+    RESIZE_TO = None
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        image, label = self.images[idx], self.labels[idx]
-        image_tensor = self.transform(image)
-        label_tensor = torch.tensor(label, dtype=torch.long)
-        return image_tensor, label_tensor
 
 
 class ISICDataset(TorchDataset):

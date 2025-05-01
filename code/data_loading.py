@@ -35,33 +35,31 @@ def load_synthetic_raw(dataset_name, source_args, cost_key, base_seed, **_):
 
 def load_torchvision_raw(source_args: dict,
                          data_dir: str,
-                         transform_config: Optional[dict] = None,
+                         base_seed: int,
+                         transform_config: Optional[dict] = None, # Keep signature, but ignore
                          cost_key: Optional[Any] = None) -> Tuple[Any, Any]: # Returns raw torchvision dataset objects
-    """Loads raw torchvision datasets (train/test)."""
-    transform_config = transform_config or {}
+    """
+    Loads raw torchvision datasets (train/test) WITHOUT applying initial transforms.
+    Transforms will be handled later by the final Dataset class.
+    """
     tv_dataset_name = source_args.get('dataset_name')
     split = source_args.get('split', 'digits')  # Default for EMNIST
-    
-    # Use default transforms if not specified
-    default_transform = transforms.Compose([transforms.ToTensor()])
-    train_transform = transform_config.get('train', default_transform)
-    test_transform = transform_config.get('test', default_transform)
-    
-    # Dataset mapping - could be extended for more datasets
+
+    # Dataset mapping - downloads raw data only
     dataset_mapping = {
         'CIFAR10': lambda: (
-            CIFAR10(root=data_dir, train=True, download=True, transform=train_transform),
-            CIFAR10(root=data_dir, train=False, download=True, transform=test_transform)
+            CIFAR10(root=data_dir, train=True, download=True, transform=None), # transform=None
+            CIFAR10(root=data_dir, train=False, download=True, transform=None) # transform=None
         ),
         'EMNIST': lambda: (
-            EMNIST(root=data_dir, split=split, train=True, download=True, transform=train_transform),
-            EMNIST(root=data_dir, split=split, train=False, download=True, transform=test_transform)
+            EMNIST(root=data_dir, split=split, train=True, download=True, transform=None), # transform=None
+            EMNIST(root=data_dir, split=split, train=False, download=True, transform=None) # transform=None
         )
     }
-    
-    # Get loader function and call it
+
     loader_fn = dataset_mapping.get(tv_dataset_name)
     if loader_fn:
+        # Return the tuple of (train_dataset, test_dataset)
         return loader_fn()
     else:
         raise ValueError(f"Torchvision loader not configured for: {tv_dataset_name}")

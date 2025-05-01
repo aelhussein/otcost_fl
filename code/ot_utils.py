@@ -281,26 +281,77 @@ def compute_anchors(
     if verbose: print(f"  Total computed anchor info entries: {len(all_anchor_info)}")
     return all_anchor_info # Return list of dicts
 
-def calculate_sample_loss(p_prob: Optional[torch.Tensor], y: Optional[torch.Tensor], num_classes: int, loss_eps: float = DEFAULT_EPS) -> Optional[torch.Tensor]:
-    """Calculates per-sample cross-entropy loss, handling validation."""
-    if p_prob is None or y is None: return None
-    if not isinstance(p_prob, torch.Tensor): p_prob = torch.tensor(p_prob)
-    if not isinstance(y, torch.Tensor): y = torch.tensor(y)
+def calculate_sample_loss(p_prob: Optional[torch.Tensor], y: Optional[torch.Tensor], 
+                     num_classes: int, loss_eps: float = DEFAULT_EPS) -> Optional[torch.Tensor]:
+    """
+    Calculates per-sample cross-entropy loss, with enhanced validation for multiclass.
+    
+    Args:
+        p_prob: Predicted probability distribution of shape [N, K]
+        y: Ground truth labels of shape [N]
+        num_classes: Number of classes K
+        loss_eps: Small epsilon value for numerical stability
+        
+    Returns:
+        Tensor of per-sample losses of shape [N] or None if validation fails
+    """
+    if p_prob is None or y is None: 
+        return None
+        
+    if not isinstance(p_prob, torch.Tensor): 
+        p_prob = torch.tensor(p_prob)
+    if not isinstance(y, torch.Tensor): 
+        y = torch.tensor(y)
 
     try:
-        p_prob = p_prob.float().clamp(min=loss_eps, max=1.0 - loss_eps)
-        y = y.long()
+        # Ensure tensors are on CPU and correct dtype
+        p_prob = p_prob.float().cpu()
+        y = y.long().cpu()
+        
+        # Validate shapes and fix if needed for binary case
+        if p_prob.ndim == 1 and num_classes == 2:
+            # Convert [N] format to [N, 2] for binary case
+            p_prob_1d = p_prob.view(-1)
+            p1 = p_prob_1d.clamp(min=loss_eps, max=1.0 - loss_eps)
+            p0 = 1.0 - p1
+            p_prob = torch.stack([p0, p1], dim=1)
+        elif p_prob.ndim == 2 and p_prob.shape[1] == 1 and num_classes == 2:
+            # Convert [N, 1] format to [N, 2] for binary case
+            p1 = p_prob.view(-1).clamp(min=loss_eps, max=1.0 - loss_eps)
+            p0 = 1.0 - p1
+            p_prob = torch.stack([p0, p1], dim=1)
+            
+        # Final shape validation
         if y.shape[0] != p_prob.shape[0] or p_prob.ndim != 2 or p_prob.shape[1] != num_classes:
             warnings.warn(f"Loss calculation shape mismatch/invalid: P({p_prob.shape}), Y({y.shape}), K={num_classes}")
             return None
-
+            
+        # Ensure probabilities are valid (sum to 1, in [eps, 1-eps] range)
+        row_sums = p_prob.sum(dim=1)
+        if not torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-3):
+            warnings.warn(f"Probabilities don't sum to 1 (min={row_sums.min().item():.4f}, "
+                         f"max={row_sums.max().item():.4f}). Normalizing.")
+            p_prob = p_prob / row_sums.unsqueeze(1).clamp(min=loss_eps)
+            
+        # Clamp probabilities for numerical stability
+        p_prob = p_prob.clamp(min=loss_eps, max=1.0 - loss_eps)
+        
+        # Gather predicted probability for true class
         true_class_prob = p_prob.gather(1, y.view(-1, 1)).squeeze()
-        loss = -torch.log(true_class_prob.clamp(min=loss_eps))
+        
+        # Calculate cross-entropy loss: -log(p[true_class])
+        loss = -torch.log(true_class_prob)
+        
+        # Safety check for NaN/Inf values
+        if not torch.isfinite(loss).all():
+            warnings.warn("Non-finite values in loss calculation. Replacing with large value.")
+            loss = torch.where(torch.isfinite(loss), loss, torch.tensor(100.0, dtype=torch.float32))
+            
     except Exception as e:
-        warnings.warn(f"Error during loss calculation (gather/log): {e}. Shapes: P={p_prob.shape}, Y={y.shape}")
+        warnings.warn(f"Error during loss calculation: {e}")
         return None
 
-    return torch.relu(loss) # Ensure non-negative loss
+    return torch.relu(loss)  # Ensure non-negative loss
 
 def compute_anchors(
     h: Optional[torch.Tensor],
