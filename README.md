@@ -232,6 +232,8 @@ print(results_df.head())
 
 
 ### Data Requirements
-Datasets should be placed in the data/ directory, organized into subdirectories named after the dataset key used in configs.py (e.g., data/CIFAR/, data/Heart/).
-The specific file structure required within each dataset directory depends on the corresponding loader function in data_loading.py. Check the loader implementation for details (e.g., credit_csv expects creditcard.csv, heart_site_loader expects processed.<site>.data).
+Datasets should be placed in the data/ directory, organized into subdirectories named after the dataset key used in `configs.py` (e.g., `data/CIFAR/`, `data/Heart/`).
+
+The specific file structure required within each dataset directory depends on the corresponding loader function in `data_loading.py.` Check the loader implementation for details (e.g., credit_csv expects creditcard.csv, heart_site_loader expects processed.<site>.data).
+
 Torchvision datasets (CIFAR, EMNIST) will attempt to download automatically if not found in the specified data_dir.
