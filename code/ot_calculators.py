@@ -466,7 +466,6 @@ class DecomposedOTCalculator(BaseOTCalculator):
         ot_reg = params.get('ot_eps', DEFAULT_OT_REG)
         ot_max_iter = params.get('ot_max_iter', DEFAULT_OT_MAX_ITER)
         agg_method_param = params.get('aggregate_conditional_method', 'mean')
-        min_class_samples = params.get('min_class_samples', 0) # For upsampling
         beta_within = params.get('beta_within', 0.0) # Check if probs needed for within-cost
 
 
@@ -550,37 +549,11 @@ class DecomposedOTCalculator(BaseOTCalculator):
                  if verbose: warnings.warn(f"Class {c}: Skipped conditional OT - probs needed for cost (beta_within>0) but unavailable.");
                  all_class_results[c] = class_result; continue
 
-            # --- Upsampling (Optional) ---
-            # (Simplified logic from original, ensure random state is handled if needed)
             h1_c_final, w1_c_final, y1_c_final = h1_c, w1_c, y1_c
             h2_c_final, w2_c_final, y2_c_final = h2_c, w2_c, y2_c
             p1_prob_c_final, p2_prob_c_final = p1_prob_c, p2_prob_c
             n_c_final, m_c_final = n_c, m_c
-            if min_class_samples > 0:
-               if n_c_final < min_class_samples:
-                   if n_c > 0: # Can only upsample if exists
-                       needed1 = min_class_samples - n_c
-                       resample_indices1 = np.random.choice(n_c, size=needed1, replace=True)
-                       h1_c_final = torch.cat((h1_c, h1_c[resample_indices1]), dim=0)
-                       w1_c_final = torch.cat((w1_c, w1_c[resample_indices1]), dim=0)
-                       y1_c_final = torch.cat((y1_c, y1_c[resample_indices1]), dim=0)
-                       if p1_prob_c is not None: p1_prob_c_final = torch.cat((p1_prob_c, p1_prob_c[resample_indices1]), dim=0)
-                       n_c_final = min_class_samples
-                   else: # Cannot upsample from zero
-                       if verbose: warnings.warn(f"C{c}: C1 has 0 samples, cannot upsample to {min_class_samples}.")
-                       all_class_results[c] = class_result; continue # Skip class if cannot meet min samples
-               if m_c_final < min_class_samples:
-                   if m_c > 0:
-                       needed2 = min_class_samples - m_c
-                       resample_indices2 = np.random.choice(m_c, size=needed2, replace=True)
-                       h2_c_final = torch.cat((h2_c, h2_c[resample_indices2]), dim=0)
-                       w2_c_final = torch.cat((w2_c, w2_c[resample_indices2]), dim=0)
-                       y2_c_final = torch.cat((y2_c, y2_c[resample_indices2]), dim=0)
-                       if p2_prob_c is not None: p2_prob_c_final = torch.cat((p2_prob_c, p2_prob_c[resample_indices2]), dim=0)
-                       m_c_final = min_class_samples
-                   else:
-                       if verbose: warnings.warn(f"C{c}: C2 has 0 samples, cannot upsample to {min_class_samples}.")
-                       all_class_results[c] = class_result; continue # Skip class
+
 
             # --- Calculate Within-Class Cost Matrix ---
             cost_matrix_c, max_cost_c = self._calculate_cost_within_class(
@@ -606,7 +579,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
             if sum2_c <= self.eps_num: warnings.warn(f"C{c}: C2 weights sum zero.")
 
             ot_cost_c, _ = compute_ot_cost(norm_cost_matrix_c, a=a_c, b=b_c, reg=ot_reg, sinkhorn_max_iter=ot_max_iter, eps_num=self.eps_num)
-
+            print(c, ot_cost_c, norm_cost_matrix_c.median())
             if not np.isnan(ot_cost_c):
                 class_result['ot_cost'] = ot_cost_c
                 class_result['valid'] = True

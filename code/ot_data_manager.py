@@ -484,6 +484,7 @@ class OTDataManager:
         else:
             # Use loss for weighting
             weights = loss / loss.sum()
+            weights = torch.ones(n_samples, dtype=torch.float32) / n_samples
         
         return {
             'h': h_cpu, 

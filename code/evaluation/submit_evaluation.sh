@@ -4,9 +4,9 @@
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR"  "ISIC" "IXITiny")
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR")
 #DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept")
-DEFAULT_DATASETS=("EMNIST" "CIFAR")
-DEFAULT_EXP_TYPES=("learning_rate")
-#DEFAULT_EXP_TYPES=("evaluation")
+DEFAULT_DATASETS=("EMNIST")
+#DEFAULT_EXP_TYPES=("learning_rate")
+DEFAULT_EXP_TYPES=("evaluation")
 DEFAULT_DIR='/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'
 DEFAULT_ENV_PATH='/gpfs/commons/home/aelhussein/anaconda3/bin/activate'
 DEFAULT_ENV_NAME='cuda_env_ne1'

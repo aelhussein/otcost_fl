@@ -67,7 +67,8 @@ def load_torchvision_raw(source_args: dict,
 
 def load_credit_raw(source_args: dict,
                     cost_key: Any,
-                    data_dir: str) -> Tuple[np.ndarray, np.ndarray]:
+                    data_dir: str,
+                    base_seed: int) -> Tuple[np.ndarray, np.ndarray]:
     """Loads raw Credit Card Fraud data from CSV."""
     csv_path = source_args['csv_path']
     df = pd.read_csv(csv_path)
@@ -87,7 +88,8 @@ def load_credit_raw(source_args: dict,
 def load_heart_raw(client_num: int,
                    cost_key: Any,
                    source_args: Dict,
-                   data_dir: str) -> Tuple[np.ndarray, np.ndarray]:
+                   data_dir: str,
+                   base_seed: int) -> Tuple[np.ndarray, np.ndarray]:
     """
     Loads and internally scales Heart Disease data for a specific client.
     """    
