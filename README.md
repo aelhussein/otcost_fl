@@ -102,11 +102,11 @@ This is the central file for defining experiment parameters:
 
 **Before running experiments, review and potentially adjust the settings in `configs.py` for your target datasets and experimental setup.**
 
-## Running Experiments
+# Running Experiments
 
 There are two main types of pipelines: Federated Learning experiments and Optimal Transport analysis.
 
-### 1. Federated Learning Experiments
+## 1. Federated Learning Experiments
 
 This pipeline runs the actual FL training and evaluation.
 
@@ -126,39 +126,44 @@ Arguments:
     - evaluation: Runs the final evaluation using the best hyperparameters found during tuning (or defaults). This saves models and detailed metrics needed for OT analysis.
 - `-nc`, `--num_clients`: Optional. An integer to override the default number of clients specified for the dataset in configs.py. If omitted, the config default is used.
 
-# Run final evaluation for CIFAR using the default number of clients
+Run final evaluation for CIFAR using the default number of clients
 ```bash 
 python code/evaluation/run.py -ds CIFAR -exp evaluation
 ```
 
-# Run learning rate tuning for Synthetic_Feature using 10 clients
+Run learning rate tuning for Synthetic_Feature using 10 clients
 ```bash
 python code/evaluation/run.py -ds Synthetic_Feature -exp learning_rate -nc 10
 ```
 
-## Batch Submission (slurm)
+### Batch Submission (slurm)
 The `submit_evaluation.sh` script provides an example for submitting FL jobs to a Slurm cluster.
 - Customize: Modify the script's default values (datasets, experiment types, directories, Conda environment) as needed.
 - Run: Execute the script (`bash submit_evaluation.sh` or `bash submit_evaluation.sh --datasets=CIFAR,EMNIST --exp-types=evaluation --num-clients=5`) to submit jobs for the specified configurations.
 - Logs: Output and error logs will be saved in the logs/ directory.
 
-### Outputs:
+#### Outputs:
     - Results: Detailed metrics and run metadata are saved as .pkl files in the `results/<experiment_type>/` directory.
     - Models: During evaluation runs for fedavg, the model state dictionaries (round0, best, final) are saved in the `saved_models/<dataset>/evaluation/` directory. These are crucial for the OT analysis pipeline.
 
-#  Optimal Transport (OT) Analysis
+## 2. Optimal Transport (OT) Analysis
 This pipeline calculates OT-based similarity metrics between client pairs using the activations generated from saved FL models (typically the initial round0 model).
+
 **Prerequisites**: You must first run the FL evaluation experiment for the desired dataset, cost, and seed to generate the necessary round0 saved model.
+
 **Core Logic**: ot_pipeline_runner.py (contains PipelineRunner class) and ot_calculators.py.
+
 **How to Run**:
 You need to create a separate Python script (or use a Jupyter notebook) to instantiate PipelineRunner and call its run_pipeline method.
-**Steps**:
-1. Import necessary classes:
+
+### **Steps**:
+**1. Import necessary classes**:
 ```python
 from ot_pipeline_runner import PipelineRunner
 from ot_calculators import OTConfig
 ```
-2. Define OT Configurations: Create a list of OTConfig objects, specifying which OT methods and parameter sets you want to run.
+
+**2. Define OT Configurations**: Create a list of OTConfig objects, specifying which OT methods and parameter sets you want to run.
 ```python
 # Example OT configurations
 ot_configs = [
@@ -182,14 +187,15 @@ ot_configs = [
     # Add more configurations as needed...
 ]
 ```
-3. Instantiate PipelineRunner: Specify the total number of clients involved in the original FL run whose results you are analyzing.
+
+**3. Instantiate PipelineRunner**: Specify the total number of clients involved in the original FL run whose results you are analyzing.
 ```python
 # Example: Analyzing results from a 5-client run
 num_fl_clients = 5
 runner = PipelineRunner(num_clients=num_fl_clients)
 ```
 
-4. Call run_pipeline: Provide the necessary arguments.
+**4. Call run_pipeline**: Provide the necessary arguments.
 ```python
 dataset = 'CIFAR' # Or your target dataset
 num_classes = 10 # For CIFAR
@@ -223,6 +229,7 @@ print(results_df.head())
 - Activations: If not cached or force_regenerate=True, activation files (h, p_prob, y tensors for client pairs) will be saved in the activations/ directory.
 - Results DataFrame: The run_pipeline method returns a Pandas DataFrame containing the calculated OT costs/scores for each client pair, cost level, and OT configuration, along with the corresponding FL performance delta.
 - Plots (Optional): The ot_results_analysis.py script provides functions to plot the relationship between OT metrics and FL performance degradation.
+
 
 ### Data Requirements
 Datasets should be placed in the data/ directory, organized into subdirectories named after the dataset key used in configs.py (e.g., data/CIFAR/, data/Heart/).
