@@ -224,7 +224,6 @@ print(results_df.head())
 # plot_ot_metrics_vs_perf_delta(results_df, main_title=f"OT vs Perf Delta - {dataset}")
 ```
 
-
 **Outputs**:
 - Activations: If not cached or force_regenerate=True, activation files (h, p_prob, y tensors for client pairs) will be saved in the activations/ directory.
 - Results DataFrame: The run_pipeline method returns a Pandas DataFrame containing the calculated OT costs/scores for each client pair, cost level, and OT configuration, along with the corresponding FL performance delta.
