@@ -200,9 +200,10 @@ class OTDataManager:
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Extracts activations for a client using the loaded model.
+        Intelligently identifies the final linear layer regardless of model architecture.
         """
         client_id_str = str(client_id)
-        pass#print(f"    Extracting activations for client {client_id_str} using {loader_type} loader")
+        #print(f"    Extracting activations for client {client_id_str} using {loader_type} loader")
         
         # Set model to eval mode
         model.to(self.device)
@@ -225,49 +226,36 @@ class OTDataManager:
                 pass
                 
         if loader_key is None:
-            pass#print(f"Client {client_id_str} not found in dataloaders")
+            print(f"Client {client_id_str} not found in dataloaders")
             return None, None, None
             
         # Get loader by type
         loader_idx = {'train': 0, 'val': 1, 'test': 2}.get(loader_type.lower())
         if loader_idx is None or not isinstance(dataloaders[loader_key], (list, tuple)) or len(dataloaders[loader_key]) <= loader_idx:
-            pass#print(f"Invalid loader structure for client {client_id_str}")
+            print(f"Invalid loader structure for client {client_id_str}")
             return None, None, None
             
         data_loader = dataloaders[loader_key][loader_idx]
         if data_loader is None or len(data_loader.dataset) == 0:
-            pass#print(f"Empty {loader_type} loader for client {client_id_str}")
+            print(f"Empty {loader_type} loader for client {client_id_str}")
             return None, None, None
-            
-        # Find final linear layer for hooks
-        final_linear = None
-        for name in ['output_layer', 'fc2', 'linear', 'classifier', 'output']:
-            module = getattr(model, name, None)
-            if isinstance(module, torch.nn.Linear):
-                final_linear = module
-                break
-            elif isinstance(module, torch.nn.Sequential) and len(module) > 0 and isinstance(module[-1], torch.nn.Linear):
-                final_linear = module[-1]
-                break
+        
+        # Find final linear layer by structure analysis
+        final_linear = self._find_final_linear_layer(model, num_classes)
                 
         if final_linear is None:
-            # Fallback: search all modules
-            for module in reversed(list(model.modules())):
-                if isinstance(module, torch.nn.Linear):
-                    final_linear = module
-                    pass#print(f"Using last found Linear layer for hooks")
-                    break
-                    
-        if final_linear is None:
-            pass#print(f"Could not find linear layer for hooking in model")
+            print(f"Could not find suitable final linear layer for model")
             return None, None, None
-            
+        
         # Set up storage for activations
         current_batch_pre_acts = []
         current_batch_post_logits = []
         all_pre_activations = []
         all_post_activations = []
         all_labels = []
+        
+        # Rest of the method remains the same...
+        # Define hooks, process data, etc.
         
         # Define hooks
         def pre_hook(module, input_data):
@@ -337,7 +325,7 @@ class OTDataManager:
             
         # Check if any data was collected
         if not all_pre_activations:
-            pass#print(f"No activations collected for client {client_id_str}")
+            print(f"No activations collected for client {client_id_str}")
             return None, None, None
             
         # Concatenate results
@@ -345,11 +333,67 @@ class OTDataManager:
             final_h = torch.cat(all_pre_activations, dim=0)
             final_p = torch.cat(all_post_activations, dim=0)
             final_y = torch.cat(all_labels, dim=0)
-            pass#print(f"    Extracted activations: h={final_h.shape}, p={final_p.shape}, y={final_y.shape}")
+            #print(f"    Extracted activations: h={final_h.shape}, p={final_p.shape}, y={final_y.shape}")
             return final_h, final_p, final_y
         except Exception as e:
-            pass#print(f"Error concatenating activation results: {e}")
+            print(f"Error concatenating activation results: {e}")
             return None, None, None
+
+    def _find_final_linear_layer(self, model: torch.nn.Module, num_classes: int) -> Optional[torch.nn.Linear]:
+        """
+        Intelligently locate the final linear layer in a model using multiple strategies.
+        
+        Args:
+            model: The PyTorch model to analyze
+            num_classes: Number of classes in dataset (used for output dimension verification)
+            
+        Returns:
+            The final linear layer or None if not found
+        """
+        # Strategy 1: Check common attribute names for the final layer
+        common_names = ['output_layer', 'fc', 'linear', 'classifier', 'output', 'fc3', 'fc2', 'fc1']
+        for name in common_names:
+            module = getattr(model, name, None)
+            if isinstance(module, torch.nn.Linear):
+                # Verify if this could be the output layer based on output dimension
+                if module.out_features == num_classes or (num_classes == 2 and module.out_features == 1):
+                    #print(f"Found final linear layer by name: {name}")
+                    return module
+            elif isinstance(module, torch.nn.Sequential) and len(module) > 0:
+                # Check if the last layer in the sequential is a Linear
+                last_layer = module[-1]
+                if isinstance(last_layer, torch.nn.Linear):
+                    if last_layer.out_features == num_classes or (num_classes == 2 and last_layer.out_features == 1):
+                        #print(f"Found final linear layer in sequential module: {name}[-1]")
+                        return last_layer
+        
+        # Strategy 2: Find all linear layers and select the last one that matches output dimension
+        linear_layers = []
+        
+        def collect_candidate_layers(module):
+            if isinstance(module, torch.nn.Linear):
+                linear_layers.append(module)
+            for _, child in module.named_children():
+                collect_candidate_layers(child)
+        
+        collect_candidate_layers(model)
+        
+        # If we found linear layers, select candidates with appropriate output size
+        if linear_layers:
+            # First try to find layers with output matching num_classes
+            matching_layers = [layer for layer in linear_layers 
+                            if layer.out_features == num_classes or 
+                                (num_classes == 2 and layer.out_features == 1)]
+            
+            if matching_layers:
+                #print(f"Found final linear layer with output size matching num_classes={num_classes}")
+                return matching_layers[-1]  # Return the last matching layer
+                
+            # If all else fails, just use the last linear layer
+            #print(f"No exact match for num_classes={num_classes}, using last linear layer with out_features={linear_layers[-1].out_features}")
+            return linear_layers[-1]
+        
+        return None
 
     def _generate_activations(
         self, dataset: str, cost: Any, seed: int,
