@@ -147,9 +147,15 @@ class DataPreprocessor:
             elif isinstance(base_data, tuple) and all(isinstance(d, torch.utils.data.Dataset) for d in base_data):
                 # Use the first dataset (typically train) for all splits
                 angle = client_dataset_args.get('rotation_angle', 0.0)
-                train_dataset = self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :train_indices}, 'train', rotation_angle=angle)
-                val_dataset   =self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :val_indices}, 'val', rotation_angle=angle)
-                test_dataset  = self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :test_indices}, 'test', rotation_angle=angle)
+                zoom = client_dataset_args.get('zoom', 0.0)
+                freq = client_dataset_args.get('frequency', 0.0)
+                trans_args = {'angle':angle, 'zoom':zoom, 'frequency':freq}
+                train_dataset = self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :train_indices},
+                                                            'train', **trans_args)
+                val_dataset   =self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :val_indices},
+                                                           'val', **trans_args)
+                test_dataset  = self._get_dataset_instance({'base_tv_dataset': base_data[0],'indices' :test_indices}, 
+                                                           'test', **trans_args)
             
             elif isinstance(base_data, tuple) and len(base_data) == 2 and isinstance(base_data[0], np.ndarray):
                 base_X, base_y = base_data
@@ -422,10 +428,19 @@ class DataManager:
                                     sigma=source_args.get("feature_shift_sigma", 1.5),
                                     rng=np.random.default_rng(self.base_seed),
                                 )
-                            elif source_args.get('feature_shift_kind') in ['image_rotation']:
-                                max_angle = source_args.get('max_rotation_angle', 90.0)
+                            elif source_args.get('feature_shift_kind') in ['image']:
+                                max_angle = source_args.get('max_rotation_angle', 0.0)
                                 angle = max_angle * gamma_i
                                 source_args[f'client_{c_idx+1}-rotation_angle'] = angle
+
+                                max_zoom = source_args.get('max_zoom', 0.0)
+                                zoom = max_zoom * gamma_i
+                                source_args[f'client_{c_idx+1}-zoom'] = zoom
+
+                                max_freq = source_args.get('max_frequency', 0.0)
+                                freq = max_freq * gamma_i
+                                source_args[f'client_{c_idx+1}-frequency'] = freq
+
                         # Apply concept shift if specifie
                         elif 'concept_label_option' in source_args:
                             # Concept shift remains unchanged

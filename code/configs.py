@@ -61,12 +61,12 @@ COMMON_TABULAR_PARAMS = dict(
 # --- Common Configuration for Image Datasets ---
 COMMON_IMAGE_PARAMS = dict(
     default_lr=3e-3,
-    learning_rates_try=[5e-3, 1e-3, 5e-4],
+    learning_rates_try=[1e-2, 5e-3, 1e-3, 5e-4],
     default_reg_param=0.1,
     reg_params_try=[1, 0.1, 1e-2],
     batch_size=96,
     epochs_per_round=3,
-    rounds=20,
+    rounds=40,
     rounds_tune_inner=20,
     runs=10,
     runs_tune=3,
@@ -195,8 +195,10 @@ DEFAULT_PARAMS = {
         'dataset_class': 'CIFARDataset',        # Use the same dataset class
         'source_args': {
             'dataset_name': 'CIFAR10',
-            'feature_shift_kind': 'image_rotation',   # Identify the shift type
-            'max_rotation_angle': 90.0,        # Max angle at delta=1
+            'feature_shift_kind': 'image',   # Identify the shift type
+            'max_rotation_angle': 75.0,        # Max angle at delta=1
+            'max_zoom': 0.3,
+            'max_frequency': 1,
         },
         'samples_per_client': 2000,
         'batch_size': 128,
@@ -212,8 +214,10 @@ DEFAULT_PARAMS = {
         'source_args': {
             'dataset_name': 'EMNIST',
             'split': 'digits',
-            'feature_shift_kind': 'image_rotation',   # Identify the shift type
-            'max_rotation_angle': 90.0,        # Max angle at delta=1
+            'feature_shift_kind': 'image',   # Identify the shift type
+            'max_rotation_angle': 60.0,        # Max angle at delta=1
+            'max_zoom': 0.5,
+            'max_frequency': 2,
         },
         'samples_per_client': 1000,
         'fixed_classes': 10,

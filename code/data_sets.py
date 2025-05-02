@@ -98,15 +98,13 @@ class _BaseImgDS(TorchDataset):
 
     def __init__(self,
                  split_type        : str,
-                 rotation_angle    : float = 0.0,
                  X_np              : np.ndarray = None,
                  y_np              : np.ndarray = None,
                  base_tv_dataset   = None,
                  indices           = None,
-                 **_):
+                 **trans_args):
         self.is_train  = split_type == "train"
-        self.rot_angle = rotation_angle
-
+        self.trans_args = trans_args
         if X_np is not None:                      # -------- NumPy path
             self.mode = "numpy"
             self.images = X_np
@@ -123,23 +121,38 @@ class _BaseImgDS(TorchDataset):
     # -----------------------------------------------------------
     def _build_transform(self):
         mean, std = self.MEAN_STD
+        mean, std = 0, 1
         t = []
 
         # add ToPIL *only* for NumPy / tensor inputs
         if self.mode == "numpy":
             t.append(transforms.ToPILImage())
 
+        z = self.trans_args.get('zoom', 0.0)      # e.g. +0.2 → 1.2×, −0.2 → 0.8×
+        if abs(z) > 1e-3:
+            scale = 1.0 + z
+            t.append(transforms.Lambda(lambda img, s=scale:
+                transforms.functional.affine(img, angle=0, translate=(0,0),
+                                            scale=s, shear=(0,0), fill=0)))
+
         if self.RESIZE_TO is not None:
             t.append(transforms.Resize(self.RESIZE_TO))
 
-        if abs(self.rot_angle) > 1e-6:
+        r = self.trans_args.get('angle', 0.0)
+        if abs(r) > 1e-6:
             t.append(transforms.RandomAffine(
-                     degrees=(self.rot_angle, self.rot_angle)))
+                     degrees=(r, r)))
+            
+
+        # --- frequency filter -------------------------------------------------
+        f = self.trans_args.get('frequency', 0.0)
+        if abs(f) > 1e-3:
+            t.append(transforms.Lambda(lambda img, d=f: self.freq_filter(img, d)))
 
         if self.is_train and self.TRAIN_AUG:
             t.extend(self.TRAIN_AUG)
 
-        t.extend([transforms.ToTensor(), transforms.Normalize(mean, std)])
+        t.extend([transforms.ToTensor()],) #transforms.Normalize(mean=mean, std=std))
         return transforms.Compose(t)
 
     # -----------------------------------------------------------
@@ -162,6 +175,19 @@ class EMNISTDataset(_BaseImgDS):
     MEAN_STD  = ((0.1307,), (0.3081,))
     TRAIN_AUG = [transforms.RandomRotation((-0, 0))]
     RESIZE_TO = (28, 28)
+    def freq_filter(self, img, delta):
+    # delta>0 high-pass, delta<0 low-pass
+        if abs(delta) < 1e-3:
+            return img
+        arr = np.array(img, np.float32)
+        fft = np.fft.fftshift(np.fft.fft2(arr, axes=(0,1)))
+        h, w = arr.shape[:2]; r = int(min(h,w)*0.1*abs(delta))
+        y,x = np.ogrid[-h//2:h//2, -w//2:w//2]
+        mask = x**2+y**2 <= r*r
+        if delta>0:  fft[mask] *= 0.3          # high-pass
+        else:        fft[~mask] *= 0.3         # low-pass
+        filtered = np.abs(np.fft.ifft2(np.fft.ifftshift(fft)))
+        return Image.fromarray(filtered.clip(0,255).astype(np.uint8))
 
 
 class CIFARDataset(_BaseImgDS):
@@ -169,6 +195,48 @@ class CIFARDataset(_BaseImgDS):
                  (0.2470, 0.2435, 0.2616))
     TRAIN_AUG = [transforms.RandomCrop(32, padding=4, padding_mode="reflect")]
     RESIZE_TO = None
+
+    # -------------------------------------------------------------
+    def freq_filter(self, img: Image.Image, delta: float) -> Image.Image:
+        """
+        Deterministic per-client frequency shift.
+          • delta > 0  ⇒ high-pass  (sharpen edges)
+          • delta < 0  ⇒ low-pass   (blur)
+          • |delta|∈[0,1]
+        Only the luminance (Y) channel is filtered; Cb/Cr stay intact,
+        avoiding hue artefacts.
+        """
+        if abs(delta) < 1e-3:          # no-op for tiny costs
+            return img
+
+        # 1. RGB → YCbCr  and split
+        try:
+            y, cb, cr = img.convert("YCbCr").split()
+        except Exception:              # fallback for unexpected modes
+            return img
+
+        y_arr = np.asarray(y, np.float32)
+        H, W  = y_arr.shape
+        # 2. FFT
+        F = np.fft.fftshift(np.fft.fft2(y_arr))
+        # radius proportional to |delta|
+        r  = max(1, int(min(H, W) * 0.05 * abs(delta)))
+        yy, xx = np.ogrid[-H//2:H//2, -W//2:W//2]
+        mask   = xx*xx + yy*yy <= r*r
+
+        # 3. Attenuate band (KEEP controls strength)
+        KEEP = 0.5
+        if delta > 0:      # high-pass → kill low frequencies
+            F[mask] *= KEEP
+        else:              # low-pass  → kill high frequencies
+            F[~mask] *= KEEP
+
+        # 4. Back to spatial domain (use REAL part to keep phase!)
+        y_filtered = np.real(np.fft.ifft2(np.fft.ifftshift(F)))
+        y_img      = Image.fromarray(np.clip(y_filtered, 0, 255).astype(np.uint8))
+
+        # 5. Merge and return RGB
+        return Image.merge("YCbCr", (y_img, cb, cr)).convert("RGB")
 
 
 
