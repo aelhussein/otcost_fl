@@ -324,69 +324,69 @@ class CIFAR(nn.Module):
 #         return x
     
 
-class CIFAR(nn.Module):
-    def __init__(self, dropout_rate=0.25):
-        super(CIFAR, self).__init__()
+# class CIFAR(nn.Module):
+#     def __init__(self, dropout_rate=0.25):
+#         super(CIFAR, self).__init__()
 
-        # Convolutional Block 1
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1) # Input: 3x32x32
-        self.relu1 = nn.ReLU()
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2) # Output: 32x16x16
-        self.dropout_conv1 = nn.Dropout2d(p=dropout_rate * 0.5) # Optional: Spatial Dropout
+#         # Convolutional Block 1
+#         self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1) # Input: 3x32x32
+#         self.relu1 = nn.ReLU()
+#         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2) # Output: 32x16x16
+#         self.dropout_conv1 = nn.Dropout2d(p=dropout_rate * 0.5) # Optional: Spatial Dropout
 
-        # Convolutional Block 2
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1) # Input: 32x16x16
-        self.relu2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2) # Output: 64x8x8
-        self.dropout_conv2 = nn.Dropout2d(p=dropout_rate * 0.5) # Optional: Spatial Dropout
+#         # Convolutional Block 2
+#         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1) # Input: 32x16x16
+#         self.relu2 = nn.ReLU()
+#         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2) # Output: 64x8x8
+#         self.dropout_conv2 = nn.Dropout2d(p=dropout_rate * 0.5) # Optional: Spatial Dropout
 
-        # Convolutional Block 3
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1) # Input: 64x8x8
-        self.relu3 = nn.ReLU()
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2) # Output: 128x4x4
+#         # Convolutional Block 3
+#         self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1) # Input: 64x8x8
+#         self.relu3 = nn.ReLU()
+#         self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2) # Output: 128x4x4
 
-        # Fixed flattened size for 32x32 input
-        self.flattened_size = 128 * 4 * 4
+#         # Fixed flattened size for 32x32 input
+#         self.flattened_size = 128 * 4 * 4
 
-        # Fully Connected Layers
-        self.fc1 = nn.Linear(self.flattened_size, 256)
-        # LayerNorm is often suitable for FC layers in FL
-        self.ln1 = nn.LayerNorm(256)
-        self.relu4 = nn.ReLU()
-        self.dropout_fc1 = nn.Dropout(p=dropout_rate)
+#         # Fully Connected Layers
+#         self.fc1 = nn.Linear(self.flattened_size, 256)
+#         # LayerNorm is often suitable for FC layers in FL
+#         self.ln1 = nn.LayerNorm(256)
+#         self.relu4 = nn.ReLU()
+#         self.dropout_fc1 = nn.Dropout(p=dropout_rate)
 
-        self.fc2 = nn.Linear(256, 10) # Output layer for 10 CIFAR-10 classes
+#         self.fc2 = nn.Linear(256, 10) # Output layer for 10 CIFAR-10 classes
 
-    def forward(self, x):
-        # Conv Block 1
-        out = self.conv1(x)
-        out = self.relu1(out)
-        out = self.pool1(out)
-        out = self.dropout_conv1(out) # Apply dropout after pooling
+#     def forward(self, x):
+#         # Conv Block 1
+#         out = self.conv1(x)
+#         out = self.relu1(out)
+#         out = self.pool1(out)
+#         out = self.dropout_conv1(out) # Apply dropout after pooling
 
-        # Conv Block 2
-        out = self.conv2(out)
-        out = self.relu2(out)
-        out = self.pool2(out)
-        out = self.dropout_conv2(out) # Apply dropout after pooling
+#         # Conv Block 2
+#         out = self.conv2(out)
+#         out = self.relu2(out)
+#         out = self.pool2(out)
+#         out = self.dropout_conv2(out) # Apply dropout after pooling
 
-        # Conv Block 3
-        out = self.conv3(out)
-        out = self.relu3(out)
-        out = self.pool3(out)
+#         # Conv Block 3
+#         out = self.conv3(out)
+#         out = self.relu3(out)
+#         out = self.pool3(out)
 
-        # Flatten
-        out = out.view(out.size(0), -1) # Flatten the feature map
+#         # Flatten
+#         out = out.view(out.size(0), -1) # Flatten the feature map
 
-        # FC Block 1
-        out = self.fc1(out)
-        out = self.ln1(out) # Use LayerNorm here
-        out = self.relu4(out)
-        out = self.dropout_fc1(out)
+#         # FC Block 1
+#         out = self.fc1(out)
+#         out = self.ln1(out) # Use LayerNorm here
+#         out = self.relu4(out)
+#         out = self.dropout_fc1(out)
 
-        # Output Layer
-        out = self.fc2(out)
-        return out
+#         # Output Layer
+#         out = self.fc2(out)
+#         return out
     
 class IXITiny(nn.Module):
     def __init__(self):

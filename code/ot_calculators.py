@@ -579,7 +579,6 @@ class DecomposedOTCalculator(BaseOTCalculator):
             if sum2_c <= self.eps_num: warnings.warn(f"C{c}: C2 weights sum zero.")
 
             ot_cost_c, _ = compute_ot_cost(norm_cost_matrix_c, a=a_c, b=b_c, reg=ot_reg, sinkhorn_max_iter=ot_max_iter, eps_num=self.eps_num)
-            print(c, ot_cost_c, norm_cost_matrix_c.median())
             if not np.isnan(ot_cost_c):
                 class_result['ot_cost'] = ot_cost_c
                 class_result['valid'] = True
@@ -925,11 +924,12 @@ class FixedAnchorLOTCalculator(BaseOTCalculator):
 
 class DirectOTCalculator(BaseOTCalculator):
     """
-    Calculates direct OT cost between neural network activations.
+    Calculates direct OT cost between neural network activations with additional
+    label distribution similarity using Hellinger distance.
     
-    This method computes optimal transport directly between the activation spaces
-    of two clients, without decomposing by class or using anchors. It works with the 
-    raw feature activations extracted from the model's penultimate layer.
+    This method computes optimal transport using both the feature representations and
+    the distributional properties of those representations, combining both to create
+    a more comprehensive similarity metric.
     """
     
     def _reset_results(self) -> None:
@@ -938,23 +938,39 @@ class DirectOTCalculator(BaseOTCalculator):
             'direct_ot_cost': np.nan,
             'transport_plan': None,
             'feature_distance_method': None,
-            'weighting_used': None
+            'label_hellinger_used': False,
+            'weighting_used': None,
+            'label_hellinger_weight': np.nan,
+            'feature_weight': np.nan,
+            'feature_contribution': np.nan,
+            'label_contribution': np.nan,
+            'label_costs': []
         }
-        self.cost_matrices = {'direct_ot': None}
+        self.cost_matrices = {
+            'direct_ot': None,
+            'feature_cost': None,
+            'label_cost': None,
+            'combined_cost': None
+        }
     
     def calculate_similarity(self, data1: Dict[str, Optional[torch.Tensor]], 
                            data2: Dict[str, Optional[torch.Tensor]], 
                            params: Dict[str, Any]) -> None:
         """
-        Calculate direct OT similarity between client activation spaces.
-        
-        This method computes OT directly on the neural network activations ('h'),
-        which are the pre-logit feature representations from the model.
+        Calculate direct OT similarity with label Hellinger distance.
         
         Args:
-            data1: Processed data for client 1, including activations
-            data2: Processed data for client 2, including activations
-            params: Configuration parameters
+            data1: Processed data for client 1, including activations and labels
+            data2: Processed data for client 2, including activations and labels
+            params: Configuration parameters including:
+                   - normalize_activations: Whether to L2 normalize features
+                   - distance_method: Method for feature distance calculation
+                   - use_label_hellinger: Whether to use label Hellinger distance
+                   - label_weight: Weight for label cost (default 1.0)
+                   - feature_weight: Weight for feature cost (default 2.0)
+                   - use_loss_weighting: Whether to use loss-based weighting for margins
+                   - compress_vectors: Whether to compress high-dimensional vectors
+                   - verbose: Print detailed information
         """
         self._reset_results()
         
@@ -964,24 +980,36 @@ class DirectOTCalculator(BaseOTCalculator):
         normalize_cost = params.get('normalize_cost', True)
         distance_method = params.get('distance_method', 'euclidean')
         use_loss_weighting = params.get('use_loss_weighting', False)
-        reg = DEFAULT_OT_REG
-        max_iter =  DEFAULT_OT_MAX_ITER
+        use_label_hellinger = params.get('use_label_hellinger', True)
+        feature_weight = params.get('feature_weight', 2.0)
+        label_weight = params.get('label_weight', 1.0)
+        compress_vectors = params.get('compress_vectors', True)
+        compression_threshold = params.get('compression_threshold', 100)
+        compression_ratio = params.get('compression_ratio', 0.8)  # Used for PCA variance ratio
+        reg = params.get('reg', DEFAULT_OT_REG)
+        max_iter = params.get('max_iter', DEFAULT_OT_MAX_ITER)
         
-        # Record feature distance method used
+        # Store configuration in results
         self.results['feature_distance_method'] = distance_method
+        self.results['label_hellinger_used'] = use_label_hellinger
+        self.results['feature_weight'] = feature_weight
+        self.results['label_hellinger_weight'] = label_weight
         
-        # Process inputs - require activations 'h' and optionally weights
+        # Process inputs - require activations 'h', labels 'y', and optionally weights
         required_keys = ['h']
+        if use_label_hellinger:
+            required_keys.append('y')
         if use_loss_weighting:
             required_keys.append('weights')
             
-        proc_data1 = self._preprocess_input(data1.get('h'), None, None, 
+        proc_data1 = self._preprocess_input(data1.get('h'), data1.get('p_prob'), data1.get('y'), 
                                           data1.get('weights'), required_keys)
-        proc_data2 = self._preprocess_input(data2.get('h'), None, None, 
+        proc_data2 = self._preprocess_input(data2.get('h'), data2.get('p_prob'), data2.get('y'), 
                                           data2.get('weights'), required_keys)
         
         if proc_data1 is None or proc_data2 is None:
-            warnings.warn("Direct OT calculation requires neural network activations ('h'). "
+            warnings.warn("Enhanced DirectOT calculation requires neural network activations ('h')" +
+                         " and labels ('y' when using Hellinger). " + 
                          "Preprocessing failed or data missing. Skipping.")
             weight_type = "Loss" if use_loss_weighting else "Uniform"
             self.results['weighting_used'] = weight_type
@@ -995,12 +1023,13 @@ class DirectOTCalculator(BaseOTCalculator):
         N, M = h1.shape[0], h2.shape[0]
         
         if N == 0 or M == 0:
-            warnings.warn("Direct OT: One or both clients have zero samples. OT cost is 0.")
+            warnings.warn("Enhanced DirectOT: One or both clients have zero samples. OT cost is 0.")
             self.results['direct_ot_cost'] = 0.0
             weight_type = "Loss" if use_loss_weighting else "Uniform"
             self.results['weighting_used'] = weight_type
             return
-            
+        
+        # --- Feature Cost Matrix Calculation ---
         # Normalize activations if requested
         if normalize_activations:
             h1_norm = F.normalize(h1.float(), p=2, dim=1, eps=self.eps_num)
@@ -1009,34 +1038,158 @@ class DirectOTCalculator(BaseOTCalculator):
             h1_norm = h1.float()
             h2_norm = h2.float()
             
-        # Compute cost matrix based on distance method
+        # Compute feature cost matrix based on distance method
         if distance_method == 'euclidean':
-            cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
-            max_cost = 2.0 if normalize_activations else float('inf')  # For normalized vectors, max distance is 2
+            feature_cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
+            max_feature_cost = 2.0 if normalize_activations else float('inf')
         elif distance_method == 'cosine':
             # Compute cosine similarity and convert to distance
             cos_sim = torch.mm(h1_norm, h2_norm.t())
-            cost_matrix = 1.0 - cos_sim
-            max_cost = 2.0  # Max cosine distance is 2
+            feature_cost_matrix = 1.0 - cos_sim
+            max_feature_cost = 2.0
         elif distance_method == 'squared_euclidean':
-            cost_matrix = pairwise_euclidean_sq(h1_norm, h2_norm)
-            max_cost = 4.0 if normalize_activations else float('inf')  # For normalized vectors, max squared distance is 4
+            feature_cost_matrix = pairwise_euclidean_sq(h1_norm, h2_norm)
+            max_feature_cost = 4.0 if normalize_activations else float('inf')
         else:
             warnings.warn(f"Unknown distance method: {distance_method}. Using euclidean.")
-            cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
-            max_cost = 2.0 if normalize_activations else float('inf')
+            feature_cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
+            max_feature_cost = 2.0 if normalize_activations else float('inf')
         
-        if cost_matrix is None:
-            warnings.warn(f"Failed to compute cost matrix with method: {distance_method}")
+        if feature_cost_matrix is None:
+            warnings.warn(f"Failed to compute feature cost matrix with method: {distance_method}")
             return
             
-        # Normalize cost matrix if requested
-        if normalize_cost and np.isfinite(max_cost):
-            cost_matrix = cost_matrix / max_cost
+        # Normalize feature cost matrix if requested
+        if normalize_cost and np.isfinite(max_feature_cost):
+            feature_cost_matrix = feature_cost_matrix / max_feature_cost
             
+        # Store the feature cost matrix
+        self.cost_matrices['feature_cost'] = feature_cost_matrix.cpu().numpy()
+        
+        # --- Label Cost Matrix Calculation (Hellinger distance) ---
+        # Initialize label cost matrix with same shape as feature cost matrix
+        label_cost_matrix = torch.zeros_like(feature_cost_matrix)
+        
+        if use_label_hellinger and 'y' in proc_data1 and 'y' in proc_data2:
+            try:
+                y1 = proc_data1['y']  # Labels for client 1
+                y2 = proc_data2['y']  # Labels for client 2
+                
+                # Convert to numpy for easier handling
+                h1_np = h1.cpu().numpy()
+                h2_np = h2.cpu().numpy()
+                y1_np = y1.cpu().numpy()
+                y2_np = y2.cpu().numpy()
+                
+                # Check if compression is needed for high-dimensional vectors
+                vector_dim = h1_np.shape[1]
+                if compress_vectors and vector_dim > compression_threshold:
+                    if verbose:
+                        print(f"Compressing vectors from dimension {vector_dim} for Hellinger calculation")
+                    h1_comp, h2_comp = self._compress_vectors(h1_np, h2_np, compression_ratio)
+                else:
+                    h1_comp, h2_comp = h1_np, h2_np
+                
+                # Get unique labels from both clients
+                unique_labels1 = np.unique(y1_np)
+                unique_labels2 = np.unique(y2_np)
+                
+                # Calculate Hellinger distances for each label pair
+                label_pair_distances = {}
+                
+                for label1 in unique_labels1:
+                    for label2 in unique_labels2:
+                        # Get indices for each label
+                        indices1 = np.where(y1_np == label1)[0]
+                        indices2 = np.where(y2_np == label2)[0]
+                        
+                        if len(indices1) >= 2 and len(indices2) >= 2:  # Need at least 2 samples to estimate distribution
+                            # Get features for each label
+                            h1_label = h1_comp[indices1]
+                            h2_label = h2_comp[indices2]
+                            
+                            # Calculate distribution parameters
+                            mu_1, sigma_1 = self._get_normal_params(h1_label)
+                            mu_2, sigma_2 = self._get_normal_params(h2_label)
+                            
+                            # Calculate Hellinger distance
+                            hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
+                            
+                            if hellinger_dist is not None:
+                                label_pair_distances[(label1, label2)] = hellinger_dist
+                                # Store for reporting
+                                self.results['label_costs'].append(((label1, label2), hellinger_dist))
+                            else:
+                                # Fallback to a neutral midpoint if calculation fails
+                                label_pair_distances[(label1, label2)] = 0.5
+                                self.results['label_costs'].append(((label1, label2), 0.5))
+                                if verbose:
+                                    print(f"Hellinger distance calculation failed for labels {label1},{label2}. Using 0.5.")
+                        else:
+                            # Not enough samples for distribution, use midpoint
+                            label_pair_distances[(label1, label2)] = 0.5
+                            self.results['label_costs'].append(((label1, label2), 0.5))
+                            if verbose:
+                                print(f"Not enough samples for labels {label1},{label2}. Using 0.5.")
+                
+                # Fill the label cost matrix based on the calculated distances
+                for i in range(N):
+                    label_i = y1_np[i]
+                    for j in range(M):
+                        label_j = y2_np[j]
+                        pair_key = (label_i, label_j)
+                        if pair_key in label_pair_distances:
+                            label_cost_matrix[i, j] = label_pair_distances[pair_key]
+                        else:
+                            # Default if pair wasn't calculated (should be rare)
+                            label_cost_matrix[i, j] = 0.5
+                
+                # Store the label cost matrix
+                self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
+                
+            except Exception as e:
+                warnings.warn(f"Label Hellinger distance calculation failed: {e}")
+                # Set all label costs to a neutral midpoint value
+                label_cost_matrix.fill_(0.5)
+                self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
+                use_label_hellinger = False  # Disable for the rest of the calculation
+        else:
+            if use_label_hellinger:
+                warnings.warn("Label Hellinger requested but labels not available. Using only feature distance.")
+            use_label_hellinger = False
+            # Fill with neutral value just in case
+            label_cost_matrix.fill_(0.5)
+            self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
+        
+        # --- Combine Feature and Label Costs ---
+        if use_label_hellinger:
+            # Normalize weights to sum to 1
+            total_weight = feature_weight + label_weight
+            norm_feature_weight = feature_weight / total_weight
+            norm_label_weight = label_weight / total_weight
+            
+            # Combine costs
+            combined_cost_matrix = (norm_feature_weight * feature_cost_matrix + 
+                                   norm_label_weight * label_cost_matrix)
+            
+            # Track contributions for reporting
+            feature_contribution = (norm_feature_weight * feature_cost_matrix).mean().item()
+            label_contribution = (norm_label_weight * label_cost_matrix).mean().item()
+            self.results['feature_contribution'] = feature_contribution
+            self.results['label_contribution'] = label_contribution
+            
+            # Store the combined cost matrix
+            self.cost_matrices['combined_cost'] = combined_cost_matrix.cpu().numpy()
+            cost_matrix = combined_cost_matrix
+        else:
+            # Use only feature cost if label cost is not used
+            cost_matrix = feature_cost_matrix
+            self.cost_matrices['combined_cost'] = self.cost_matrices['feature_cost']
+        
+        # Store the final cost matrix used for OT
         self.cost_matrices['direct_ot'] = cost_matrix.cpu().numpy()
         
-        # Prepare weights for OT
+        # --- Prepare Weights for OT ---
         if use_loss_weighting and w1 is not None and w2 is not None:
             weights1_np = w1.cpu().numpy().astype(np.float64)
             weights2_np = w2.cpu().numpy().astype(np.float64)
@@ -1056,7 +1209,7 @@ class DirectOTCalculator(BaseOTCalculator):
         
         self.results['weighting_used'] = weight_type
         
-        # Compute OT cost
+        # --- Compute OT Cost ---
         ot_cost, transport_plan = compute_ot_cost(
             cost_matrix, a=a, b=b, reg=reg, 
             sinkhorn_max_iter=max_iter, eps_num=self.eps_num
@@ -1066,6 +1219,119 @@ class DirectOTCalculator(BaseOTCalculator):
         self.results['transport_plan'] = transport_plan
         
         if verbose:
-            print(f"  Direct OT Cost ({weight_type} weights, dist={distance_method}, "
-                 f"normalized={normalize_activations}): "
-                 f"{ot_cost:.4f if not np.isnan(ot_cost) else 'Failed'}")
+            feature_msg = f"Feature Cost ({distance_method}): {feature_contribution:.4f}" if use_label_hellinger else ""
+            label_msg = f", Label Cost: {label_contribution:.4f}" if use_label_hellinger else ""
+            print(f"  Enhanced DirectOT Cost ({weight_type} weights): {ot_cost:.4f if not np.isnan(ot_cost) else 'Failed'}")
+            if use_label_hellinger:
+                print(f"  {feature_msg}{label_msg}, Combined using weights {norm_feature_weight:.2f}:{norm_label_weight:.2f}")
+                print(f"  Label Hellinger distances by class pairs:")
+                for (label1, label2), dist in self.results['label_costs']:
+                    print(f"    Labels ({label1},{label2}): {dist:.4f}")
+            else:
+                print(f"  Using only feature distances ({distance_method})")
+
+    def _compress_vectors(self, X1: np.ndarray, X2: np.ndarray, 
+                         variance_ratio: float = 0.8) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compress high-dimensional vectors using PCA.
+        
+        Args:
+            X1: First set of vectors
+            X2: Second set of vectors
+            variance_ratio: Amount of variance to retain (0.0-1.0)
+            
+        Returns:
+            Tuple of compressed vectors (X1_comp, X2_comp)
+        """
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
+        # Standardize the data
+        scaler = StandardScaler()
+        X1_scaled = scaler.fit_transform(X1)
+        X2_scaled = scaler.transform(X2)  # Use same scaling for both
+
+        # Apply PCA
+        pca = PCA(n_components=variance_ratio)
+        X1_comp = pca.fit_transform(X1_scaled)
+        X2_comp = pca.transform(X2_scaled)  # Use same transformation for both
+        
+        return X1_comp, X2_comp
+    
+    def _get_normal_params(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute mean and covariance matrix for a set of vectors.
+        
+        Args:
+            X: Input vectors (n_samples, n_features)
+            
+        Returns:
+            Tuple of (mean vector, covariance matrix)
+        """
+        mu = np.mean(X, axis=0)
+        sigma = np.cov(X, rowvar=False)
+        # Add small regularization to ensure positive definiteness
+        sigma += 1e-6 * np.eye(sigma.shape[0])
+        return mu, sigma
+    
+    def _hellinger_distance(self, mu_1: np.ndarray, sigma_1: np.ndarray, 
+                           mu_2: np.ndarray, sigma_2: np.ndarray) -> Optional[float]:
+        """
+        Calculate the Hellinger distance between two multivariate normal distributions.
+        
+        Args:
+            mu_1: Mean vector of first distribution
+            sigma_1: Covariance matrix of first distribution
+            mu_2: Mean vector of second distribution
+            sigma_2: Covariance matrix of second distribution
+            
+        Returns:
+            Hellinger distance or None if calculation fails
+        """
+        try:
+            # Ensure positive definiteness through eigendecomposition
+            s1_vals, s1_vecs = np.linalg.eigh(sigma_1)
+            s2_vals, s2_vecs = np.linalg.eigh(sigma_2)
+            
+            # Reconstruct with only positive eigenvalues
+            s1_vals = np.maximum(s1_vals, 1e-6)
+            s2_vals = np.maximum(s2_vals, 1e-6)
+            
+            s1_recon = s1_vecs @ np.diag(s1_vals) @ s1_vecs.T
+            s2_recon = s2_vecs @ np.diag(s2_vals) @ s2_vecs.T
+            
+            # Average covariance
+            avg_sigma = (s1_recon + s2_recon) / 2
+            
+            # Calculate determinants
+            det_s1 = np.linalg.det(s1_recon)
+            det_s2 = np.linalg.det(s2_recon)
+            det_avg_sigma = np.linalg.det(avg_sigma)
+            
+            # Avoid numerical issues with determinants
+            if det_s1 <= 0 or det_s2 <= 0 or det_avg_sigma <= 0:
+                return None
+                
+            # First term: determinant component
+            term1 = (np.power(det_s1, 0.25) * np.power(det_s2, 0.25)) / np.sqrt(det_avg_sigma)
+            
+            # Second term: exponential component with mean difference
+            diff_mu = mu_1 - mu_2
+            inv_avg_sigma = np.linalg.inv(avg_sigma)
+            term2 = np.exp(-0.125 * np.dot(diff_mu, np.dot(inv_avg_sigma, diff_mu)))
+            
+            # Final Hellinger distance
+            distance = 1 - np.sqrt(term1 * term2)
+            
+            # Handle numerical issues
+            if not np.isfinite(distance):
+                return None
+                
+            return float(distance)
+            
+        except np.linalg.LinAlgError:
+            # Handle linear algebra errors (singular matrices, etc)
+            return None
+        except Exception as e:
+            # Handle other errors
+            print(f"Hellinger distance calculation error: {e}")
+            return None

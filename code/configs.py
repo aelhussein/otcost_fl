@@ -61,14 +61,14 @@ COMMON_TABULAR_PARAMS = dict(
 # --- Common Configuration for Image Datasets ---
 COMMON_IMAGE_PARAMS = dict(
     default_lr=3e-3,
-    learning_rates_try=[1e-2, 5e-3, 1e-3, 5e-4],
+    learning_rates_try=[5e-3, 1e-3, 5e-4],
     default_reg_param=0.1,
     reg_params_try=[1, 0.1, 1e-2],
     batch_size=96,
     epochs_per_round=3,
     rounds=20,
     rounds_tune_inner=20,
-    runs=20,
+    runs=10,
     runs_tune=3,
     metric='Accuracy',
     base_seed=42,
