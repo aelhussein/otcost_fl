@@ -56,7 +56,7 @@ class SingleRunExecutor:
         metric_name = self.default_params.get('metric', 'Accuracy').upper()
         criterion: Union[nn.Module, Callable]
         if metric_name == 'DICE':
-            from helper import get_dice_score; criterion = get_dice_score
+            from losses import get_dice_score; criterion = get_dice_score
         elif metric_name in ['ACCURACY', 'F1', 'BALANCED_ACCURACY']:
             from losses import WeightedCELoss
             criterion = WeightedCELoss()

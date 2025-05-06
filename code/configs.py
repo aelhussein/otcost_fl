@@ -72,7 +72,7 @@ COMMON_IMAGE_PARAMS = dict(
     runs_tune=3,
     metric='Accuracy',
     base_seed=42,
-    default_num_clients=5,
+    default_num_clients=2,
     max_clients=None,
     servers_tune_lr=ALGORITHMS,
     servers_tune_reg=[],
@@ -196,12 +196,12 @@ DEFAULT_PARAMS = {
         'source_args': {
             'dataset_name': 'CIFAR10',
             'feature_shift_kind': 'image',   # Identify the shift type
-            'max_rotation_angle': 75.0,        # Max angle at delta=1
-            'max_zoom': 0.3,
+            'max_rotation_angle': 45.0,        # Max angle at delta=1
+            'max_zoom': 0.25,
             'max_frequency': 1,
         },
-        'samples_per_client': 2000,
-        'batch_size': 128,
+        'samples_per_client': 3000,
+        'batch_size': 64,
         'fixed_classes': 10,
     },
     'EMNIST': {
@@ -226,26 +226,23 @@ DEFAULT_PARAMS = {
 
     # === Image Datasets (Pre-Split) ===
     'ISIC': {
+        **COMMON_IMAGE_PARAMS,
         'dataset_name': 'ISIC',
         'data_source': 'isic_paths',
         'partitioning_strategy': 'pre_split',
         'dataset_class': 'ISICDataset',
         'source_args': {
-            'site_mappings': { 0.06: [[2], [2]], 0.15: [[2], [0]], 0.19: [[2], [3]], 0.25: [[2], [1]], 0.3: [[1], [3]], 'all': [[0], [1], [2], [3]] },
+            'site_mappings': {0.15: [[2], [0]], 0.19: [[2], [3]], 0.25: [[2], [1]], 0.3: [[1], [3]], 'all': [[0], [1], [2], [3]] },
             'image_size': 200
         },
-        'transform_config': {}, # Handled internally by ISICDataset
-        'partitioner_args': {},
         'samples_per_client': 2000,
         'fixed_classes': 8,
-        'default_lr': 1e-3, 'learning_rates_try': [5e-3, 1e-3, 5e-4],
-        'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
-        'batch_size': 128, 'epochs_per_round': 1, 'rounds': 60, 'rounds_tune_inner': 15,
-        'runs': 5, 'runs_tune': 1, 'metric': 'Balanced_accuracy', 'base_seed': 42,
-        'default_num_clients': 2, 'max_clients': 4,
-        'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
-        'max_parallel_clients' : 2,
+        'runs': 5,
+        'runs_tune': 1,
+        'metric': 'Balanced_accuracy',
+        'max_clients': 4,
         'use_weighted_loss': True,
+        'batch_size': 128,
     },
     'IXITiny': {
         'dataset_name': 'IXITiny',
@@ -283,12 +280,13 @@ DATASET_COSTS = {
     'Synthetic_Feature': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     'Credit': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     'EMNIST': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
-    'CIFAR': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
+    #'CIFAR': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
+    'CIFAR': [0, 0.3, 0.5, 0.7, 0.9],
     # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
     'Synthetic_Concept': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 
     # Site mapping keys - Used directly by load_heart_raw, load_isic_paths_raw, load_ixi_paths_raw
     'IXITiny': [0.08, 0.28, 0.30, 'all'],
-    'ISIC': [0.06, 0.15, 0.19, 0.25, 0.3, 'all'],
+    'ISIC': [0.15, 0.19, 0.25, 0.3, 'all'],
     'Heart': [1, 2, 3, 4, 5, 6]
 }

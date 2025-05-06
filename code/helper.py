@@ -46,23 +46,6 @@ def move_to_device(batch: Any, device: torch.device) -> Any:
     elif isinstance(batch, torch.Tensor): return batch.to(device)
     return batch
 
-# --- Metrics ---
-def get_dice_score(output: torch.Tensor, target: torch.Tensor,
-                   foreground_channel: int = 1,
-                   spatial_dims: Tuple[int, ...] = (2, 3, 4), # D, H, W for 3D
-                   epsilon: float = 1e-9) -> float:
-    """Calculates the mean Dice score for segmentation tasks."""
-    # (Implementation remains the same as previous valid version)
-    p0 = output[:, foreground_channel, ...]
-    g0 = target[:, foreground_channel, ...]
-    tp = torch.sum(p0 * g0, dim=spatial_dims)
-    fp = torch.sum(p0 * (1.0 - g0), dim=spatial_dims)
-    fn = torch.sum((1.0 - p0) * g0, dim=spatial_dims)
-    numerator = 2 * tp
-    denominator = 2 * tp + fp + fn + epsilon
-    dice_score_per_sample = numerator / denominator
-    return dice_score_per_sample.mean().item()
-
 
 # --- Configuration Helpers ---
 def get_parameters_for_dataset(dataset_name: str) -> Dict:

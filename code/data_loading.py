@@ -145,7 +145,8 @@ def load_heart_raw(client_num: int,
 def load_isic_paths_raw(client_num: int,
                        cost_key: Any,
                        source_args: dict,
-                       data_dir: str) -> Tuple[List[str], np.ndarray]:
+                       data_dir: str,
+                       base_seed: int) -> Tuple[List[str], np.ndarray]:
     """Loads ISIC image paths and labels for a specific client's assigned site(s)."""
     # Get root directory and site assignments
     root_dir = source_args.get('data_dir', data_dir)
@@ -185,7 +186,8 @@ def load_isic_paths_raw(client_num: int,
 def load_ixi_paths_raw(client_num: int,
                       cost_key: Any,
                       source_args: dict,
-                      data_dir: str) -> Tuple[List[str], List[str]]:
+                      data_dir: str,
+                      base_seed: int)-> Tuple[List[str], List[str]]:
     """Loads IXI image and label file paths for a specific client's assigned site(s)."""
     # Get root directory and site assignments
     root_dir = source_args.get('data_dir', data_dir)
@@ -203,20 +205,17 @@ def load_ixi_paths_raw(client_num: int,
     # Get all image and label files
     all_img_files = glob.glob(os.path.join(img_dir, '*.nii.gz'))
     all_lbl_files = glob.glob(os.path.join(lbl_dir, '*.nii.gz'))
-    
     # Helper functions to extract ID and site
     def get_file_info(filepath):
         basename = os.path.basename(filepath)
         base_id = basename.split('_')[0]
-        
         # Extract site name
         known_sites = ['Guys', 'HH', 'IOP']
         site = None
-        for part in basename.split('.')[0].split('_'):
+        for part in basename.split('.')[0].split('-'):
             if part in known_sites:
                 site = part
                 break
-                
         return base_id, site
     
     # Filter files by site and create ID-to-path mappings
@@ -232,7 +231,7 @@ def load_ixi_paths_raw(client_num: int,
         lbl_id, lbl_site = get_file_info(lbl_file)
         if lbl_site in site_names:
             label_dict[lbl_id] = lbl_file
-    
+
     # Find common IDs to ensure alignment
     common_ids = sorted(list(set(image_dict.keys()) & set(label_dict.keys())))
     

@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.modules.loss import _Loss
+from typing import Tuple
 
 
 class ISICLoss(_Loss):
@@ -34,8 +35,68 @@ class ISICLoss(_Loss):
         loss = -1 * (1 - pt) ** self.gamma * logpt
 
         return loss.mean()
-    
 
+def get_dice_score(output: torch.Tensor, target: torch.Tensor,
+                   foreground_channel: int = 1, # Assumes foreground is channel 1
+                   spatial_dims: Tuple[int, ...] = (2, 3, 4), # D, H, W for 3D
+                   epsilon: float = 1e-9) -> float:
+    """Calculates the mean Dice score for segmentation tasks."""
+    # output shape: (Batch, Classes, D, H, W) -> e.g., (64, 2, 48, 60, 48)
+    # target shape: (Batch, Classes, D, H, W) OR (Batch, 1, D, H, W) OR (Batch, D, H, W)
+
+    # 1. Select the foreground channel from the model's output
+    # p0 will have shape (Batch, D, H, W) -> e.g., (64, 48, 60, 48)
+    p0 = output[:, foreground_channel, ...]
+
+    # 2. Prepare the target tensor
+    # It needs to be in the same format as p0: (Batch, D, H, W)
+    # and contain binary values (0 or 1) for the foreground class.
+
+    # Case A: Target is one-hot encoded (Batch, Classes, D, H, W)
+    if target.dim() == output.dim() and target.shape[1] == output.shape[1]:
+        g0 = target[:, foreground_channel, ...]
+    # Case B: Target is (Batch, 1, D, H, W) with class indices (e.g., 0 for bg, 1 for fg)
+    elif target.dim() == output.dim() and target.shape[1] == 1:
+        # Convert class indices to one-hot like for the foreground channel
+        # If foreground_channel is 1, we want target == 1
+        # If foreground_channel is 0, we want target == 0 (less common for Dice)
+        g0 = (target[:, 0, ...] == foreground_channel).float()
+    # Case C: Target is (Batch, D, H, W) with class indices
+    elif target.dim() == output.dim() - 1 and target.shape[0] == output.shape[0] and \
+         target.shape[1:] == output.shape[2:]:
+        g0 = (target == foreground_channel).float()
+    else:
+        raise ValueError(
+            f"Target shape {target.shape} is not compatible with output shape {output.shape} "
+            f"for Dice score calculation. Expected target formats: \n"
+            f"1. (Batch, Classes, D, H, W) - one-hot encoded\n"
+            f"2. (Batch, 1, D, H, W) - class indices\n"
+            f"3. (Batch, D, H, W) - class indices"
+        )
+
+    # Ensure p0 and g0 are binary or probabilities (p0 often is probabilities from softmax)
+    # If p0 contains probabilities, we might want to binarize it with a threshold (e.g., 0.5)
+    # For "soft Dice", we use probabilities directly.
+    # For "hard Dice", we binarize:
+    # p0_binary = (p0 > 0.5).float()
+    # For this implementation, we'll assume p0 is probabilities (soft Dice) or already binarized.
+
+    # Ensure g0 is float for multiplication
+    g0 = g0.float()
+
+    # Dimensions over which to sum (spatial dimensions)
+    # For (Batch, D, H, W), the spatial dimensions are (1, 2, 3) after slicing
+    sum_dims = tuple(range(1, p0.dim())) # (1, 2, 3) if p0 is (B, D, H, W)
+
+    tp = torch.sum(p0 * g0, dim=sum_dims)
+    fp = torch.sum(p0 * (1.0 - g0), dim=sum_dims)
+    fn = torch.sum((1.0 - p0) * g0, dim=sum_dims)
+
+    numerator = 2 * tp
+    denominator = 2 * tp + fp + fn + epsilon
+
+    dice_score_per_sample = numerator / denominator
+    return dice_score_per_sample.mean().item()
 
 # Add this class to helper.py
 class WeightedCELoss(nn.Module):

@@ -187,11 +187,6 @@ class PipelineRunner:
                         'Decomposed_LabelEMD': np.nan,
                         'Decomposed_ConditionalOT': np.nan,
                         'Decomposed_CombinedScore': np.nan,
-                        'FixedAnchor_TotalCost': np.nan,
-                        'FixedAnchor_SimScore': np.nan,
-                        'FixedAnchor_CostL1': np.nan,
-                        'FixedAnchor_CostL2': np.nan,
-                        'FixedAnchor_CostX': np.nan,
                     }
                     
                     # Create and run calculator
@@ -253,11 +248,6 @@ class PipelineRunner:
             'Decomposed_LabelEMD': np.nan,
             'Decomposed_ConditionalOT': np.nan,
             'Decomposed_CombinedScore': np.nan,
-            'FixedAnchor_TotalCost': np.nan,
-            'FixedAnchor_SimScore': np.nan,
-            'FixedAnchor_CostL1': np.nan,
-            'FixedAnchor_CostL2': np.nan,
-            'FixedAnchor_CostX': np.nan,
         }
 
     def _populate_row_with_results(self, row_data: Dict, method_type: str, ot_results: Dict):
@@ -272,12 +262,6 @@ class PipelineRunner:
             row_data['Decomposed_LabelEMD'] = ot_results.get('label_emd', np.nan)
             row_data['Decomposed_ConditionalOT'] = ot_results.get('conditional_ot_agg', np.nan)
             row_data['Decomposed_CombinedScore'] = ot_results.get('combined_score', np.nan)
-        elif method_type == 'fixed_anchor':
-            row_data['FixedAnchor_TotalCost'] = ot_results.get('total_cost', np.nan)
-            row_data['FixedAnchor_SimScore'] = ot_results.get('similarity_score', np.nan)
-            row_data['FixedAnchor_CostL1'] = ot_results.get('cost_local1', np.nan)
-            row_data['FixedAnchor_CostL2'] = ot_results.get('cost_local2', np.nan)
-            row_data['FixedAnchor_CostX'] = ot_results.get('cost_cross_anchor', np.nan)
         elif method_type == 'direct_ot':
             row_data['DirectOT_Cost'] = ot_results.get('direct_ot_cost', np.nan)
             row_data['DirectOT_DistMethod'] = ot_results.get('feature_distance_method', None)
@@ -291,8 +275,6 @@ class PipelineRunner:
             'Local_Final_Loss', 'FedAvg_Final_Loss', 'Loss_Delta',
             'FeatureErrorOT_Cost', 'FeatureErrorOT_Weighting',
             'Decomposed_CombinedScore', 'Decomposed_LabelEMD', 'Decomposed_ConditionalOT',
-            'FixedAnchor_SimScore', 'FixedAnchor_TotalCost',
-            'FixedAnchor_CostL1', 'FixedAnchor_CostL2', 'FixedAnchor_CostX',
             'DirectOT_Cost', 'DirectOT_DistMethod', 'DirectOT_Weighting'
         ]
         

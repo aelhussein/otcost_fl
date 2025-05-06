@@ -9,7 +9,7 @@ simplified SyntheticDataset. Assumes necessary libraries are installed.
 import numpy as np
 import torch
 from torch.utils.data import Dataset as TorchDataset
-from PIL import Image
+from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 from typing import Dict, Tuple, Any, Optional, List, Union, Callable
 
 # Assume necessary libraries are installed
@@ -19,6 +19,9 @@ from monai.transforms import (LoadImaged, Resized, NormalizeIntensityd,
 import albumentations
 from albumentations.pytorch import ToTensorV2
 from torchvision import transforms
+import torch.nn.functional as F
+import torchvision.transforms.functional as TF
+import math
 
 # =============================================================================
 # == Final Dataset Wrapper Classes ==
@@ -85,12 +88,6 @@ class HeartDataset(TorchDataset):
         return feature_tensor, label_tensor
 
 
-# ===========================
-#  Unified base image wrapper
-# ===========================
-from torchvision import transforms
-from torchvision.transforms import functional as F
-
 class _BaseImgDS(TorchDataset):
     MEAN_STD   = None          # override
     TRAIN_AUG  = None          # list[transform]  – override
@@ -121,7 +118,6 @@ class _BaseImgDS(TorchDataset):
     # -----------------------------------------------------------
     def _build_transform(self):
         mean, std = self.MEAN_STD
-        mean, std = 0, 1
         t = []
 
         # add ToPIL *only* for NumPy / tensor inputs
@@ -132,7 +128,7 @@ class _BaseImgDS(TorchDataset):
         if abs(z) > 1e-3:
             scale = 1.0 + z
             t.append(transforms.Lambda(lambda img, s=scale:
-                transforms.functional.affine(img, angle=0, translate=(0,0),
+                TF.affine(img, angle=0, translate=(0,0),
                                             scale=s, shear=(0,0), fill=0)))
 
         if self.RESIZE_TO is not None:
@@ -147,7 +143,7 @@ class _BaseImgDS(TorchDataset):
         # --- frequency filter -------------------------------------------------
         f = self.trans_args.get('frequency', 0.0)
         if abs(f) > 1e-3:
-            t.append(transforms.Lambda(lambda img, d=f: self.freq_filter(img, d)))
+            t.append(transforms.Lambda(lambda img, d=f: self.gaussian_blur_filter(img, d)))
 
         if self.is_train and self.TRAIN_AUG:
             t.extend(self.TRAIN_AUG)
@@ -214,22 +210,22 @@ class CIFARDataset(_BaseImgDS):
             y, cb, cr = img.convert("YCbCr").split()
         except Exception:              # fallback for unexpected modes
             return img
-
+        BASE_RADIUS_FACTOR = 0.15
+        ATTENUATION_FACTOR = 0.15
         y_arr = np.asarray(y, np.float32)
         H, W  = y_arr.shape
         # 2. FFT
-        F = np.fft.fftshift(np.fft.fft2(y_arr))
+        FFT = np.fft.fftshift(np.fft.fft2(y_arr))
         # radius proportional to |delta|
-        r  = max(1, int(min(H, W) * 0.05 * abs(delta)))
+        r  = max(1, int(min(H, W) * BASE_RADIUS_FACTOR * abs(delta)))
         yy, xx = np.ogrid[-H//2:H//2, -W//2:W//2]
         mask   = xx*xx + yy*yy <= r*r
 
         # 3. Attenuate band (KEEP controls strength)
-        KEEP = 0.5
         if delta > 0:      # high-pass → kill low frequencies
-            F[mask] *= KEEP
+            FFT[mask] *= ATTENUATION_FACTOR
         else:              # low-pass  → kill high frequencies
-            F[~mask] *= KEEP
+            FFT[~mask] *= ATTENUATION_FACTOR
 
         # 4. Back to spatial domain (use REAL part to keep phase!)
         y_filtered = np.real(np.fft.ifft2(np.fft.ifftshift(F)))
@@ -237,8 +233,137 @@ class CIFARDataset(_BaseImgDS):
 
         # 5. Merge and return RGB
         return Image.merge("YCbCr", (y_img, cb, cr)).convert("RGB")
+    
+    def elastic_transform(self, img: Image.Image, delta: float)-> Image.Image:
+        """
+        Apply elastic deformation to images.
+        Creates realistic distortions that affect feature representations.
+        """
+        if abs(delta) < 1e-3:
+            return img
+            
+        # Convert to tensor for easier processing
+        to_tensor = transforms.ToTensor()
+        to_pil = transforms.ToPILImage()
+        
+        img_tensor = to_tensor(img)
+        c, h, w = img_tensor.shape
+        
+        # Generate displacement field
+        displacement = abs(delta) * 1.0  # Scale factor
+        grid_scale = 4  # Control grid coarseness
+        
+        # Create base grid
+        theta = torch.tensor([
+            [1, 0, 0],
+            [0, 1, 0]
+        ], dtype=torch.float).unsqueeze(0)
+        
+        # Create sampling grid
+        base_grid = F.affine_grid(theta, (1, c, h, w), align_corners=False)
+        # Generate random displacement field
+        np.random.seed(int(10 * delta) + 42)  # Deterministic per delta
+        disp_x = torch.FloatTensor(np.random.randn(h // grid_scale, w // grid_scale)) * displacement
+        disp_y = torch.FloatTensor(np.random.randn(h // grid_scale, w // grid_scale)) * displacement
+        
+        # Upsample displacements to full resolution
+        disp_x = F.interpolate(disp_x.unsqueeze(0).unsqueeze(0), size=(h, w), mode='bicubic').squeeze()
+        disp_y = F.interpolate(disp_y.unsqueeze(0).unsqueeze(0), size=(h, w), mode='bicubic').squeeze()
+        
+        # Apply displacement to grid
+        flow_field = base_grid.clone()
+        flow_field[0, :, :, 0] += disp_x / w  # Normalize to [-1, 1]
+        flow_field[0, :, :, 1] += disp_y / h  # Normalize to [-1, 1]
+        
+        # Sample using the displaced grid
+        transformed = F.grid_sample(img_tensor.unsqueeze(0), flow_field, 
+                                   align_corners=False, padding_mode='reflection').squeeze(0)
+        
+        # Convert back to PIL
+        return to_pil(transformed)
+    
+    def color_jitter_filter(self, img: Image.Image, delta: float) -> Image.Image:
+        """
+        Apply a deterministic color adjustment based on delta.
+        Aims to simulate parts of ColorJitter's behavior deterministically.
+        - delta > 0: generally increases brightness, contrast, saturation; positive hue shift.
+        - delta < 0: generally decreases brightness, contrast, saturation; negative hue shift.
+        - |delta| should ideally be in [0,1] to control intensity, but scales are capped.
+          A delta of 0 results in no change.
+        """
+        if abs(delta) < 1e-3: # no-op for tiny delta
+            return img
+
+        # Define maximum impact scales for each parameter when |delta|=1.
+        # These can be tuned. For example, a 0.4 scale means at delta=1,
+        # the factor becomes 1.4, and at delta=-1, it becomes 0.6.
+        BRIGHTNESS_STRENGTH = 0.4
+        CONTRAST_STRENGTH = 0.4
+        SATURATION_STRENGTH = 0.4
+        # Max hue shift. Typical range for hue in TF.adjust_hue is [-0.5, 0.5].
+        # So, HUE_STRENGTH of 0.2 means delta=1 results in +0.2 hue shift.
+        HUE_STRENGTH = 0.2
+
+        # Calculate deterministic adjustment factors
+        # brightness_factor: 1.0 means no change.
+        brightness_factor = max(0.0, 1.0 + delta * BRIGHTNESS_STRENGTH)
+        # contrast_factor: 1.0 means no change.
+        contrast_factor = max(0.0, 1.0 + delta * CONTRAST_STRENGTH)
+        # saturation_factor: 1.0 means no change.
+        saturation_factor = max(0.0, 1.0 + delta * SATURATION_STRENGTH)
+        # hue_factor: 0.0 means no change. Values should be in [-0.5, 0.5].
+        hue_factor = torch.clamp(torch.tensor(delta * HUE_STRENGTH), -0.5, 0.5).item()
+
+        # Apply transformations sequentially using torchvision.transforms.functional
+        # These functions expect PIL Images and return PIL Images.
+        img_transformed = TF.adjust_brightness(img, brightness_factor)
+        img_transformed = TF.adjust_contrast(img_transformed, contrast_factor)
+        img_transformed = TF.adjust_saturation(img_transformed, saturation_factor)
+        if abs(hue_factor) > 1e-6: # Only apply hue if it's a meaningful shift
+            img_transformed = TF.adjust_hue(img_transformed, hue_factor)
+        
+        return img_transformed
+
+    def gaussian_blur_filter(self, img: Image.Image, delta: float) -> Image.Image:
+        """
+        Apply Gaussian blur to an image.
+        - |delta| ∈ [0,1] (ideally) controls the intensity of the blur (sigma).
+        - delta = 0 (or very small |delta|) results in no blur.
+        - The sign of delta is ignored; only its magnitude determines blur strength.
+        """
+        if abs(delta) < 1e-3: # no-op for tiny delta
+            return img
+
+        # Define maximum sigma when |delta|=1. This can be tuned.
+        # E.g., for 28x28 or 32x32 images, max sigma of 1.5-2.0 is reasonable.
+        MAX_SIGMA_AT_UNITY_DELTA = 1.5
+
+        # Calculate sigma based on delta's magnitude
+        sigma = delta * MAX_SIGMA_AT_UNITY_DELTA
+        
+        # If sigma is extremely small, effectively no blur.
+        # This also prevents issues with kernel_size calculation if sigma is near zero.
+        if sigma < 1e-2: 
+             return img
+
+        # Determine kernel size. Must be odd and positive.
+        # A common heuristic: kernel_size is roughly 2 to 3 times sigma on each side of the center.
+        # Let radius = ceil(N * sigma). Kernel_size = 2 * radius + 1.
+        # We use N=2.5 here for a good balance.
+        radius = math.ceil(1 * sigma)
+        kernel_s = 2 * radius + 1
+        
+        # TF.gaussian_blur takes kernel_size as [height, width] and sigma as [sigma_y, sigma_x] or float.
+        # We'll use a square kernel and symmetric sigma.
+        return TF.gaussian_blur(img, kernel_size=[kernel_s, kernel_s], sigma=[sigma, sigma])
 
 
+    def gamma_shift(self, img: Image.Image, delta: float) -> Image.Image:
+        """delta>0 ⇒ brighter (gamma<1), delta<0 ⇒ darker (gamma>1)."""
+        if abs(delta) < 1e-3:
+            return img
+        gamma = np.exp(-delta)           # maps [-1,1] → [e^{-1}, e^{+1}]
+        return TF.adjust_gamma(img, gamma, gain=1.0)
 
 class ISICDataset(TorchDataset):
     """Final ISIC dataset wrapper (expects image paths, labels). Uses Albumentations."""
