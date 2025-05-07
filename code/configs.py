@@ -61,7 +61,7 @@ COMMON_TABULAR_PARAMS = dict(
 # --- Common Configuration for Image Datasets ---
 COMMON_IMAGE_PARAMS = dict(
     default_lr=3e-3,
-    learning_rates_try=[1e-2, 5e-3, 1e-3, 5e-4],
+    learning_rates_try=[5e-3, 1e-3, 5e-4],
     default_reg_param=0.1,
     reg_params_try=[1, 0.1, 1e-2],
     batch_size=96,
@@ -162,29 +162,6 @@ DEFAULT_PARAMS = {
         'metric': 'F1',
         'learning_rates_try': [5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
     },
-    'Heart': {
-        **COMMON_TABULAR_PARAMS,
-        'dataset_name': 'Heart',
-        'data_source': 'heart_site_loader',
-        'partitioning_strategy': 'pre_split', # Uses cost as key for site_mappings
-        'batch_size':32,
-        'dataset_class': 'HeartDataset',
-        'source_args': { # Loader uses cost_key directly to index site_mappings
-            # data_dir passed by manager
-            'sites': ['cleveland', 'hungarian', 'switzerland', 'va'],
-            'used_columns': ['age', 'sex', 'chest_pain_type', 'resting_bp', 'cholesterol', 'sugar', 'ecg', 'max_hr', 'exercise_angina', 'exercise_ST_depression', 'target'],
-            'feature_names': ['age', 'sex', 'chest_pain_type', 'resting_bp', 'cholesterol', 'sugar', 'ecg', 'max_hr', 'exercise_angina', 'exercise_ST_depression'],
-            'cols_to_scale': ['age', 'chest_pain_type', 'resting_bp', 'cholesterol', 'ecg', 'max_hr', 'exercise_ST_depression'],
-            'scale_values': { 'age': (53.0872973, 7.01459463e+01), 'chest_pain_type': (3.23702703, 8.17756772e-01), 'resting_bp': (132.74405405, 3.45493057e+02), 'cholesterol': (220.23648649, 4.88430934e+03), 'ecg': (0.64513514, 5.92069868e-01), 'max_hr': (138.75459459, 5.29172208e+02), 'exercise_ST_depression': (0.89532432, 1.11317517e+00) },
-            'site_mappings': { 1: [['cleveland'], ['hungarian']], 2: [['cleveland'], ['switzerland']], 3: [['cleveland'], ['va']], 4: [['hungarian'], ['switzerland']], 5: [['hungarian'], ['va']], 6: [['switzerland'], ['va']], 'all': [['cleveland'], ['hungarian'], ['switzerland'], ['va']] },
-        },
-        'samples_per_client': None,
-        'metric': 'F1',
-        'default_num_clients': 2,
-        'max_clients': 2,
-        'use_weighted_loss': True,
-    },
-
     # === Image Datasets (NEW Rotation Shift) ===
     'CIFAR': {
         **COMMON_IMAGE_PARAMS,
@@ -196,12 +173,12 @@ DEFAULT_PARAMS = {
         'source_args': {
             'dataset_name': 'CIFAR10',
             'feature_shift_kind': 'image',   # Identify the shift type
-            'max_rotation_angle': 45.0,        # Max angle at delta=1
-            'max_zoom': 0.25,
+            'max_rotation_angle': 30.0,        # Max angle at delta=1
+            'max_zoom': 0.3,
             'max_frequency': 1,
         },
-        'samples_per_client': 3000,
-        'batch_size': 64,
+        'samples_per_client': 5000,
+        'batch_size': 512,
         'fixed_classes': 10,
     },
     'EMNIST': {
@@ -250,17 +227,17 @@ DEFAULT_PARAMS = {
         'partitioning_strategy': 'pre_split',
         'dataset_class': 'IXITinyDataset',
         'source_args': {
-            'site_mappings': { 0.08: [['Guys'], ['HH']], 0.28: [['IOP'], ['Guys']], 0.30: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] },
+            'site_mappings': { 0.09: [['Guys'], ['HH']], 0.29: [['IOP'], ['Guys']], 0.31: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] },
             'image_shape': (48, 60, 48)
         },
         'transform_config': {}, # Handled internally by IXITinyDataset
         'partitioner_args': {},
         'samples_per_client': None, # Uses all available data per site
-        'fixed_classes': 2,
+        'fixed_classes': None,
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
         'batch_size': 4,
-        'epochs_per_round': 1, 'rounds': 50, 'rounds_tune_inner': 10,
+        'epochs_per_round': 3, 'rounds': 50, 'rounds_tune_inner': 10,
         'runs': 10, 'runs_tune': 3, 'metric': 'DICE', 'base_seed': 42,
         'default_num_clients': 2, 'max_clients': 3,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
@@ -281,12 +258,12 @@ DATASET_COSTS = {
     'Credit': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     'EMNIST': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     #'CIFAR': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
-    'CIFAR': [0.0, 0.25, 0.5, 0.75, 1.0],
+    'CIFAR': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
     'Synthetic_Concept': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 
     # Site mapping keys - Used directly by load_heart_raw, load_isic_paths_raw, load_ixi_paths_raw
-    'IXITiny': [0.08, 0.28, 0.30],
+    'IXITiny': [0.09, 0.29, 0.31],
     'ISIC': [0.15, 0.19, 0.25, 0.3],
     'Heart': [1, 2, 3, 4, 5, 6]
 }

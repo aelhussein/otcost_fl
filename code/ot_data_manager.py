@@ -460,12 +460,12 @@ class OTDataManager:
             
         # Convert to CPU tensors
         h_cpu = h.detach().cpu() if isinstance(h, torch.Tensor) else torch.tensor(h).cpu()
-        h_cpu = h[:700]
+        h_cpu = h[:900]
         y_cpu = y.detach().cpu().long() if isinstance(y, torch.Tensor) else torch.tensor(y).long().cpu()
-        y_cpu = y[:700]
+        y_cpu = y[:900]
         p_prob_cpu = p_prob_in.detach().cpu() if isinstance(p_prob_in, torch.Tensor) else \
                     torch.tensor(p_prob_in).cpu() if p_prob_in is not None else None
-        p_prob_cpu = p_prob_cpu[:700] if p_prob_cpu is not None else None
+        p_prob_cpu = p_prob_cpu[:900] if p_prob_cpu is not None else None
         n_samples = y_cpu.shape[0]
         if n_samples == 0:
             return None

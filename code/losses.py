@@ -18,18 +18,19 @@ class ISICLoss(_Loss):
     See this [link](https://amaarora.github.io/2020/06/29/FocalLoss.html) for
     a good explanation
     """
-    def __init__(self, device, alpha=torch.tensor([1, 2, 1, 1, 5, 1, 1, 1]), gamma=2.0,):
+    def __init__(self, alpha=torch.tensor([1, 2, 1, 1, 5, 1, 1, 1]), gamma=2.0,):
         super(ISICLoss, self).__init__()
-        self.alpha = alpha.to(torch.float).to(device)
-        self.gamma = gamma.to(device)
+        self.__name__ = 'ISICLoss'
+        self.alpha = alpha.to(torch.float)
+        self.gamma = gamma
 
     def forward(self, inputs, targets):
+        self.alpha = self.alpha.to(targets.device)
         targets = targets.view(-1, 1).type_as(inputs)
         logpt = F.log_softmax(inputs, dim=1)
         logpt = logpt.gather(1, targets.long())
         logpt = logpt.view(-1)
         pt = logpt.exp()
-        self.alpha = self.alpha.to(targets.device)
         at = self.alpha.gather(0, targets.data.view(-1).long())
         logpt = logpt * at
         loss = -1 * (1 - pt) ** self.gamma * logpt

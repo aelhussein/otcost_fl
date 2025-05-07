@@ -129,7 +129,7 @@ class _BaseImgDS(TorchDataset):
             scale = 1.0 + z
             t.append(transforms.Lambda(lambda img, s=scale:
                 TF.affine(img, angle=0, translate=(0,0),
-                                            scale=s, shear=(0,0), fill=0)))
+                                            scale=s, shear=(0,0), fill=100)))
 
         if self.RESIZE_TO is not None:
             t.append(transforms.Resize(self.RESIZE_TO))
@@ -148,7 +148,7 @@ class _BaseImgDS(TorchDataset):
         if self.is_train and self.TRAIN_AUG:
             t.extend(self.TRAIN_AUG)
 
-        t.extend([transforms.ToTensor()],) #transforms.Normalize(mean=mean, std=std))
+        t.extend([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])
         return transforms.Compose(t)
 
     # -----------------------------------------------------------
@@ -192,104 +192,14 @@ class EMNISTDataset(_BaseImgDS):
 class CIFARDataset(_BaseImgDS):
     MEAN_STD  = ((0.4914, 0.4822, 0.4465),
                  (0.2470, 0.2435, 0.2616))
+    MEAN_STD = ((0, 0, 0), (1, 1, 1))
     TRAIN_AUG = [transforms.RandomCrop(32, padding=4, padding_mode="reflect")]
     RESIZE_TO = None
 
-    # -------------------------------------------------------------
-    def freq_filter(self, img: Image.Image, delta: float) -> Image.Image:
-        """
-        Deterministic per-client frequency shift.
-          • delta > 0  ⇒ high-pass  (sharpen edges)
-          • delta < 0  ⇒ low-pass   (blur)
-          • |delta|∈[0,1]
-        Only the luminance (Y) channel is filtered; Cb/Cr stay intact,
-        avoiding hue artefacts.
-        """
-        if abs(delta) < 1e-3:          # no-op for tiny costs
-            return img
-
-        # 1. RGB → YCbCr  and split
-        try:
-            y, cb, cr = img.convert("YCbCr").split()
-        except Exception:              # fallback for unexpected modes
-            return img
-        BASE_RADIUS_FACTOR = 0.15
-        ATTENUATION_FACTOR = 0.15
-        y_arr = np.asarray(y, np.float32)
-        H, W  = y_arr.shape
-        # 2. FFT
-        FFT = np.fft.fftshift(np.fft.fft2(y_arr))
-        # radius proportional to |delta|
-        r  = max(1, int(min(H, W) * BASE_RADIUS_FACTOR * abs(delta)))
-        yy, xx = np.ogrid[-H//2:H//2, -W//2:W//2]
-        mask   = xx*xx + yy*yy <= r*r
-
-        # 3. Attenuate band (KEEP controls strength)
-        if delta > 0:      # high-pass → kill low frequencies
-            FFT[mask] *= ATTENUATION_FACTOR
-        else:              # low-pass  → kill high frequencies
-            FFT[~mask] *= ATTENUATION_FACTOR
-
-        # 4. Back to spatial domain (use REAL part to keep phase!)
-        y_filtered = np.real(np.fft.ifft2(np.fft.ifftshift(F)))
-        y_img      = Image.fromarray(np.clip(y_filtered, 0, 255).astype(np.uint8))
-
-        # 5. Merge and return RGB
-        return Image.merge("YCbCr", (y_img, cb, cr)).convert("RGB")
-    
-    def elastic_transform(self, img: Image.Image, delta: float)-> Image.Image:
-        """
-        Apply elastic deformation to images.
-        Creates realistic distortions that affect feature representations.
-        """
-        if abs(delta) < 1e-3:
-            return img
-            
-        # Convert to tensor for easier processing
-        to_tensor = transforms.ToTensor()
-        to_pil = transforms.ToPILImage()
-        
-        img_tensor = to_tensor(img)
-        c, h, w = img_tensor.shape
-        
-        # Generate displacement field
-        displacement = abs(delta) * 1.0  # Scale factor
-        grid_scale = 4  # Control grid coarseness
-        
-        # Create base grid
-        theta = torch.tensor([
-            [1, 0, 0],
-            [0, 1, 0]
-        ], dtype=torch.float).unsqueeze(0)
-        
-        # Create sampling grid
-        base_grid = F.affine_grid(theta, (1, c, h, w), align_corners=False)
-        # Generate random displacement field
-        np.random.seed(int(10 * delta) + 42)  # Deterministic per delta
-        disp_x = torch.FloatTensor(np.random.randn(h // grid_scale, w // grid_scale)) * displacement
-        disp_y = torch.FloatTensor(np.random.randn(h // grid_scale, w // grid_scale)) * displacement
-        
-        # Upsample displacements to full resolution
-        disp_x = F.interpolate(disp_x.unsqueeze(0).unsqueeze(0), size=(h, w), mode='bicubic').squeeze()
-        disp_y = F.interpolate(disp_y.unsqueeze(0).unsqueeze(0), size=(h, w), mode='bicubic').squeeze()
-        
-        # Apply displacement to grid
-        flow_field = base_grid.clone()
-        flow_field[0, :, :, 0] += disp_x / w  # Normalize to [-1, 1]
-        flow_field[0, :, :, 1] += disp_y / h  # Normalize to [-1, 1]
-        
-        # Sample using the displaced grid
-        transformed = F.grid_sample(img_tensor.unsqueeze(0), flow_field, 
-                                   align_corners=False, padding_mode='reflection').squeeze(0)
-        
-        # Convert back to PIL
-        return to_pil(transformed)
     
     def img_transform(self, img: Image.Image, delta: float) -> Image.Image:
-        if delta < 0:
-            return self.color_jitter_filter(img, delta)
-        else:
-            return self.gaussian_blur_filter(img, delta)
+        #delta = -1 * delta
+        return self.shear_filter(self.color_jitter_filter(img, delta), delta)
     
     def color_jitter_filter(self, img: Image.Image, delta: float) -> Image.Image:
         """
@@ -306,12 +216,12 @@ class CIFARDataset(_BaseImgDS):
         # Define maximum impact scales for each parameter when |delta|=1.
         # These can be tuned. For example, a 0.4 scale means at delta=1,
         # the factor becomes 1.4, and at delta=-1, it becomes 0.6.
-        BRIGHTNESS_STRENGTH = 0.2
-        CONTRAST_STRENGTH = 0.2
-        SATURATION_STRENGTH = 0.2
+        BRIGHTNESS_STRENGTH = 0.4
+        CONTRAST_STRENGTH = 0.4
+        SATURATION_STRENGTH = 0.4
         # Max hue shift. Typical range for hue in TF.adjust_hue is [-0.5, 0.5].
         # So, HUE_STRENGTH of 0.2 means delta=1 results in +0.2 hue shift.
-        HUE_STRENGTH = 0.1
+        HUE_STRENGTH = 0.2
 
         # Calculate deterministic adjustment factors
         # brightness_factor: 1.0 means no change.
@@ -332,39 +242,41 @@ class CIFARDataset(_BaseImgDS):
             img_transformed = TF.adjust_hue(img_transformed, hue_factor)
         
         return img_transformed
-
-    def gaussian_blur_filter(self, img: Image.Image, delta: float) -> Image.Image:
+    
+    def shear_filter(self, img: Image.Image, delta: float) -> Image.Image:
         """
-        Apply Gaussian blur to an image.
-        - |delta| ∈ [0,1] (ideally) controls the intensity of the blur (sigma).
-        - delta = 0 (or very small |delta|) results in no blur.
-        - The sign of delta is ignored; only its magnitude determines blur strength.
+        Apply a deterministic shear transformation based on a signed delta.
+        - delta: Controls intensity and can influence direction.
+                        Expected range for effective control, e.g., [-1, 1].
+                        delta_signed = 0 results in no shear.
+        - Positive delta might shear along x, negative along y, or mix.
         """
         if abs(delta) < 1e-3: # no-op for tiny delta
             return img
 
-        # Define maximum sigma when |delta|=1. This can be tuned.
-        # E.g., for 28x28 or 32x32 images, max sigma of 1.5-2.0 is reasonable.
-        MAX_SIGMA_AT_UNITY_DELTA = 1.2
+        # --- Tunable Parameters ---
+        if delta > 0:
+            MAX_SHEAR_X_DEGREES = 0.0 # e.g., up to 20 degrees shear
+            MAX_SHEAR_Y_DEGREES = 40.0 # e.g., up to 10 degrees shear
+        else:
+            MAX_SHEAR_X_DEGREES = 40.0 # e.g., up to 20 degrees shear
+            MAX_SHEAR_Y_DEGREES = 00.0 # e.g., up to 10 degrees shear
+        # --- End Tunable Parameters ---
 
-        # Calculate sigma based on delta's magnitude
-        sigma = delta * MAX_SIGMA_AT_UNITY_DELTA
-        
-        # If sigma is extremely small, effectively no blur.
-        # This also prevents issues with kernel_size calculation if sigma is near zero.
-        if sigma < 1e-2: 
-             return img
 
-        # Determine kernel size. Must be odd and positive.
-        # A common heuristic: kernel_size is roughly 2 to 3 times sigma on each side of the center.
-        # Let radius = ceil(N * sigma). Kernel_size = 2 * radius + 1.
-        # We use N=2.5 here for a good balance.
-        radius = math.ceil(1 * sigma)
-        kernel_s = 2 * radius + 1
+        shear_x_degrees = delta * MAX_SHEAR_X_DEGREES
+        shear_y_degrees = delta * MAX_SHEAR_Y_DEGREES
+        f = 200 + 2 * shear_y_degrees if delta > 0 else 200 + 2 * shear_x_degrees
+        img_transformed = TF.affine(img, 
+                                    angle=0, 
+                                    translate=(0, 0), 
+                                    scale=1.0, 
+                                    shear=(shear_x_degrees, shear_y_degrees),
+                                    fill = (f,f,f) # fill color for shear
+                                    )
         
-        # TF.gaussian_blur takes kernel_size as [height, width] and sigma as [sigma_y, sigma_x] or float.
-        # We'll use a square kernel and symmetric sigma.
-        return TF.gaussian_blur(img, kernel_size=[kernel_s, kernel_s], sigma=[sigma, sigma])
+        return img_transformed
+
 
 
 class ISICDataset(TorchDataset):

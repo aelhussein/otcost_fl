@@ -51,14 +51,14 @@ class SingleRunExecutor:
         model = get_model_instance(self.dataset_name)
         
         # This part remains the same - handling criterion is specific to this method
-        metric_name = self.default_params.get('metric', 'Accuracy').upper()
         criterion: Union[nn.Module, Callable]
-        if metric_name == 'DICE':
+        if self.dataset_name == 'IXITiny':
             from losses import get_dice_loss; criterion = get_dice_loss
-        elif metric_name in ['ACCURACY', 'F1', 'BALANCED_ACCURACY']:
-            from losses import WeightedCELoss
-            criterion = WeightedCELoss()
-        else: raise ValueError(f"Criterion not defined for metric {metric_name}")
+        elif self.dataset_name == 'ISIC':
+            from losses import ISICLoss
+            criterion = ISICLoss()
+        else:
+            criterion = nn.CrossEntropyLoss()
 
         return model, criterion
 

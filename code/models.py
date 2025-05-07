@@ -296,11 +296,12 @@ class IXITiny(nn.Module):
         # Load weights *after* defining the UNet model structure fully
         # but *before* potentially modifying requires_grad if you only want to fine-tune parts
         try:
-            checkpoint = torch.load(
-                f'{ROOT_DIR}/data/IXITiny/whole_images_epoch_5.pth',
-                map_location=torch.device('cpu')
-            )
-            self.model.load_state_dict(checkpoint['weights'])
+            pass
+            # checkpoint = torch.load(
+            #     f'{ROOT_DIR}/data/IXITiny/whole_images_epoch_5.pth',
+            #     map_location=torch.device('cpu')
+            # )
+            # self.model.load_state_dict(checkpoint['weights'])
             #print("Successfully loaded pre-trained weights for self.model.")
         except Exception as e:
             print(f"Could not load pre-trained weights: {e}. Model will use initial weights.")
