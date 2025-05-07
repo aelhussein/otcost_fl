@@ -143,7 +143,7 @@ class _BaseImgDS(TorchDataset):
         # --- frequency filter -------------------------------------------------
         f = self.trans_args.get('frequency', 0.0)
         if abs(f) > 1e-3:
-            t.append(transforms.Lambda(lambda img, d=f: self.gaussian_blur_filter(img, d)))
+            t.append(transforms.Lambda(lambda img, d=f: self.img_transform(img, d)))
 
         if self.is_train and self.TRAIN_AUG:
             t.extend(self.TRAIN_AUG)
@@ -171,7 +171,10 @@ class EMNISTDataset(_BaseImgDS):
     MEAN_STD  = ((0.1307,), (0.3081,))
     TRAIN_AUG = [transforms.RandomRotation((-0, 0))]
     RESIZE_TO = (28, 28)
-    def freq_filter(self, img, delta):
+    def img_transform(self, img: Image.Image, delta: float) -> Image.Image:
+        return self.freq_filter(img, delta)
+
+    def freq_filter(self, img: Image.Image, delta: float) -> Image.Image:
     # delta>0 high-pass, delta<0 low-pass
         if abs(delta) < 1e-3:
             return img
@@ -282,6 +285,12 @@ class CIFARDataset(_BaseImgDS):
         # Convert back to PIL
         return to_pil(transformed)
     
+    def img_transform(self, img: Image.Image, delta: float) -> Image.Image:
+        if delta < 0:
+            return self.color_jitter_filter(img, delta)
+        else:
+            return self.gaussian_blur_filter(img, delta)
+    
     def color_jitter_filter(self, img: Image.Image, delta: float) -> Image.Image:
         """
         Apply a deterministic color adjustment based on delta.
@@ -336,7 +345,7 @@ class CIFARDataset(_BaseImgDS):
 
         # Define maximum sigma when |delta|=1. This can be tuned.
         # E.g., for 28x28 or 32x32 images, max sigma of 1.5-2.0 is reasonable.
-        MAX_SIGMA_AT_UNITY_DELTA = 1.5
+        MAX_SIGMA_AT_UNITY_DELTA = 1.3
 
         # Calculate sigma based on delta's magnitude
         sigma = delta * MAX_SIGMA_AT_UNITY_DELTA

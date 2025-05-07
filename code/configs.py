@@ -23,7 +23,7 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 N_WORKERS = 0 # Use 0 for simplicity/debugging
 
 # --- Supported Algorithms ---
-ALGORITHMS = ['fedavg'] # Add others as implemented
+ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
 
 # --- Supported Datasets ---
 DATASETS = [
@@ -281,12 +281,12 @@ DATASET_COSTS = {
     'Credit': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     'EMNIST': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     #'CIFAR': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
-    'CIFAR': [0, 0.3, 0.5, 0.7, 0.9],
+    'CIFAR': [0.0, 0.25, 0.5, 0.75, 1.0],
     # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
     'Synthetic_Concept': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 
     # Site mapping keys - Used directly by load_heart_raw, load_isic_paths_raw, load_ixi_paths_raw
-    'IXITiny': [0.08, 0.28, 0.30, 'all'],
-    'ISIC': [0.15], #[0.15, 0.19, 0.25, 0.3, 'all'],
+    'IXITiny': [0.08, 0.28, 0.30],
+    'ISIC': [0.15, 0.19, 0.25, 0.3],
     'Heart': [1, 2, 3, 4, 5, 6]
 }

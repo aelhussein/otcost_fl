@@ -280,7 +280,7 @@ class IXITiny(nn.Module):
         try:
             # This assumes EncodingBlock -> ConvolutionalBlock -> Conv3d
             self.bottleneck_channels = self.model.bottom_block.conv2.conv_layer.out_channels
-            print(f"Dynamically determined bottleneck channels: {self.bottleneck_channels}")
+            #print(f"Dynamically determined bottleneck channels: {self.bottleneck_channels}")
         except AttributeError:
             print(f"Could not dynamically determine bottleneck channels, using hardcoded {self.bottleneck_channels}")
             # Fallback if the structure is different or not yet fully initialized for introspection
@@ -301,7 +301,7 @@ class IXITiny(nn.Module):
                 map_location=torch.device('cpu')
             )
             self.model.load_state_dict(checkpoint['weights'])
-            print("Successfully loaded pre-trained weights for self.model.")
+            #print("Successfully loaded pre-trained weights for self.model.")
         except Exception as e:
             print(f"Could not load pre-trained weights: {e}. Model will use initial weights.")
 
