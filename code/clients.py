@@ -89,8 +89,29 @@ class Client:
             None
     
     def set_model_state(self, state_dict: Dict, test: bool = False):
-        """Loads state dict into the client's global model state (CPU)."""
-        self.global_state.load_current_model_state_dict(state_dict)
+        """
+        Loads only trainable parameters from state_dict into the client's model.
+        Preserves non-trainable parameters like batch norm statistics.
+        """
+        # Get current model state
+        current_state_dict = self.global_state.model.state_dict()
+        
+        # Create new state dict to load
+        new_state_dict = current_state_dict.copy()
+        
+        # Get trainable parameter names
+        trainable_param_names = []
+        for name, param in self.global_state.model.named_parameters():
+            if param.requires_grad:
+                trainable_param_names.append(name)
+        
+        # Only update trainable parameters
+        for key in state_dict:
+            if key in trainable_param_names:
+                new_state_dict[key].copy_(state_dict[key])
+        
+        # Load the selectively updated state dict
+        self.global_state.model.load_state_dict(new_state_dict)
 
     def _train_batch(self, model: nn.Module, optimizer: optim.Optimizer, criterion: Union[nn.Module, Callable], batch_x: Any, batch_y: Any) -> float:
         """

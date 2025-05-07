@@ -260,15 +260,25 @@ class Server:
 class FLServer(Server):
     """Implements standard FedAvg aggregation and distribution (CPU-based)."""
     def aggregate_models(self, client_states_info: List[Dict[str, Any]]):
-        """Performs FedAvg aggregation on CPU using state dicts by parameter name."""
+        """
+        Performs FedAvg aggregation only on trainable parameters.
+        Leaves non-trainable parameters (like BN statistics) unchanged.
+        """
         global_model = self.serverstate.model  # Operate on server's model (CPU)
         global_state_dict = global_model.state_dict()
         
-        # Initialize accumulator state dict with zeros matching global model's shapes
+        # Identify which parameters require gradients (trainable)
+        trainable_param_names = []
+        for name, param in global_model.named_parameters():
+            if param.requires_grad:
+                trainable_param_names.append(name)
+        
+        # Initialize accumulator state dict only for trainable parameters
         accumulated_state_dict = {}
-        for key, param in global_state_dict.items():
-            if isinstance(param, torch.Tensor):
-                accumulated_state_dict[key] = torch.zeros_like(param)
+        for key in global_state_dict:
+            # Only aggregate trainable parameters
+            if key in trainable_param_names:
+                accumulated_state_dict[key] = torch.zeros_like(global_state_dict[key], dtype=torch.float32)
         
         total_weight = 0.0
         with torch.no_grad():
@@ -277,16 +287,19 @@ class FLServer(Server):
                 weight = info.get('weight', 0.0)
                 total_weight += weight
                 
-                # Accumulate each parameter by name
+                # Accumulate each trainable parameter by name
                 for key in accumulated_state_dict.keys():
                     if key in state_dict:
                         client_param = state_dict[key]
                         if isinstance(client_param, torch.Tensor):
-                            accumulated_state_dict[key].add_(client_param.cpu(), alpha=weight)
+                            float_param = client_param.cpu().to(torch.float32)
+                            accumulated_state_dict[key].add_(float_param, alpha=weight)
             
+            # Process averaged parameters
             for key in accumulated_state_dict.keys():
                 accumulated_state_dict[key].div_(total_weight)
-                global_state_dict[key].copy_(accumulated_state_dict[key])
+                # Update only the trainable parameters
+                global_state_dict[key].copy_(accumulated_state_dict[key].to(global_state_dict[key].dtype))
 
     def distribute_global_model(self, test: bool = False):
         """Distributes the appropriate CPU global model state dictionary."""
