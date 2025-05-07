@@ -259,13 +259,13 @@ DEFAULT_PARAMS = {
         'fixed_classes': 2,
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
-        'batch_size': 64,
+        'batch_size': 4,
         'epochs_per_round': 1, 'rounds': 50, 'rounds_tune_inner': 10,
         'runs': 10, 'runs_tune': 3, 'metric': 'DICE', 'base_seed': 42,
         'default_num_clients': 2, 'max_clients': 3,
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
         'max_parallel_clients' : 2,
-        'use_weighted_loss': False, # DICE loss often doesn't need weighting
+        'use_weighted_loss': False, # DICE loss
     }
 }
 

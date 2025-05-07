@@ -61,17 +61,20 @@ class Client:
         """
         Calculate class weights based on training data distribution.
         """
-        all_labels = []
-        for batch in self.data.train_loader:
-            y = batch[1]
-            all_labels.append(y.cpu())
-        all_labels_tensor = torch.cat(all_labels)
-        label_counts = torch.bincount(all_labels_tensor.flatten())
-        label_counts = torch.clamp(label_counts, min=1)
-        weights = 1.0 / label_counts.float()
-        total_weight = weights.sum()
-        weights = weights * len(weights) / total_weight
-        return weights if self.config.use_weighted_loss else None
+        if self.config.use_weighted_loss:
+            all_labels = []
+            for batch in self.data.train_loader:
+                y = batch[1]
+                all_labels.append(y.cpu())
+            all_labels_tensor = torch.cat(all_labels)
+            label_counts = torch.bincount(all_labels_tensor.flatten())
+            label_counts = torch.clamp(label_counts, min=1)
+            weights = 1.0 / label_counts.float()
+            total_weight = weights.sum()
+            weights = weights * len(weights) / total_weight
+            return weights
+        else:
+            None
     
     def set_model_state(self, state_dict: Dict, test: bool = False):
         """Loads state dict into the client's global model state (CPU)."""
@@ -169,7 +172,7 @@ class Client:
         """Evaluates a specified model state (current or best)."""
         state = self._get_state(personal)            
         state_dict_to_eval = state.get_best_model_state_dict() if use_best else state.get_current_model_state_dict()
-        eval_model = copy.deepcopy(state.model).cpu()
+        eval_model = state.model.cpu() #copy.deepcopy(state.model).cpu()
         eval_model.load_state_dict(state_dict_to_eval)
         avg_loss, predictions_cpu, labels_cpu = self._process_epoch(
             loader=loader,

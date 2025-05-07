@@ -98,6 +98,58 @@ def get_dice_score(output: torch.Tensor, target: torch.Tensor,
     dice_score_per_sample = numerator / denominator
     return dice_score_per_sample.mean().item()
 
+
+def get_dice_loss(output: torch.Tensor, target: torch.Tensor,
+                  foreground_channel: int = 1,
+                  epsilon: float = 1e-9) -> torch.Tensor: # Return a Tensor
+    """
+    Calculates the Dice Loss for segmentation tasks.
+    The Dice Loss is 1 - Dice Score.
+    """
+    # output shape: (Batch, Classes, D, H, W)
+    # target shape: (Batch, Classes, D, H, W) OR (Batch, 1, D, H, W) OR (Batch, D, H, W)
+
+    # 1. Select the foreground channel from the model's output
+    p0 = output[:, foreground_channel, ...] # Shape: (Batch, D, H, W)
+
+    # 2. Prepare the target tensor
+    if target.dim() == output.dim() and target.shape[1] == output.shape[1]: # One-hot
+        g0 = target[:, foreground_channel, ...]
+    elif target.dim() == output.dim() and target.shape[1] == 1: # Class indices (B, 1, D, H, W)
+        g0 = (target[:, 0, ...] == foreground_channel).float()
+    elif target.dim() == output.dim() - 1 and target.shape[0] == output.shape[0] and \
+         target.shape[1:] == output.shape[2:]: # Class indices (B, D, H, W)
+        g0 = (target == foreground_channel).float()
+    else:
+        raise ValueError(
+            f"Target shape {target.shape} is not compatible with output shape {output.shape} "
+            f"for Dice loss calculation."
+        )
+
+    g0 = g0.float() # Ensure target is float
+
+    # Dimensions over which to sum (spatial dimensions of p0)
+    # If p0 is (B, D, H, W), sum_dims will be (1, 2, 3)
+    sum_dims = tuple(range(1, p0.dim()))
+
+    tp = torch.sum(p0 * g0, dim=sum_dims)
+    fp = torch.sum(p0 * (1.0 - g0), dim=sum_dims)
+    fn = torch.sum((1.0 - p0) * g0, dim=sum_dims)
+
+    numerator = 2 * tp
+    denominator = 2 * tp + fp + fn + epsilon
+
+    # Dice score per sample (this is a tensor of shape [Batch])
+    dice_score_per_sample = numerator / denominator
+
+    # Mean Dice score across the batch (this is a scalar tensor)
+    mean_dice_score = dice_score_per_sample.mean()
+
+    # Dice Loss is 1 - Dice Score
+    dice_loss = 1.0 - mean_dice_score
+
+    return dice_loss # Return the scalar tensor
+
 # Add this class to helper.py
 class WeightedCELoss(nn.Module):
     """

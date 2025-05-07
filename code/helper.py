@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import copy
 from functools import partial
 import sklearn.metrics as metrics
-from losses import WeightedCELoss # Custom loss function
+from losses import WeightedCELoss, get_dice_loss, get_dice_score # Custom loss function
 
 # Import global config directly
 from configs import DEFAULT_PARAMS # Needed for config helpers
@@ -180,7 +180,7 @@ class TrainingManager:
         if isinstance(criterion, nn.CrossEntropyLoss) or isinstance(criterion, WeightedCELoss):
              if batch_y_dev.ndim == 2 and batch_y_dev.shape[1] == 1: batch_y_dev = batch_y_dev.squeeze(1)
              batch_y_dev = batch_y_dev.long()
-        elif callable(criterion) and criterion.__name__ == 'get_dice_score':
+        elif callable(criterion) and criterion.__name__ == 'get_dice_loss':
              batch_y_dev = batch_y_dev.float()
 
         return batch_x_dev, batch_y_dev, batch_y_orig_cpu
