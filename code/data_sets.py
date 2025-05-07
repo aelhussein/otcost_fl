@@ -306,12 +306,12 @@ class CIFARDataset(_BaseImgDS):
         # Define maximum impact scales for each parameter when |delta|=1.
         # These can be tuned. For example, a 0.4 scale means at delta=1,
         # the factor becomes 1.4, and at delta=-1, it becomes 0.6.
-        BRIGHTNESS_STRENGTH = 0.4
-        CONTRAST_STRENGTH = 0.4
-        SATURATION_STRENGTH = 0.4
+        BRIGHTNESS_STRENGTH = 0.2
+        CONTRAST_STRENGTH = 0.2
+        SATURATION_STRENGTH = 0.2
         # Max hue shift. Typical range for hue in TF.adjust_hue is [-0.5, 0.5].
         # So, HUE_STRENGTH of 0.2 means delta=1 results in +0.2 hue shift.
-        HUE_STRENGTH = 0.2
+        HUE_STRENGTH = 0.1
 
         # Calculate deterministic adjustment factors
         # brightness_factor: 1.0 means no change.
@@ -345,7 +345,7 @@ class CIFARDataset(_BaseImgDS):
 
         # Define maximum sigma when |delta|=1. This can be tuned.
         # E.g., for 28x28 or 32x32 images, max sigma of 1.5-2.0 is reasonable.
-        MAX_SIGMA_AT_UNITY_DELTA = 1.3
+        MAX_SIGMA_AT_UNITY_DELTA = 1.2
 
         # Calculate sigma based on delta's magnitude
         sigma = delta * MAX_SIGMA_AT_UNITY_DELTA
@@ -366,13 +366,6 @@ class CIFARDataset(_BaseImgDS):
         # We'll use a square kernel and symmetric sigma.
         return TF.gaussian_blur(img, kernel_size=[kernel_s, kernel_s], sigma=[sigma, sigma])
 
-
-    def gamma_shift(self, img: Image.Image, delta: float) -> Image.Image:
-        """delta>0 ⇒ brighter (gamma<1), delta<0 ⇒ darker (gamma>1)."""
-        if abs(delta) < 1e-3:
-            return img
-        gamma = np.exp(-delta)           # maps [-1,1] → [e^{-1}, e^{+1}]
-        return TF.adjust_gamma(img, gamma, gain=1.0)
 
 class ISICDataset(TorchDataset):
     """Final ISIC dataset wrapper (expects image paths, labels). Uses Albumentations."""
