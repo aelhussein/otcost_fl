@@ -13,7 +13,7 @@ from typing import Optional, Dict, List, Tuple, Any, Union, Callable
 
 # Import project modules
 from configs import ROOT_DIR, ALGORITHMS, DEVICE, DEFAULT_PARAMS, DATA_DIR
-from helper import (set_seeds, get_parameters_for_dataset, # Keep necessary imports
+from helper import (set_seeds, get_parameters_for_dataset, get_model_instance, # Keep necessary imports
                     get_default_lr, get_default_reg, MetricKey, SiteData, ModelState, TrainerConfig) # Import types from helper
 # Import necessary components
 from servers import Server, FedAvgServer, FedProxServer, PFedMeServer, DittoServer # Import all server types
@@ -47,12 +47,10 @@ class SingleRunExecutor:
 
     def _create_model(self) -> Tuple[nn.Module, Union[nn.Module, Callable]]:
         """Creates model instance and criterion (on CPU initially)."""
-        model_name = self.dataset_name
-        model_name_actual = 'Synthetic' if 'Synthetic_' in model_name else model_name
-        model_class = getattr(ms, model_name_actual, None)
-        if model_class is None: raise ValueError(f"Model class '{model_name_actual}' not found.")
-        model = model_class()
-
+        # Use the helper to get a fresh model instance
+        model = get_model_instance(self.dataset_name)
+        
+        # This part remains the same - handling criterion is specific to this method
         metric_name = self.default_params.get('metric', 'Accuracy').upper()
         criterion: Union[nn.Module, Callable]
         if metric_name == 'DICE':

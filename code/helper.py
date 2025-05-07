@@ -185,6 +185,28 @@ class TrainingManager:
 
         return batch_x_dev, batch_y_dev, batch_y_orig_cpu
 
+def get_model_instance(dataset_name: str, **model_params) -> nn.Module:
+    """Create a fresh model instance based on dataset_name.
+    
+    Args:
+        dataset_name: Name of the dataset to determine model architecture
+        **model_params: Optional parameters to pass to model constructor
+        
+    Returns:
+        A new model instance on CPU
+    """
+    import models as ms  # Import here to avoid circular imports
+    
+    model_name_actual = 'Synthetic' if 'Synthetic_' in dataset_name else dataset_name
+    model_class = getattr(ms, model_name_actual, None)
+    if model_class is None:
+        raise ValueError(f"Model class '{model_name_actual}' not found.")
+    
+    # Create model with optional parameters or default construction
+    if model_params:
+        return model_class(**model_params).cpu()
+    else:
+        return model_class().cpu()
 
 # --- Model Comparison (Simplified) ---
 class ModelDiversity:

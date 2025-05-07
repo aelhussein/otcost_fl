@@ -9,7 +9,7 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Iterator, Any, Callable, Union
-from helper import gpu_scope, TrainerConfig, SiteData, ModelState, TrainingManager, MetricsCalculator
+from helper import gpu_scope, TrainerConfig, SiteData, ModelState, TrainingManager, MetricsCalculator, get_model_instance
 
 # =============================================================================
 # == Base Client Class ==
@@ -17,11 +17,13 @@ from helper import gpu_scope, TrainerConfig, SiteData, ModelState, TrainingManag
 class Client:
     """Base FL client manages model states and training execution."""
     def __init__(self,
-                 config: TrainerConfig,
-                 data: SiteData,
-                 initial_global_state: ModelState, # Has model/criterion from server
-                 metric_fn: Callable,
-                 personal_model: bool = False):
+                config: TrainerConfig,
+                data: SiteData,
+                initial_global_state: ModelState, # Has model/criterion from server
+                metric_fn: Callable,
+                personal_model: bool = False):
+        from helper import get_model_instance  # Import the helper function
+        
         self.config = config
         self.data = data
         self.metric_fn = metric_fn
@@ -30,17 +32,27 @@ class Client:
         self.training_manager = TrainingManager(config.device)
         self.class_weights = self._calculate_class_weights()
 
-        # Initialize ModelStates
+        # Initialize ModelStates with fresh model instances
+        # Create a fresh model instance instead of copying
+        global_model = get_model_instance(self.config.dataset_name)
+        # Load the state dict from the initial model
+        global_model.load_state_dict(initial_global_state.model.state_dict())
+        
         self.global_state = ModelState(
-            model=copy.deepcopy(initial_global_state.model).cpu(),
+            model=global_model.cpu(),
             criterion=initial_global_state.criterion
         )
         self.global_state.optimizer = self._create_optimizer(self.global_state.model)
 
         self.personal_state: Optional[ModelState] = None
         if self.requires_personal_model:
+            # Create another fresh model instance for personal model
+            personal_model = get_model_instance(self.config.dataset_name)
+            # Load the same initial state dict
+            personal_model.load_state_dict(initial_global_state.model.state_dict())
+            
             self.personal_state = ModelState(
-                model=copy.deepcopy(initial_global_state.model).cpu(),
+                model=personal_model.cpu(),
                 criterion=initial_global_state.criterion
             )
             self.personal_state.optimizer = self._create_optimizer(self.personal_state.model)
@@ -170,10 +182,23 @@ class Client:
 
     def evaluate(self, loader: Optional[DataLoader], personal: bool, use_best: bool) -> Tuple[float, float]:
         """Evaluates a specified model state (current or best)."""
+        from helper import get_model_instance  # Import the helper function
+        
         state = self._get_state(personal)            
         state_dict_to_eval = state.get_best_model_state_dict() if use_best else state.get_current_model_state_dict()
-        eval_model = state.model.cpu() #copy.deepcopy(state.model).cpu()
-        eval_model.load_state_dict(state_dict_to_eval)
+        
+        if state_dict_to_eval is None:
+            print(f"Warning: No state_dict available for evaluation (client: {self.site_id}, personal: {personal}, use_best: {use_best}).")
+            return float('inf'), 0.0
+            
+        # Create a fresh model instance for evaluation
+        try:
+            eval_model = get_model_instance(self.config.dataset_name)
+            eval_model.load_state_dict(state_dict_to_eval)
+        except Exception as e:
+            print(f"Error creating/loading model for evaluation (client: {self.site_id}, dataset: {self.config.dataset_name}): {e}")
+            return float('inf'), 0.0
+            
         avg_loss, predictions_cpu, labels_cpu = self._process_epoch(
             loader=loader,
             model=eval_model,
