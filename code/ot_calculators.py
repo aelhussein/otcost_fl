@@ -220,8 +220,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
         if use_loss_weighting and not is_segmentation: 
             required_keys.append('weights')
 
-        proc_data1 = self._preprocess_input(data1.get('h'), data1.get('p_prob'), data1.get('y'), data1.get('weights'), required_keys)
-        proc_data2 = self._preprocess_input(data2.get('h'), data2.get('p_prob'), data2.get('y'), data2.get('weights'), required_keys)
+        proc_data1, proc_data2 = self._preprocess_input(data1, data2, required_keys)
 
         if proc_data1 is None or proc_data2 is None:
             missing_str = "'weights'" if use_loss_weighting and (data1.get('weights') is None or data2.get('weights') is None) else "h, p_prob, or y"
@@ -516,8 +515,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
             required_keys.append('p_prob')
             # Note: 'loss' is derived from p_prob and y, handled after preprocessing
 
-        proc_data1 = self._preprocess_input(data1.get('h'), data1.get('p_prob'), data1.get('y'), data1.get('weights'), required_keys)
-        proc_data2 = self._preprocess_input(data2.get('h'), data2.get('p_prob'), data2.get('y'), data2.get('weights'), required_keys)
+        proc_data1, proc_data2 = self._preprocess_input(data1, data2, required_keys)
 
         if proc_data1 is None or proc_data2 is None:
             logger.warning(f"Decomposed OT requires {required_keys}. Preprocessing failed or data missing. Skipping.")
@@ -869,8 +867,6 @@ class DirectOTCalculator(BaseOTCalculator):
             'weighting_used': None,
             'label_hellinger_weight': np.nan,
             'feature_weight': np.nan,
-            'feature_contribution': np.nan,
-            'label_contribution': np.nan,
             'label_costs': []
         }
         self.cost_matrices = {
@@ -911,7 +907,7 @@ class DirectOTCalculator(BaseOTCalculator):
         feature_weight = params.get('feature_weight', 2.0)
         label_weight = params.get('label_weight', 1.0)
         compress_vectors = params.get('compress_vectors', True)
-        compression_threshold = params.get('compression_threshold', 100)
+        compression_threshold = params.get('compression_threshold', 20)
         compression_ratio = params.get('compression_ratio', 0.8)  # Used for PCA variance ratio
         reg = params.get('reg', DEFAULT_OT_REG)
         max_iter = params.get('max_iter', DEFAULT_OT_MAX_ITER)
@@ -930,10 +926,8 @@ class DirectOTCalculator(BaseOTCalculator):
             required_keys.append('y')
         if use_loss_weighting:
             required_keys.append('weights')
-        proc_data1 = self._preprocess_input(data1.get('h'), data1.get('p_prob'), data1.get('y'), 
-                                        data1.get('weights'), required_keys)
-        proc_data2 = self._preprocess_input(data2.get('h'), data2.get('p_prob'), data2.get('y'), 
-                                        data2.get('weights'), required_keys)
+
+        proc_data1, proc_data2 = self._preprocess_input(data1, data2, required_keys)
         
         if proc_data1 is None or proc_data2 is None:
             logger.warning("Enhanced DirectOT calculation requires neural network activations ('h')" +
@@ -951,7 +945,6 @@ class DirectOTCalculator(BaseOTCalculator):
         w2 = proc_data2.get('weights')
         p1_prob = proc_data1.get('p_prob')  # Initialize explicitly, might be None
         p2_prob = proc_data2.get('p_prob')  # Initialize explicitly, might be None
-        
         N, M = h1.shape[0], h2.shape[0]
         
         # Validate sample counts
@@ -1083,8 +1076,11 @@ class DirectOTCalculator(BaseOTCalculator):
                             mu_1, sigma_1 = self._get_normal_params(h1_label)
                             mu_2, sigma_2 = self._get_normal_params(h2_label)
                             # Calculate Hellinger distance
+                            # if (label1 == label2) and (len(unique_labels1) > 1) and (len(unique_labels2 ) >  1):
+                            #     hellinger_dist = 0.5 #Avg ie no effect
+                            # else:
+                            #     hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
                             hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
-                            
                             if hellinger_dist is not None:
                                 label_pair_distances[(label1, label2)] = hellinger_dist
                                 # Store for reporting
@@ -1141,12 +1137,7 @@ class DirectOTCalculator(BaseOTCalculator):
             # Combine costs
             combined_cost_matrix = (norm_feature_weight * feature_cost_matrix + 
                                 norm_label_weight * label_cost_matrix)
-            
-            # Track contributions for reporting
-            feature_contribution = (norm_feature_weight * feature_cost_matrix).mean().item()
-            label_contribution = (norm_label_weight * label_cost_matrix).mean().item()
-            self.results['feature_contribution'] = feature_contribution
-            self.results['label_contribution'] = label_contribution
+    
             
             # Store the combined cost matrix
             self.cost_matrices['combined_cost'] = combined_cost_matrix.cpu().numpy()
@@ -1182,9 +1173,6 @@ class DirectOTCalculator(BaseOTCalculator):
         self.results['transport_plan'] = transport_plan
         
         if verbose:
-            feature_msg = f"Feature Cost ({distance_method}): {feature_contribution:.4f}" if use_label_hellinger else ""
-            label_msg = f", Label Cost: {label_contribution:.4f}" if use_label_hellinger else ""
-            
             # Fix the format specifier error
             if np.isfinite(ot_cost):
                 logger.info(f"  Enhanced DirectOT Cost ({weight_type} weights): {ot_cost:.4f}")
@@ -1192,7 +1180,6 @@ class DirectOTCalculator(BaseOTCalculator):
                 logger.info(f"  Enhanced DirectOT Cost ({weight_type} weights): Failed")
                 
             if use_label_hellinger:
-                logger.info(f"  {feature_msg}{label_msg}, Combined using weights {norm_feature_weight:.2f}:{norm_label_weight:.2f}")
                 logger.info(f"  Label Hellinger distances by class pairs:")
                 for (label1, label2), dist in self.results['label_costs']:
                     logger.info(f"    Labels ({label1},{label2}): {dist:.4f}")

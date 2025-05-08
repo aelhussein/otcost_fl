@@ -41,7 +41,7 @@ def pivot_results_comparison(results_df: pd.DataFrame) -> pd.DataFrame:
     temp_df['Primary_Metric'] = temp_df.apply(get_primary_metric, axis=1)
 
     # Define columns to keep alongside the pivoted values (optional)
-    index_cols = ['Cost', 'Local_Final_Loss', 'FedAvg_Final_Loss', 'Loss_Delta']
+    index_cols = ['Cost', 'Local_Final', 'FedAvg_Final', 'Delta']
     # Ensure index_cols are present
     index_cols = [col for col in index_cols if col in temp_df.columns]
 
@@ -66,7 +66,7 @@ def plot_ot_metrics_vs_perf_delta(
     ):
     """
     Generates a figure with one subplot per OT Method found in the DataFrame.
-    Each subplot shows the primary metric for that method vs. Loss_Delta_pct,
+    Each subplot shows the primary metric for that method vs. Delta_pct,
     with its own legend for the Parameter Sets relevant to that method.
 
     Args:
@@ -80,7 +80,7 @@ def plot_ot_metrics_vs_perf_delta(
         return
 
     required_cols = ['Cost', 'OT_Method', 'Param_Set_Name',
-                     'Local_Final_Loss', 'FedAvg_Final_Loss', 'Loss_Delta']
+                     'Local_Final', 'FedAvg_Final', 'Delta']
     if not all(col in results_df.columns for col in required_cols):
         missing = [col for col in required_cols if col not in results_df.columns]
         logger.warning(f"Input DataFrame missing required columns: {missing}. Cannot plot.") # Changed from warnings.warn
@@ -89,13 +89,13 @@ def plot_ot_metrics_vs_perf_delta(
     plot_df = results_df.copy()
 
     # --- Calculate Percentage Delta ---
-    plot_df['Loss_Delta_pct'] = np.where(
-        np.abs(plot_df['Local_Final_Loss']) > 1e-9,
-        (plot_df['Loss_Delta'] / plot_df['Local_Final_Loss']) * 100.0,
+    plot_df['Delta_pct'] = np.where(
+        np.abs(plot_df['Local_Final']) > 1e-9,
+        (plot_df['Delta'] / plot_df['Local_Final']) * 100.0,
         np.nan
     )
-    y_var = 'Loss_Delta_pct'
-    y_label = "Performance Delta (%) [(Local - FedAvg)/Local]"
+    y_var = 'Delta_pct'
+    y_label = "Performance Delta (%)"
 
     # --- Define Primary Metric per Method ---
     primary_metric_map = {
@@ -110,12 +110,7 @@ def plot_ot_metrics_vs_perf_delta(
         'fixed_anchor': 'Fixed Anchor Total Cost',
         'direct_ot': 'Direct OT Cost'
     }
-    # lower_is_better is not directly used for plotting structure now,
-    # but kept for potential future use or interpretation.
-    lower_is_better = {
-        'feature_error': True, 'decomposed': True,
-        'fixed_anchor': True, 'direct_ot': True
-    }
+
 
     available_methods = sorted([m for m in plot_df['OT_Method'].unique() if m in primary_metric_map])
 
@@ -210,7 +205,7 @@ def plot_ot_metrics_vs_perf_delta(
     # Set shared Y-label using the first axis
     axes[0].set_ylabel(y_label, fontsize=12)
 
-    fig_title = main_title if main_title else "OT Metrics vs. Performance Delta by Parameter Set"
+    fig_title = main_title if main_title else "OT Metrics vs. Performance Delta"
     fig.suptitle(fig_title, fontsize=18, y=1.02) # Adjust title position
 
     # --- Remove Figure Legend Code ---

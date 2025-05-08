@@ -737,7 +737,7 @@ class OTDataManager:
         return {cid1_str: processed_data1, cid2_str: processed_data2}
 
     def get_performance(
-        self, dataset_name: str, cost: Any, aggregation_method: str = 'mean'
+        self, dataset_name: str, cost: Any, aggregation_method: str = 'mean', metric: str = 'loss',
     ) -> Tuple[float, float]:
         """
         Loads final performance metrics from TrialRecords.
@@ -755,18 +755,22 @@ class OTDataManager:
             logger.warning(f"Cost {cost} not found in results for {dataset_name}")
             return np.nan, np.nan
         
-        local_losses, fedavg_losses = [], []
+        local_score, fedavg_score = [], []
+        if metric == 'loss':
+            metric_key = MetricKey.TEST_LOSSES
+        elif metric == 'score':
+            metric_key = MetricKey.TEST_SCORES
         for record in cost_records:
-            if not record.error and record.metrics.get(MetricKey.TEST_LOSSES):
-                final_loss = record.metrics[MetricKey.TEST_LOSSES][-1]
+            if not record.error and record.metrics.get(metric_key):
+                final_loss = record.metrics[metric_key][-1]
                 if record.server_type == 'local':
-                    local_losses.append(final_loss)
+                    local_score.append(final_loss)
                 elif record.server_type == 'fedavg':
-                    fedavg_losses.append(final_loss)
+                    fedavg_score.append(final_loss)
         
         agg_func = np.median if aggregation_method.lower() == 'median' else np.mean
-        local_score = float(agg_func(local_losses)) if local_losses else np.nan
-        fedavg_score = float(agg_func(fedavg_losses)) if fedavg_losses else np.nan
+        local_scores = float(agg_func(local_score)) if local_score else np.nan
+        fedavg_scores = float(agg_func(fedavg_score)) if fedavg_score else np.nan
                 
-        logger.info(f"Performance for {dataset_name}, cost {cost}: Local={local_score if not np.isnan(local_score) else 'NaN'}, FedAvg={fedavg_score if not np.isnan(fedavg_score) else 'NaN'}")
-        return local_score, fedavg_score
+        logger.info(f"Performance for {dataset_name}, cost {cost}: Local={local_scores if not np.isnan(local_scores) else 'NaN'}, FedAvg={fedavg_scores if not np.isnan(fedavg_scores) else 'NaN'}")
+        return local_scores, fedavg_scores

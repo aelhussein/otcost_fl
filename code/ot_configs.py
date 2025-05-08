@@ -7,7 +7,7 @@ from typing import Dict, Optional, Any, List
 
 # Configure module logger
 logger = logging.getLogger(__name__)
-
+VERBOSE = True
 class OTConfig:
     """
     Configuration object for a single OT calculation run.
@@ -46,141 +46,141 @@ class OTConfig:
 # Feature Error OT Configurations
 feature_error_configs = [
     # Basic configurations with different weighting strategies
-    OTConfig(
-        method_type='feature_error',
-        name='FE_Uniform_Norm',
-        params={
-            'use_loss_weighting': False,
-            'normalize_cost': True,
-            'min_samples': 20,
-            'max_samples': 900,
-            'alpha': 1.0,
-            'beta': 1.0,
-            'verbose': False,
-        }
-    ),
-    OTConfig(
-        method_type='feature_error',
-        name='FE_LossWeighted_Norm',
-        params={
-            'use_loss_weighting': True,
-            'normalize_cost': True,
-            'min_samples': 20,
-            'max_samples': 900,
-            'alpha': 1.0,
-            'beta': 1.0,
-            'verbose': False,
-        }
-    ),
-    # Feature-only variant (no error term)
-    OTConfig(
-        method_type='feature_error',
-        name='FE_FeatureOnly',
-        params={
-            'use_loss_weighting': False,
-            'normalize_cost': True,
-            'min_samples': 20,
-            'max_samples': 900,
-            'alpha': 1.0,
-            'beta': 0.0,  # No error term
-            'verbose': False,
-        }
-    ),
-    # Error-only variant (no feature term)
-    OTConfig(
-        method_type='feature_error',
-        name='FE_ErrorOnly',
-        params={
-            'use_loss_weighting': False,
-            'normalize_cost': True,
-            'min_samples': 20,
-            'max_samples': 900,
-            'alpha': 0.0,  # No feature term
-            'beta': 1.0,
-            'verbose': False,
-        }
-    ),
+    # OTConfig(
+    #     method_type='feature_error',
+    #     name='FE_Uniform_Norm',
+    #     params={
+    #         'use_loss_weighting': False,
+    #         'normalize_cost': True,
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'alpha': 1.0,
+    #         'beta': 1.0,
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
+    # OTConfig(
+    #     method_type='feature_error',
+    #     name='FE_LossWeighted_Norm',
+    #     params={
+    #         'use_loss_weighting': True,
+    #         'normalize_cost': True,
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'alpha': 1.0,
+    #         'beta': 1.0,
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
+    # # Feature-only variant (no error term)
+    # OTConfig(
+    #     method_type='feature_error',
+    #     name='FE_FeatureOnly',
+    #     params={
+    #         'use_loss_weighting': False,
+    #         'normalize_cost': True,
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'alpha': 1.0,
+    #         'beta': 0.0,  # No error term
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
+    # # Error-only variant (no feature term)
+    # OTConfig(
+    #     method_type='feature_error',
+    #     name='FE_ErrorOnly',
+    #     params={
+    #         'use_loss_weighting': False,
+    #         'normalize_cost': True,
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'alpha': 0.0,  # No feature term
+    #         'beta': 1.0,
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
 ]
 
 # Decomposed OT Configurations
 decomposed_configs = [
-    OTConfig(
-        method_type='decomposed',
-        name='Decomp_Mean',
-        params={
-            'use_loss_weighting': False,
-            'normalize_emd': True,
-            'normalize_cost': True,
-            'min_samples': 20,
-            'max_samples': 900,
-            'alpha_within': 1.0,
-            'beta_within': 0.0,
-            'aggregate_conditional_method': 'mean',
-            'verbose': False,
-        }
-    ),
-    OTConfig(
-        method_type='decomposed',
-        name='Decomp_ClassShare',
-        params={
-            'use_loss_weighting': False,
-            'normalize_emd': True,
-            'normalize_cost': True,
-            'min_samples': 20,
-            'max_samples': 900,
-            'alpha_within': 1.0,
-            'beta_within': 0.0,
-            'aggregate_conditional_method': 'class_share',
-            'verbose': False,
-        }
-    ),
-    OTConfig(
-        method_type='decomposed',
-        name='Decomp_LossWeighted_AvgLoss',
-        params={
-            'use_loss_weighting': True,
-            'normalize_emd': True,
-            'normalize_cost': True,
-            'min_samples': 20,
-            'max_samples': 900,
-            'alpha_within': 1.0,
-            'beta_within': 0.0,
-            'aggregate_conditional_method': 'avg_loss',
-            'verbose': False,
-        }
-    ),
+    # OTConfig(
+    #     method_type='decomposed',
+    #     name='Decomp_Mean',
+    #     params={
+    #         'use_loss_weighting': False,
+    #         'normalize_emd': True,
+    #         'normalize_cost': True,
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'alpha_within': 1.0,
+    #         'beta_within': 0.0,
+    #         'aggregate_conditional_method': 'mean',
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
+    # OTConfig(
+    #     method_type='decomposed',
+    #     name='Decomp_ClassShare',
+    #     params={
+    #         'use_loss_weighting': False,
+    #         'normalize_emd': True,
+    #         'normalize_cost': True,
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'alpha_within': 1.0,
+    #         'beta_within': 0.0,
+    #         'aggregate_conditional_method': 'class_share',
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
+    # OTConfig(
+    #     method_type='decomposed',
+    #     name='Decomp_LossWeighted_AvgLoss',
+    #     params={
+    #         'use_loss_weighting': True,
+    #         'normalize_emd': True,
+    #         'normalize_cost': True,
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'alpha_within': 1.0,
+    #         'beta_within': 0.0,
+    #         'aggregate_conditional_method': 'avg_loss',
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
 ]
 
 # Direct OT Configurations
 direct_ot_configs = [
-    OTConfig(
-        method_type='direct_ot',
-        name='Direct_Euclidean',
-        params={
-            'use_loss_weighting': False,
-            'normalize_activations': True,
-            'normalize_cost': True,
-            'distance_method': 'euclidean',
-            'min_samples': 20, 
-            'max_samples': 900,
-            'use_label_hellinger': False,
-            'verbose': False,
-        }
-    ),
-    OTConfig(
-        method_type='direct_ot',
-        name='Direct_Cosine',
-        params={
-            'use_loss_weighting': False,
-            'normalize_activations': True,
-            'normalize_cost': True,
-            'distance_method': 'cosine',
-            'min_samples': 20,
-            'max_samples': 900,
-            'use_label_hellinger': False,
-            'verbose': False,
-        }
-    ),
+    # OTConfig(
+    #     method_type='direct_ot',
+    #     name='Direct_Euclidean',
+    #     params={
+    #         'use_loss_weighting': False,
+    #         'normalize_activations': True,
+    #         'normalize_cost': True,
+    #         'distance_method': 'euclidean',
+    #         'min_samples': 20, 
+    #         'max_samples': 900,
+    #         'use_label_hellinger': False,
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
+    # OTConfig(
+    #     method_type='direct_ot',
+    #     name='Direct_Cosine',
+    #     params={
+    #         'use_loss_weighting': False,
+    #         'normalize_activations': True,
+    #         'normalize_cost': True,
+    #         'distance_method': 'cosine',
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'use_label_hellinger': False,
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
     OTConfig(
         method_type='direct_ot',
         name='Direct_WithHellinger',
@@ -188,29 +188,29 @@ direct_ot_configs = [
             'use_loss_weighting': False,
             'normalize_activations': True,
             'normalize_cost': True,
-            'distance_method': 'euclidean',
+            'distance_method': 'cosine',
             'min_samples': 20,
             'max_samples': 900,
             'use_label_hellinger': True,
-            'feature_weight': 2.0,
+            'feature_weight': 3.0,
             'label_weight': 1.0,
-            'verbose': False,
+            'verbose':VERBOSE,
         }
     ),
-    OTConfig(
-        method_type='direct_ot',
-        name='Direct_LossWeighted',
-        params={
-            'use_loss_weighting': True,
-            'normalize_activations': True,
-            'normalize_cost': True,
-            'distance_method': 'euclidean',
-            'min_samples': 20,
-            'max_samples': 900,
-            'use_label_hellinger': False,
-            'verbose': False,
-        }
-    ),
+    # OTConfig(
+    #     method_type='direct_ot',
+    #     name='Direct_LossWeighted',
+    #     params={
+    #         'use_loss_weighting': True,
+    #         'normalize_activations': True,
+    #         'normalize_cost': True,
+    #         'distance_method': 'euclidean',
+    #         'min_samples': 20,
+    #         'max_samples': 900,
+    #         'use_label_hellinger': False,
+    #         'verbose':VERBOSE,
+    #     }
+    # ),
 ]
 
 # Combined configuration list for convenience

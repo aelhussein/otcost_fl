@@ -47,6 +47,7 @@ class PipelineRunner:
         client_pairs_to_analyze: Optional[List[Tuple[Union[str, int], Union[str, int]]]] = None,
         activation_loader_type: str = 'val',
         performance_aggregation: str = 'mean',
+        metric_key: str = 'loss',
         base_seed: int = 42,
         force_activation_regen: bool = False,
         model_type: str = 'round0'
@@ -105,14 +106,16 @@ class PipelineRunner:
             
             # Load performance metrics for this cost
             final_local_score, final_fedavg_score = self.data_manager.get_performance(
-                dataset_name, cost, performance_aggregation
+                dataset_name, cost, performance_aggregation, metric_key
             )
-            
-            loss_delta = final_local_score - final_fedavg_score if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score) else np.nan
+            if metric_key == 'loss':
+                delta = final_local_score - final_fedavg_score if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score) else np.nan
+            elif metric_key == 'score':
+                delta = final_fedavg_score - final_local_score if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score) else np.nan
             
             logger.info(f"  Performance: Local={f'{final_local_score:.4f}' if np.isfinite(final_local_score) else 'NaN'}, "
                   f"FedAvg={f'{final_fedavg_score:.4f}' if np.isfinite(final_fedavg_score) else 'NaN'}, "
-                  f"Delta={f'{loss_delta:.4f}' if np.isfinite(loss_delta) else 'NaN'}")
+                  f"Delta={f'{delta:.4f}' if np.isfinite(delta) else 'NaN'}")
             
             # Process each client pair
             for j, pair in enumerate(pairs_to_run):
@@ -163,9 +166,9 @@ class PipelineRunner:
                         'Param_Set_Name': param_name,
                         'OT_Method': method_type,
                         'Run_Status': activation_status,
-                        'Local_Final_Loss': final_local_score,
-                        'FedAvg_Final_Loss': final_fedavg_score,
-                        'Loss_Delta': loss_delta,
+                        'Local_Final': final_local_score,
+                        'FedAvg_Final': final_fedavg_score,
+                        'Delta': delta,
                         # Initialize OT result columns
                         'FeatureErrorOT_Cost': np.nan,
                         'FeatureErrorOT_Weighting': None,
@@ -233,7 +236,7 @@ class PipelineRunner:
         return self._structure_output_dataframe(results_df)
 
     def _create_placeholder_row(self, cost, client_id_1, client_id_2, config: OTConfig, 
-                              status, local_loss, fedavg_loss, loss_delta):
+                              status, local_score, fedavg_score, delta):
         """Creates a placeholder result row when OT calculation fails."""
         return {
             'Cost': cost,
@@ -242,9 +245,9 @@ class PipelineRunner:
             'Param_Set_Name': config.name,
             'OT_Method': config.method_type,
             'Run_Status': status,
-            'Local_Final_Loss': local_loss,
-            'FedAvg_Final_Loss': fedavg_loss,
-            'Loss_Delta': loss_delta,
+            'Local_Final': local_score,
+            'FedAvg_Final': fedavg_score,
+            'Delta': delta,
             'FeatureErrorOT_Cost': np.nan,
             'FeatureErrorOT_Weighting': None,
             'Decomposed_LabelEMD': np.nan,
@@ -277,7 +280,7 @@ class PipelineRunner:
         cols_order = [
             'Cost', 'Client_1', 'Client_2',
             'Param_Set_Name', 'OT_Method', 'Run_Status',
-            'Local_Final_Loss', 'FedAvg_Final_Loss', 'Loss_Delta',
+            'Local_Final', 'FedAvg_Final', 'Delta',
             'FeatureErrorOT_Cost', 'FeatureErrorOT_Weighting',
             'Decomposed_CombinedScore', 'Decomposed_LabelEMD', 'Decomposed_ConditionalOT',
             'DirectOT_Cost', 'DirectOT_DistMethod', 'DirectOT_Weighting'
