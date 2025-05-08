@@ -7,7 +7,7 @@ import traceback
 from typing import Dict, Optional, Tuple, List, Union, Any
 from abc import ABC, abstractmethod
 
-from configs import ROOT_DIR, ACTIVATION_DIR
+from configs import ROOT_DIR, ACTIVATION_DIR, DEFAULT_PARAMS # Added DEFAULT_PARAMS
 import models as ms
 from helper import set_seeds,  MetricKey
 from ot_utils import calculate_sample_loss, DEFAULT_EPS
@@ -69,13 +69,13 @@ class HookBasedExtractor(ActivationExtractor):
             Tuple of (features, probabilities, labels) tensors
         """
         if not dataloader or len(dataloader.dataset) == 0:
-            logger.warning("Empty dataloader provided to HookBasedExtractor")
+            logger.warning(f"HookBasedExtractor ({dataset_name}): Empty dataloader provided.")
             return None, None, None
             
         # Find the final linear layer
         final_linear = self._find_final_linear_layer(model, num_classes)
         if final_linear is None:
-            logger.warning(f"Could not find suitable final linear layer for model")
+            logger.warning(f"HookBasedExtractor ({dataset_name}): Could not find suitable final linear layer for model.")
             return None, None, None
             
         # Set model to eval mode and move to appropriate device
@@ -117,8 +117,10 @@ class HookBasedExtractor(ActivationExtractor):
                         batch_x = batch_data.get('features')
                         batch_y = batch_data.get('labels')
                         if batch_x is None or batch_y is None:
+                            logger.debug(f"HookBasedExtractor ({dataset_name}): Skipping batch due to missing 'features' or 'labels' in dict.")
                             continue
                     else:
+                        logger.debug(f"HookBasedExtractor ({dataset_name}): Skipping batch due to unrecognized batch_data format.")
                         continue
                         
                     if batch_x.shape[0] == 0:
@@ -134,6 +136,7 @@ class HookBasedExtractor(ActivationExtractor):
                     
                     # Check if hooks captured data
                     if not current_batch_pre_acts or not current_batch_post_logits:
+                        logger.debug(f"HookBasedExtractor ({dataset_name}): Hooks did not capture data for a batch.")
                         continue
                         
                     # Process captured activations
@@ -141,12 +144,17 @@ class HookBasedExtractor(ActivationExtractor):
                     post_logits_batch = current_batch_post_logits[0].cpu()
                     
                     # Convert logits to probabilities based on task type
-                    if num_classes == 1:  # Binary or regression
-                        post_probs_batch = torch.sigmoid(post_logits_batch).squeeze(-1)
-                    elif post_logits_batch.ndim == 1:  # Already squeezed binary
-                        post_probs_batch = torch.sigmoid(post_logits_batch)
-                    else:  # Multi-class
+                    if num_classes == 1 and post_logits_batch.ndim == 2 and post_logits_batch.shape[1] == 1: # Binary classification typical output [N, 1]
+                        post_probs_batch = torch.sigmoid(post_logits_batch).squeeze(-1) # Result is [N]
+                    elif num_classes == 1 and post_logits_batch.ndim == 1 : # Binary classification already squeezed output [N]
+                        post_probs_batch = torch.sigmoid(post_logits_batch) # Result is [N]
+                    elif num_classes > 1 and post_logits_batch.ndim == 2 and post_logits_batch.shape[1] == num_classes: # Multiclass [N, K]
                         post_probs_batch = torch.softmax(post_logits_batch, dim=-1)
+                    else: # Unexpected shape
+                        logger.warning(f"HookBasedExtractor ({dataset_name}): Unexpected logits shape {post_logits_batch.shape} for num_classes {num_classes}. Cannot convert to probabilities.")
+                        # Fallback or error handling might be needed here if this is critical
+                        # For now, we'll let it fail during concatenation if shapes are inconsistent
+                        post_probs_batch = post_logits_batch # Pass logits as is, downstream will fail or handle
                         
                     # Collect results
                     all_pre_activations.append(pre_acts_batch)
@@ -159,7 +167,7 @@ class HookBasedExtractor(ActivationExtractor):
             
         # Check if any data was collected
         if not all_pre_activations:
-            logger.warning(f"No activations collected by HookBasedExtractor")
+            logger.warning(f"HookBasedExtractor ({dataset_name}): No activations collected.")
             return None, None, None
             
         # Concatenate results
@@ -168,69 +176,71 @@ class HookBasedExtractor(ActivationExtractor):
             final_p = torch.cat(all_post_activations, dim=0)
             final_y = torch.cat(all_labels, dim=0)
             
-            logger.info(f"HookBasedExtractor: Extracted {len(final_h)} samples with "
-                       f"feature shape {tuple(final_h.shape[1:])}, prob shape {tuple(final_p.shape[1:])}")
+            prob_shape_info = tuple(final_p.shape[1:]) if final_p is not None else "None"
+            logger.info(f"HookBasedExtractor ({dataset_name}): Extracted {len(final_h)} samples. Feature shape {tuple(final_h.shape[1:])}, prob shape {prob_shape_info}")
             
             return final_h, final_p, final_y
             
         except Exception as e:
-            logger.exception(f"Error concatenating activation results: {e}")
+            logger.exception(f"HookBasedExtractor ({dataset_name}): Error concatenating activation results: {e}")
             return None, None, None
             
     def _find_final_linear_layer(self, model: torch.nn.Module, num_classes: int) -> Optional[torch.nn.Linear]:
         """
         Intelligently locate the final linear layer in a model using multiple strategies.
-        
-        Args:
-            model: The PyTorch model to analyze
-            num_classes: Number of classes in dataset (used for output dimension verification)
-            
-        Returns:
-            The final linear layer or None if not found
+        (Implementation as previously provided)
         """
         # Strategy 1: Check common attribute names for the final layer
         common_names = ['output_layer', 'fc', 'linear', 'classifier', 'output', 'fc3', 'fc2', 'fc1']
+        # Add model-specific known names if any
+        if hasattr(model, 'classification_head_name'): # Hypothetical attribute
+            common_names.insert(0, model.classification_head_name)
+
         for name in common_names:
             module = getattr(model, name, None)
             if isinstance(module, torch.nn.Linear):
-                # Verify if this could be the output layer based on output dimension
+                expected_out_features = 1 if num_classes == 2 else num_classes # For binary, output can be 1 or 2
                 if module.out_features == num_classes or (num_classes == 2 and module.out_features == 1):
-                    logger.debug(f"Found final linear layer by name: {name}")
+                    logger.debug(f"Found final linear layer by name: '{name}' with out_features={module.out_features}")
                     return module
             elif isinstance(module, torch.nn.Sequential) and len(module) > 0:
-                # Check if the last layer in the sequential is a Linear
                 last_layer = module[-1]
                 if isinstance(last_layer, torch.nn.Linear):
                     if last_layer.out_features == num_classes or (num_classes == 2 and last_layer.out_features == 1):
-                        logger.debug(f"Found final linear layer in sequential module: {name}[-1]")
+                        logger.debug(f"Found final linear layer in sequential module '{name}[-1]' with out_features={last_layer.out_features}")
                         return last_layer
         
         # Strategy 2: Find all linear layers and select the last one that matches output dimension
         linear_layers = []
         
-        def collect_candidate_layers(module):
-            if isinstance(module, torch.nn.Linear):
-                linear_layers.append(module)
-            for _, child in module.named_children():
+        def collect_candidate_layers(m):
+            if isinstance(m, torch.nn.Linear):
+                linear_layers.append(m)
+            for _, child in m.named_children(): # Iterate over named children
                 collect_candidate_layers(child)
         
         collect_candidate_layers(model)
         
-        # If we found linear layers, select candidates with appropriate output size
         if linear_layers:
-            # First try to find layers with output matching num_classes
             matching_layers = [layer for layer in linear_layers 
                             if layer.out_features == num_classes or 
-                                (num_classes == 2 and layer.out_features == 1)]
+                                (num_classes == 2 and layer.out_features == 1)] # Binary output can be 1
             
             if matching_layers:
-                logger.debug(f"Found final linear layer with output size matching num_classes={num_classes}")
-                return matching_layers[-1]  # Return the last matching layer
-                
-            # If all else fails, just use the last linear layer
-            logger.debug(f"No exact match for num_classes={num_classes}, using last linear layer with out_features={linear_layers[-1].out_features}")
-            return linear_layers[-1]
+                logger.debug(f"Found final linear layer by iterating all linear layers, matching num_classes={num_classes}. Using last one.")
+                return matching_layers[-1]
+            
+            # Fallback for num_classes=1 (regression) or if no exact match for classification
+            if num_classes == 1 and any(l.out_features == 1 for l in linear_layers):
+                 # For regression (num_classes=1), often output is 1.
+                 reg_layers = [l for l in linear_layers if l.out_features == 1]
+                 logger.debug(f"Found regression-like (out_features=1) linear layer. Using last one.")
+                 return reg_layers[-1]
+
+            logger.warning(f"Could not find a linear layer strictly matching num_classes={num_classes}. Using the absolute last linear layer found (out_features={linear_layers[-1].out_features}). This might be incorrect.")
+            return linear_layers[-1] # Return the very last linear layer if no better match
         
+        logger.error("No linear layers found in the model.")
         return None
 
 
@@ -257,13 +267,14 @@ class RepVectorExtractor(ActivationExtractor):
         Returns:
             Tuple of (features, None, dummy_labels) - no probabilities are extracted
         """
-        if not hasattr(model, 'forward') or 'rep_vector' not in model.forward.__code__.co_varnames:
-            logger.warning(f"Model does not support 'rep_vector' parameter. Model parameters: "
-                          f"{model.forward.__code__.co_varnames if hasattr(model, 'forward') else 'Not available'}")
+        # Check if model's forward method has 'rep_vector' in its signature
+        if not (hasattr(model, 'forward') and callable(model.forward) and 
+                'rep_vector' in model.forward.__code__.co_varnames):
+            logger.warning(f"RepVectorExtractor ({dataset_name}): Model does not support 'rep_vector' parameter in its forward method.")
             return None, None, None
         
         if not dataloader or len(dataloader.dataset) == 0:
-            logger.warning("Empty dataloader provided to RepVectorExtractor")
+            logger.warning(f"RepVectorExtractor ({dataset_name}): Empty dataloader provided.")
             return None, None, None
             
         # Set model to eval mode and move to appropriate device
@@ -284,8 +295,10 @@ class RepVectorExtractor(ActivationExtractor):
                     elif isinstance(batch_data, dict):
                         batch_x = batch_data.get('features')
                         if batch_x is None:
+                            logger.debug(f"RepVectorExtractor ({dataset_name}): Skipping batch due to missing 'features' in dict.")
                             continue
                     else:
+                        logger.debug(f"RepVectorExtractor ({dataset_name}): Skipping batch due to unrecognized batch_data format.")
                         continue
                         
                     if batch_x.shape[0] == 0:
@@ -301,12 +314,12 @@ class RepVectorExtractor(ActivationExtractor):
                     all_rep_vectors.append(rep_vector.cpu())
                     all_batch_sizes.append(batch_x.shape[0])
         except Exception as e:
-            logger.exception(f"Error in RepVectorExtractor extraction: {e}")
+            logger.exception(f"RepVectorExtractor ({dataset_name}): Error in extraction loop: {e}")
             return None, None, None
             
         # Check if any data was collected
         if not all_rep_vectors:
-            logger.warning("No representation vectors collected")
+            logger.warning(f"RepVectorExtractor ({dataset_name}): No representation vectors collected.")
             return None, None, None
             
         # Concatenate results
@@ -314,18 +327,16 @@ class RepVectorExtractor(ActivationExtractor):
             combined_reps = torch.cat(all_rep_vectors, dim=0)
             total_samples = sum(all_batch_sizes)
             
-            # For segmentation models like IXITiny, we don't have probabilities
-            # We also don't have ground truth labels for segmentation data typically,
-            # so create dummy labels of 0 to maintain API compatibility
+            # For segmentation models like IXITiny, 'p_prob' is None
+            # 'y' are dummy labels as actual segmentation masks are not used here
             dummy_labels = torch.zeros(total_samples, dtype=torch.long)
             
-            logger.info(f"RepVectorExtractor: Extracted {len(combined_reps)} samples with "
-                       f"feature shape {tuple(combined_reps.shape[1:])}")
+            logger.info(f"RepVectorExtractor ({dataset_name}): Extracted {len(combined_reps)} samples. Feature shape {tuple(combined_reps.shape[1:])}")
             
             return combined_reps, None, dummy_labels
             
         except Exception as e:
-            logger.exception(f"Error concatenating representation vectors: {e}")
+            logger.exception(f"RepVectorExtractor ({dataset_name}): Error concatenating representation vectors: {e}")
             return None, None, None
 
 
@@ -337,7 +348,7 @@ class OTDataManager:
     def __init__(self,
                  num_clients: int,
                  activation_dir: str = ACTIVATION_DIR,
-                 results_dir: str = None,
+                 results_dir: str = None, # Retained for API, currently unused
                  loss_eps: float = DEFAULT_EPS):
         """
         Initializes the DataManager.
@@ -359,11 +370,13 @@ class OTDataManager:
         
         logger.info(f"DataManager initialized targeting results for {self.num_clients} clients on device {self.device}.")
         
-        # Create activation extractor instances
-        self.extractors = {
+        # Activation extractor instances map
+        self._extractor_instances = {
             'hook_based': HookBasedExtractor(),
             'rep_vector': RepVectorExtractor()
+            # New extractor types can be added here
         }
+        self._default_extractor_type = 'hook_based'
     
     def _initialize_results_manager(self, dataset_name: str):
         """Initialize ResultsManager for a specific dataset."""
@@ -389,10 +402,10 @@ class OTDataManager:
         if isinstance(cost, (int, float)):
             cost_str = f"{float(cost):.4f}"
         else:
-            cost_str = str(cost).replace('/', '_')
+            cost_str = str(cost).replace('/', '_') # Basic sanitization
             
-        # Use 'r0' explicitly to indicate round0 model
-        filename = f"activations_{dataset_name}_nc{num_clients}_cost{cost_str}_r0_seed{seed}_c{c1_str}v{c2_str}_{loader_type}.pt"
+        # Use model_type in filename if needed, for now assuming 'round0' implicitly for cache path simplicity
+        filename = f"activations_{dataset_name}_nc{num_clients}_cost{cost_str}_seed{seed}_c{c1_str}v{c2_str}_{loader_type}.pt"
         return os.path.join(dataset_cache_dir, filename)
 
     def _load_activations_from_cache(self, path: str) -> Optional[Tuple]:
@@ -401,10 +414,18 @@ class OTDataManager:
             return None
         
         try:
-            data = torch.load(path, map_location='cpu')
-            if isinstance(data, tuple) and len(data) == 6 and data[0] is not None and data[3] is not None:
-                logger.info(f"Successfully loaded activations from cache: {os.path.basename(path)}")
-                return data
+            data = torch.load(path, map_location='cpu') # Always load to CPU
+            # Basic validation of cached structure
+            if isinstance(data, tuple) and len(data) == 6:
+                 # Further check if first element (h1) and fourth (h2) are not None,
+                 # as these are essential. p and y can be None for some extractors.
+                if data[0] is not None and data[3] is not None:
+                    logger.info(f"Successfully loaded activations from cache: {os.path.basename(path)}")
+                    return data
+                else:
+                    logger.warning(f"Cached data in {os.path.basename(path)} has None for essential features (h1 or h2).")
+            else:
+                logger.warning(f"Cached data in {os.path.basename(path)} has unexpected format.")
         except Exception as e:
             logger.warning(f"Failed loading activation cache {path}: {e}")
         
@@ -413,10 +434,16 @@ class OTDataManager:
     def _save_activations_to_cache(self, data: Tuple, path: str) -> None:
         """Saves activation data to cache."""
         try:
-            # Ensure tensors are on CPU before saving
-            cpu_data = tuple(d.cpu() if isinstance(d, torch.Tensor) else d for d in data)
+            # Ensure all tensors are on CPU before saving
+            cpu_data_list = []
+            for item in data:
+                if isinstance(item, torch.Tensor):
+                    cpu_data_list.append(item.cpu())
+                else:
+                    cpu_data_list.append(item) # Handles None or other non-tensor data
+            
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            torch.save(cpu_data, path)
+            torch.save(tuple(cpu_data_list), path)
             logger.info(f"Saved activations to cache: {os.path.basename(path)}")
         except Exception as e:
             logger.warning(f"Failed saving activation cache {path}: {e}")
@@ -424,36 +451,22 @@ class OTDataManager:
     def _get_model_path(self, dataset: str, cost: Any, seed: int, model_type: str = 'round0') -> str:
         """
         Gets path to saved model state dict.
-        
-        Args:
-            dataset: Dataset name
-            cost: Cost parameter
-            seed: Random seed
-            model_type: Model type to load ('round0', 'best', 'final')
-            
-        Returns:
-            str: Path to model file
         """
         self._initialize_results_manager(dataset)
-        # Get both records and metadata from results_manager
         _, metadata = self.results_manager.load_results(ExperimentType.EVALUATION)
-        # Determine actual client count used for this run
-        actual_clients = self.num_clients  # Default to target count
+        actual_clients = self.num_clients 
         
-        # Extract client count from metadata if available
         if metadata and 'cost_client_counts' in metadata:
             cost_counts = metadata.get('cost_client_counts', {})
             if cost in cost_counts:
                 actual_clients = cost_counts[cost]
-                logger.info(f"Found actual client count in metadata: {actual_clients} for cost {cost}")
         
-        # Get path from ResultsManager
         return self.results_manager.path_builder.get_model_save_path(
             num_clients_run=actual_clients,
             cost=cost,
             seed=seed,
-            server_type='fedavg',
-            model_type=model_type  # Use round0 as specified
+            server_type='fedavg', # Assuming FedAvg server for Round0 model
+            model_type=model_type 
         )
 
     def _load_model_for_activation_generation(
@@ -461,148 +474,101 @@ class OTDataManager:
     ) -> Tuple[Optional[torch.nn.Module], Optional[Dict], int]:
         """
         Loads a saved model for activation generation.
-        
-        Args:
-            dataset: Dataset name
-            cost: Cost parameter
-            seed: Seed used in the run
-            num_clients: Target client count
-            model_type: Type of model to load ('round0', 'best', 'final')
-            
-        Returns:
-            Tuple of (model, dataloaders, actual_client_count)
         """
-        logger.info(f"Loading model for activation generation:")
-        logger.info(f"Dataset: {dataset}, Cost: {cost}, Seed: {seed}, Target Clients: {num_clients}")
+        logger.info(f"Loading model for activation generation: Dataset={dataset}, Cost={cost}, Seed={seed}, ModelType={model_type}")
         
-        # Try ONLY the round0 model as required
         model_path = self._get_model_path(dataset, cost, seed, model_type)
                     
         if not os.path.exists(model_path):
-            logger.warning(f"Round0 model not found for {dataset}, cost {cost}, seed {seed}")
-            return None, None, num_clients
+            logger.warning(f"Model not found: {model_path}")
+            return None, None, num_clients # Return target num_clients
             
-        # Load model
         try:
-            # Load state dict and instantiate model
             model_state_dict = torch.load(model_path, map_location=self.device)
             logger.info(f"Loaded {model_type} model state from: {os.path.basename(model_path)}")
             
-            # Initialize model architecture based on dataset name
-            model_name = 'Synthetic' if 'Synthetic_' in dataset else dataset
-            model_class = getattr(ms, model_name)
+            model_name_key = dataset
+            if 'Synthetic_' in dataset: model_name_key = 'Synthetic'
+            
+            model_class = getattr(ms, model_name_key)
             model = model_class()
             model.load_state_dict(model_state_dict)
             model.to(self.device)
             model.eval()
             
-            # Create temporary experiment config to get dataloaders
-            from pipeline import ExperimentConfig, Experiment
+            from pipeline import ExperimentConfig, Experiment # Local import to avoid circularity if any
             temp_config = ExperimentConfig(dataset=dataset, experiment_type=ExperimentType.EVALUATION, num_clients=num_clients)
             temp_exp = Experiment(temp_config)
+            set_seeds(seed) # For dataloader reproducibility
             
-            # Set seed for reproducibility
-            set_seeds(seed)
-            
-            # Get dataloaders
+            # Get dataloaders, ensuring num_clients_override is correctly used
             dataloaders = temp_exp.data_manager.get_dataloaders(cost=cost, run_seed=seed, num_clients_override=num_clients)
-            actual_clients = len(dataloaders) if dataloaders else num_clients
             
-            return model, dataloaders, actual_clients
+            # Determine actual number of clients for whom dataloaders were created
+            actual_num_dataloaders = len(dataloaders) if dataloaders else 0
+            if actual_num_dataloaders != num_clients and actual_num_dataloaders > 0 :
+                 logger.info(f"Dataloaders created for {actual_num_dataloaders} clients, differs from target {num_clients}.")
+                 # This could be num_clients_run from metadata or num_clients if override was effective
+            
+            return model, dataloaders, num_clients # Return target num_clients used for loader generation
             
         except Exception as e:
-            logger.exception(f"Error loading model/dataloaders: {e}")
+            logger.exception(f"Error loading model/dataloaders for {dataset}, {cost}, {seed}: {e}")
             return None, None, num_clients
 
-    def _get_extractor_for_dataset(self, dataset_name: str, config: Dict[str, Any] = None) -> ActivationExtractor:
+    def _get_activation_extractor(self, dataset_name: str) -> ActivationExtractor:
         """
-        Gets the appropriate activation extractor for the dataset.
-        
-        Args:
-            dataset_name: Name of the dataset
-            config: Dataset configuration dict, if available
-            
-        Returns:
-            ActivationExtractor: The appropriate extractor instance
+        Determines and returns the appropriate ActivationExtractor instance for the dataset.
+        Relies on 'activation_extractor_type' in DEFAULT_PARAMS from configs.py.
         """
-        # Check if config specifies an extractor type
-        if config and 'activation_extractor_type' in config:
-            extractor_type = config['activation_extractor_type']
-            if extractor_type in self.extractors:
-                logger.info(f"Using {extractor_type} extractor for {dataset_name} as specified in config")
-                return self.extractors[extractor_type]
+        dataset_params = DEFAULT_PARAMS.get(dataset_name, {})
+        extractor_type_key = dataset_params.get('activation_extractor_type', self._default_extractor_type)
         
-        # Dataset-specific extractor selection
-        if dataset_name == 'IXITiny':
-            logger.info(f"Using rep_vector extractor for {dataset_name}")
-            return self.extractors['rep_vector']
-        
-        # Default to hook-based extraction for other datasets
-        logger.info(f"Using hook_based extractor for {dataset_name}")
-        return self.extractors['hook_based']
+        extractor_instance = self._extractor_instances.get(extractor_type_key)
+        if extractor_instance:
+            logger.debug(f"Using '{extractor_type_key}' extractor for dataset '{dataset_name}'.")
+            return extractor_instance
+        else:
+            logger.warning(f"Unknown extractor type '{extractor_type_key}' for dataset '{dataset_name}'. "
+                           f"Falling back to default '{self._default_extractor_type}'.")
+            return self._extractor_instances[self._default_extractor_type]
 
-    def _extract_activations(
-        self, model: torch.nn.Module, client_id: str, 
-        dataloaders: Dict, loader_type: str, 
+    def _extract_raw_activations_for_client(
+        self, model: torch.nn.Module, client_id: Union[str, int], 
+        dataloaders_all_clients: Dict, loader_type: str, 
         num_classes: int, dataset_name: str
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
-        Extracts activations for a client using the appropriate extractor.
-        
-        Args:
-            model: The trained model
-            client_id: Client identifier
-            dataloaders: Dictionary of dataloaders by client
-            loader_type: Type of loader to use ('train', 'val', 'test')
-            num_classes: Number of classes in the dataset
-            dataset_name: Name of the dataset
-            
-        Returns:
-            Tuple of (h, p_prob, y) - features, probabilities, labels
+        Extracts raw activations (h, p, y) for a single client using the appropriate extractor.
         """
-        client_id_str = str(client_id)
-        logger.info(f"Extracting activations for client {client_id_str} using {loader_type} loader")
+        client_id_str = str(client_id) # Normalize client_id to string
+        logger.debug(f"Extracting raw activations for client {client_id_str}, dataset {dataset_name}, loader {loader_type}.")
         
-        # Find the appropriate dataloader
-        loader_key = None
-        for key in [client_id, client_id_str]:
-            if key in dataloaders:
-                loader_key = key
-                break
-                
-        if loader_key is None:
-            # Try numeric key
+        # Select the correct dataloader for the specific client
+        client_dataloader_tuple = dataloaders_all_clients.get(client_id_str)
+        if not client_dataloader_tuple: # Try integer key if string failed
             try:
-                int_key = int(client_id)
-                if int_key in dataloaders:
-                    loader_key = int_key
+                client_dataloader_tuple = dataloaders_all_clients.get(int(client_id))
             except ValueError:
-                pass
-                    
-        if loader_key is None:
-            logger.warning(f"Client {client_id_str} not found in dataloaders")
+                pass # client_id was not an int string
+        
+        if not client_dataloader_tuple:
+            logger.warning(f"No dataloaders found for client {client_id_str} in provided dataloaders_all_clients.")
             return None, None, None
                 
-        # Get loader by type
         loader_idx = {'train': 0, 'val': 1, 'test': 2}.get(loader_type.lower())
-        if loader_idx is None or not isinstance(dataloaders[loader_key], (list, tuple)) or len(dataloaders[loader_key]) <= loader_idx:
-            logger.warning(f"Invalid loader structure for client {client_id_str}")
+        if loader_idx is None or not isinstance(client_dataloader_tuple, (list, tuple)) or len(client_dataloader_tuple) <= loader_idx:
+            logger.warning(f"Invalid loader structure or type '{loader_type}' for client {client_id_str}.")
             return None, None, None
                 
-        data_loader = dataloaders[loader_key][loader_idx]
-        if data_loader is None or len(data_loader.dataset) == 0:
-            logger.warning(f"Empty {loader_type} loader for client {client_id_str}")
-            return None, None, None
+        specific_dataloader = client_dataloader_tuple[loader_idx]
+        if specific_dataloader is None or len(specific_dataloader.dataset) == 0:
+            logger.info(f"Empty '{loader_type}' loader for client {client_id_str}.")
+            # Return None for h, p, y so processing can identify this as no data
+            return None, None, None 
             
-        # Get config from model's DEFAULT_PARAMS if possible
-        config = None
-        from configs import DEFAULT_PARAMS
-        if dataset_name in DEFAULT_PARAMS:
-            config = DEFAULT_PARAMS[dataset_name]
-            
-        # Select and use the appropriate extractor
-        extractor = self._get_extractor_for_dataset(dataset_name, config)
-        return extractor.extract(model, data_loader, num_classes, dataset_name)
+        extractor = self._get_activation_extractor(dataset_name)
+        return extractor.extract(model, specific_dataloader, num_classes, dataset_name)
 
     def _process_client_data(
         self, h_raw: Optional[torch.Tensor], 
@@ -614,139 +580,103 @@ class OTDataManager:
     ) -> Optional[Dict[str, Optional[torch.Tensor]]]:
         """
         Processes raw data for one client: validates probs, calculates loss & weights.
-        Handles IXITiny case where p_raw is None and y contains zeros.
-        
-        Args:
-            h_raw: Raw feature activations tensor
-            p_raw: Raw model probability outputs tensor (can be None for segmentation tasks like IXITiny)
-            y_raw: Raw ground truth labels tensor
-            client_id: Client identifier
-            num_classes: Number of classes in the dataset
-            use_loss_weighting_hint: Whether to use loss weighting for OT marginals
-            
-        Returns:
-            Dictionary of processed tensors or None if processing fails
         """
-        if h_raw is None or y_raw is None:
-            logger.warning(f"Client {client_id}: Missing required inputs (h or y)")
-            return None
+        client_id_str = str(client_id)
+        if h_raw is None or y_raw is None: # p_raw can be None (e.g. IXITiny)
+            logger.info(f"Client {client_id_str}: Missing raw features (h) or labels (y). Cannot process.")
+            return None # Cannot proceed without h and y
             
-        # Convert to CPU tensors
-        h_cpu = h_raw.detach().cpu() if isinstance(h_raw, torch.Tensor) else torch.tensor(h_raw).cpu()
-        y_cpu = y_raw.detach().cpu().long() if isinstance(y_raw, torch.Tensor) else torch.tensor(y_raw).long().cpu()
-        p_prob_cpu = p_raw.detach().cpu() if isinstance(p_raw, torch.Tensor) and p_raw is not None else None
+        # Ensure tensors are on CPU
+        h_cpu = h_raw.cpu() if isinstance(h_raw, torch.Tensor) else torch.tensor(h_raw, device='cpu')
+        y_cpu = y_raw.cpu().long() if isinstance(y_raw, torch.Tensor) else torch.tensor(y_raw, dtype=torch.long, device='cpu')
+        p_prob_cpu = p_raw.cpu() if isinstance(p_raw, torch.Tensor) else None # p_raw could be None
         
         n_samples = y_cpu.shape[0]
         if n_samples == 0:
-            logger.warning(f"Client {client_id}: No samples available")
-            return None
-            
-        # Validate and normalize probabilities (only if p_prob_cpu is not None)
+            logger.info(f"Client {client_id_str}: Zero samples after initial extraction.")
+            return {'h': h_cpu, 'p_prob': p_prob_cpu, 'y': y_cpu, 'loss': torch.empty(0, device='cpu'), 'weights': torch.empty(0, device='cpu')}
+
         p_prob_validated = None
         if p_prob_cpu is not None:
             with torch.no_grad():
-                # Convert to float for numerical stability
                 p_prob_float = p_prob_cpu.float()
-                # Case 1: Standard multiclass probabilities [N, K]
                 if p_prob_float.ndim == 2 and p_prob_float.shape[0] == n_samples and p_prob_float.shape[1] == num_classes:
-                    # Check if already approximately valid probability distribution
                     row_sums = p_prob_float.sum(dim=1)
-                    is_valid_dist = torch.all(p_prob_float >= -1e-5) and torch.all(p_prob_float <= 1 + 1e-5) and \
-                                    torch.allclose(row_sums, torch.ones(n_samples), atol=1e-3)
-                    
-                    if is_valid_dist:
-                        # Already valid, just clamp to ensure exact [0,1] range
-                        p_prob_validated = torch.clamp(p_prob_float, 0.0, 1.0)
-                    else:
-                        # Need to normalize - first ensure non-negative values
-                        p_prob_temp = torch.relu(p_prob_float)
-                        # Compute row sums with epsilon to avoid division by zero
-                        row_sums = p_prob_temp.sum(dim=1, keepdim=True).clamp(min=self.loss_eps)
-                        # Normalize and clamp
-                        p_prob_validated = torch.clamp(p_prob_temp / row_sums, 0.0, 1.0)
-                
-                # Case 2: Binary classification with single value [N] or [N,1]
-                elif num_classes == 2:
-                    if (p_prob_float.ndim == 1 and p_prob_float.shape[0] == n_samples) or \
-                    (p_prob_float.ndim == 2 and p_prob_float.shape[0] == n_samples and p_prob_float.shape[1] == 1):
-                        # Reshape to ensure [N] format first
-                        p_prob_1d = p_prob_float.view(-1)
-                        # Clamp to [0,1] range
-                        p1 = torch.clamp(p_prob_1d, 0.0, 1.0)
-                        p0 = 1.0 - p1
-                        # Stack to create [N,2] format
-                        p_prob_validated = torch.stack([p0, p1], dim=1)
-                
-                # If no cases matched, p_prob_validated remains None
-                if p_prob_validated is None and p_raw is not None:
-                    logger.warning(f"Client {client_id}: Unable to validate probability tensor with shape {p_prob_float.shape} "
-                                 f"(n_samples={n_samples}, num_classes={num_classes})")
+                    if not torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-3):
+                        logger.debug(f"Client {client_id_str}: Probabilities do not sum to 1. Normalizing.")
+                        p_prob_float = p_prob_float / row_sums.unsqueeze(1).clamp(min=self.loss_eps)
+                    p_prob_validated = torch.clamp(p_prob_float, 0.0, 1.0)
+                elif num_classes == 2 and ((p_prob_float.ndim == 1 and p_prob_float.shape[0] == n_samples) or \
+                                          (p_prob_float.ndim == 2 and p_prob_float.shape[0] == n_samples and p_prob_float.shape[1] == 1)):
+                    p1 = torch.clamp(p_prob_float.view(-1), 0.0, 1.0)
+                    p0 = 1.0 - p1
+                    p_prob_validated = torch.stack([p0, p1], dim=1)
+                else:
+                    logger.warning(f"Client {client_id_str}: Cannot validate p_prob shape {p_prob_float.shape} for N={n_samples}, K={num_classes}.")
         
-        # Calculate loss if we have valid probabilities
-        loss = None
+        loss_tensor = None
         if p_prob_validated is not None:
-            loss = calculate_sample_loss(p_prob_validated, y_cpu, num_classes, self.loss_eps)
+            loss_tensor = calculate_sample_loss(p_prob_validated, y_cpu, num_classes, self.loss_eps)
+            if loss_tensor is None: # Log if calculate_sample_loss failed
+                 logger.warning(f"Client {client_id_str}: Loss calculation failed despite valid p_prob.")
         
-        # Calculate weights based on loss or use uniform weights
-        weights = None
-        if use_loss_weighting_hint and loss is not None and torch.isfinite(loss).all() and loss.sum() > self.loss_eps:
-            # Use loss values as weights (normalized to sum to 1)
-            weights = loss / loss.sum()
-            logger.debug(f"Client {client_id}: Using loss-based weights (mean={weights.mean().item():.4f})")
+        weights_tensor = None
+        if use_loss_weighting_hint and loss_tensor is not None and torch.isfinite(loss_tensor).all():
+            loss_sum = loss_tensor.sum()
+            if loss_sum > self.loss_eps:
+                weights_tensor = loss_tensor / loss_sum
+                logger.debug(f"Client {client_id_str}: Using loss-derived weights.")
+            else: # Loss sum is too small, fall back to uniform
+                logger.debug(f"Client {client_id_str}: Loss sum too small for loss-weighting, using uniform.")
+                weights_tensor = torch.ones(n_samples, dtype=torch.float32, device='cpu') / n_samples
         else:
-            # Uniform weights
-            weights = torch.ones(n_samples, dtype=torch.float32) / n_samples
-            if use_loss_weighting_hint:
-                logger.debug(f"Client {client_id}: Using uniform weights (loss weighting requested but unavailable)")
+            if use_loss_weighting_hint and (loss_tensor is None or not torch.isfinite(loss_tensor).all()):
+                logger.debug(f"Client {client_id_str}: Loss weighting requested but loss unavailable/invalid. Using uniform.")
+            weights_tensor = torch.ones(n_samples, dtype=torch.float32, device='cpu') / n_samples
         
         return {
             'h': h_cpu, 
-            'p_prob': p_prob_validated,  # Will be None for IXITiny
+            'p_prob': p_prob_validated, 
             'y': y_cpu, 
-            'loss': loss, 
-            'weights': weights
+            'loss': loss_tensor if loss_tensor is not None else torch.full((n_samples,), float('nan'), device='cpu'), # ensure loss tensor even if nan
+            'weights': weights_tensor
         }
 
     def _generate_activations(
-        self, dataset: str, cost: Any, seed: int,
+        self, dataset_name: str, cost: Any, seed: int,
         client_id_1: Union[str, int], client_id_2: Union[str, int],
         num_clients: int, num_classes: int, loader_type: str, model_type: str
     ) -> Optional[Tuple]:
         """
-        Generates activations by loading a pre-trained model and running inference.
-        
-        Returns:
-            Tuple of (h1, p1, y1, h2, p2, y2) or None if generation failed
+        Generates raw activations (h, p, y) for two clients.
         """
-        logger.info(f"Generating activations for clients ({client_id_1}, {client_id_2})")
-        logger.info(f"Dataset: {dataset}, Cost: {cost},  Seed: {seed}")
+        logger.debug(f"Attempting to generate raw activations for {dataset_name}, clients ({client_id_1}, {client_id_2}).")
         
         try:
-            # Load the model and dataloaders
-            model, dataloaders, actual_clients = self._load_model_for_activation_generation(
-                dataset, cost, seed, num_clients, model_type
+            model, dataloaders_all, _ = self._load_model_for_activation_generation(
+                dataset_name, cost, seed, num_clients, model_type
             )
             
-            if model is None or dataloaders is None:
+            if model is None or dataloaders_all is None:
+                logger.warning(f"Failed to load model or dataloaders for {dataset_name}, cost {cost}, seed {seed}.")
                 return None
                 
-            # Extract activations for each client using appropriate extractor
-            h1, p1, y1 = self._extract_activations(
-                model, client_id_1, dataloaders, loader_type, num_classes, dataset
+            h1_raw, p1_raw, y1_raw = self._extract_raw_activations_for_client(
+                model, client_id_1, dataloaders_all, loader_type, num_classes, dataset_name
             )
-            h2, p2, y2 = self._extract_activations(
-                model, client_id_2, dataloaders, loader_type, num_classes, dataset
+            h2_raw, p2_raw, y2_raw = self._extract_raw_activations_for_client(
+                model, client_id_2, dataloaders_all, loader_type, num_classes, dataset_name
             )
             
-            # For regular datasets, validate h, p, and y are all present
-            # For IXITiny, p1/p2 can be None
-            if h1 is None or y1 is None or h2 is None or y2 is None:
-                return None
+            # Check if essential data (h, y) was extracted for both clients
+            if h1_raw is None or y1_raw is None or h2_raw is None or y2_raw is None:
+                logger.warning(f"Essential raw activations (h or y) missing for one or both clients ({client_id_1}, {client_id_2}).")
+                return None # Return None if critical data is missing
                 
-            return (h1, p1, y1, h2, p2, y2)
+            return (h1_raw, p1_raw, y1_raw, h2_raw, p2_raw, y2_raw)
             
         except Exception as e:
-            logger.exception(f"Error during activation generation: {e}")
+            logger.exception(f"Error during raw activation generation for {dataset_name}: {e}")
             return None
     
     def get_activations(
@@ -760,65 +690,48 @@ class OTDataManager:
     ) -> Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]]:
         """
         Gets processed activations for a specific client pair.
-        
-        Args:
-            dataset_name: Name of the dataset
-            cost: Cost parameter 
-            seed: Random seed
-            client_id_1, client_id_2: Client identifiers
-            num_clients: Number of clients
-            num_classes: Number of classes
-            loader_type: Type of loader to use ('train', 'val', 'test')
-            force_regenerate: Whether to regenerate activations even if cached
-            model_type: Type of model to use ('round0', 'best', 'final')
-            use_loss_weighting_hint: Whether to use loss weighting for marginals
-            
-        Returns:
-            Dictionary of processed client data or None if failed
         """
         self._initialize_results_manager(dataset_name)
         
         cid1_str = str(client_id_1)
         cid2_str = str(client_id_2)
         
-        # Check cache first
         cache_path = self._get_activation_cache_path(
             dataset_name, cost, seed, 
             cid1_str, cid2_str, loader_type, num_clients
         )
         
-        raw_activations = None
+        raw_activations_tuple = None
         if not force_regenerate:
-            raw_activations = self._load_activations_from_cache(cache_path)
+            raw_activations_tuple = self._load_activations_from_cache(cache_path)
             
-        if raw_activations is None:
-            logger.info(f"Cache {'miss' if not force_regenerate else 'bypass'} for {os.path.basename(cache_path)}")
-            
-            # Generate activations by loading model
-            raw_activations = self._generate_activations(
-                dataset=dataset_name, cost=cost, seed=seed,
+        if raw_activations_tuple is None:
+            logger.info(f"Cache {'miss' if not force_regenerate else 'bypass'} for {os.path.basename(cache_path)}. Generating raw activations.")
+            raw_activations_tuple = self._generate_activations(
+                dataset_name=dataset_name, cost=cost, seed=seed,
                 client_id_1=cid1_str, client_id_2=cid2_str,
                 num_clients=num_clients, num_classes=num_classes,
                 loader_type=loader_type, model_type=model_type
             )
             
-            if raw_activations is not None:
-                self._save_activations_to_cache(raw_activations, cache_path)
+            if raw_activations_tuple is not None:
+                self._save_activations_to_cache(raw_activations_tuple, cache_path)
             else:
-                return None
+                logger.warning(f"Failed to generate raw activations for {dataset_name}, pair ({cid1_str}, {cid2_str}).")
+                return None # Generation failed
                 
-        # Unpack and process the raw activations
-        h1_raw, p1_raw, y1_raw, h2_raw, p2_raw, y2_raw = raw_activations
-        logger.info(f"Processing activations for clients ({cid1_str}, {cid2_str})")
+        h1_r, p1_r, y1_r, h2_r, p2_r, y2_r = raw_activations_tuple
         
+        logger.debug(f"Processing client data for pair ({cid1_str}, {cid2_str}) with use_loss_weighting_hint={use_loss_weighting_hint}")
         processed_data1 = self._process_client_data(
-            h1_raw, p1_raw, y1_raw, cid1_str, num_classes, use_loss_weighting_hint
+            h1_r, p1_r, y1_r, cid1_str, num_classes, use_loss_weighting_hint
         )
         processed_data2 = self._process_client_data(
-            h2_raw, p2_raw, y2_raw, cid2_str, num_classes, use_loss_weighting_hint
+            h2_r, p2_r, y2_r, cid2_str, num_classes, use_loss_weighting_hint
         )
         
         if processed_data1 is None or processed_data2 is None:
+            logger.warning(f"Failed to process data for one or both clients ({cid1_str}, {cid2_str}).")
             return None
             
         return {cid1_str: processed_data1, cid2_str: processed_data2}
@@ -828,61 +741,32 @@ class OTDataManager:
     ) -> Tuple[float, float]:
         """
         Loads final performance metrics from TrialRecords.
-        
-        Args:
-            dataset_name: Name of the dataset
-            cost: Cost parameter
-            aggregation_method: How to aggregate across runs
-            
-        Returns:
-            Tuple of (local_score, fedavg_score)
         """
         self._initialize_results_manager(dataset_name)
-        
-        # Load results via ResultsManager
         all_records, _ = self.results_manager.load_results(ExperimentType.EVALUATION)
         
         if not all_records:
             logger.warning(f"No performance results found for {dataset_name}")
             return np.nan, np.nan
         
-        # Filter records by cost
         cost_records = [r for r in all_records if r.cost == cost]
         
         if not cost_records:
             logger.warning(f"Cost {cost} not found in results for {dataset_name}")
             return np.nan, np.nan
         
-        # Extract final losses for local and fedavg
-        local_losses = []
-        fedavg_losses = []
-        
+        local_losses, fedavg_losses = [], []
         for record in cost_records:
-            if record.server_type == 'local' and not record.error:
-                test_losses = record.metrics.get(MetricKey.TEST_LOSSES, [])
-                if test_losses:
-                    local_losses.append(test_losses[-1])  # Last test loss is final performance
-                    
-            elif record.server_type == 'fedavg' and not record.error:
-                test_losses = record.metrics.get(MetricKey.TEST_LOSSES, [])
-                if test_losses:
-                    fedavg_losses.append(test_losses[-1])
+            if not record.error and record.metrics.get(MetricKey.TEST_LOSSES):
+                final_loss = record.metrics[MetricKey.TEST_LOSSES][-1]
+                if record.server_type == 'local':
+                    local_losses.append(final_loss)
+                elif record.server_type == 'fedavg':
+                    fedavg_losses.append(final_loss)
         
-        # Aggregate scores
-        local_score = np.nan
-        fedavg_score = np.nan
-        
-        if local_losses:
-            if aggregation_method.lower() == 'median':
-                local_score = float(np.median(local_losses))
-            else:  # Default to mean
-                local_score = float(np.mean(local_losses))
+        agg_func = np.median if aggregation_method.lower() == 'median' else np.mean
+        local_score = float(agg_func(local_losses)) if local_losses else np.nan
+        fedavg_score = float(agg_func(fedavg_losses)) if fedavg_losses else np.nan
                 
-        if fedavg_losses:
-            if aggregation_method.lower() == 'median':
-                fedavg_score = float(np.median(fedavg_losses))
-            else:  # Default to mean
-                fedavg_score = float(np.mean(fedavg_losses))
-                
-        logger.info(f"Performance for {dataset_name}, cost {cost}: Local={local_score:.4f}, FedAvg={fedavg_score:.4f}")
+        logger.info(f"Performance for {dataset_name}, cost {cost}: Local={local_score if not np.isnan(local_score) else 'NaN'}, FedAvg={fedavg_score if not np.isnan(fedavg_score) else 'NaN'}")
         return local_score, fedavg_score

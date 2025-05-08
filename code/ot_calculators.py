@@ -1,10 +1,9 @@
-# ot_calculators.py
 import torch
 import torch.nn.functional as F
 import numpy as np
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple, Type, Union # Added Type
+from typing import Dict, Any, Optional, Tuple, Type, List, Union # Added Type
 
 # Import OTConfig from ot_configs
 from ot_configs import OTConfig
@@ -82,8 +81,12 @@ class BaseOTCalculator(ABC):
     Abstract Base Class for Optimal Transport similarity calculators.
     """
     def __init__(self, client_id_1: str, client_id_2: str, num_classes: int, **kwargs):
-        if num_classes < 2:
-            raise ValueError("num_classes must be >= 2.")
+        if num_classes < 2: # num_classes can be 1 for regression/binary tasks if p_prob becomes [N] or [N,1]
+            # For OT, typically comparing distributions, num_classes >= 2 is more common for label-based aspects.
+            # If a calculator handles num_classes=1 specifically (e.g. pure feature OT), it can override or manage.
+            # Keeping this check for general safety with label-aware methods.
+            pass # No longer raising error, individual calculators must handle num_classes=1 if applicable.
+
         self.client_id_1 = str(client_id_1)
         self.client_id_2 = str(client_id_2)
         self.num_classes = num_classes
@@ -111,110 +114,76 @@ class BaseOTCalculator(ABC):
         """ Returns the computed cost matrices (if stored). """
         return self.cost_matrices
 
-    # --- Shared Helper / Preprocessing Methods ---
-    def _preprocess_input(self, h: Optional[torch.Tensor], p_prob: Optional[torch.Tensor], 
-                            y: Optional[torch.Tensor], weights: Optional[torch.Tensor], 
-                            required_keys: list[str]) -> Optional[Dict[str, torch.Tensor]]:
-        """ 
-        Enhanced preprocessing and validation for input tensors.
-        Includes improved handling of probability formats for multiclass scenarios.
-        
-        Args:
-            h: Feature activations tensor
-            p_prob: Model probability outputs tensor
-            y: Ground truth labels tensor
-            weights: Sample weights tensor
-            required_keys: List of keys that must be non-None
-            
-        Returns:
-            Dictionary of processed tensors or None if validation fails
+    def _preprocess_input(
+        self, 
+        data_client1: Dict[str, Optional[torch.Tensor]], 
+        data_client2: Dict[str, Optional[torch.Tensor]], 
+        required_keys: List[str]
+    ) -> Optional[Tuple[Dict[str, Optional[torch.Tensor]], Dict[str, Optional[torch.Tensor]]]]:
         """
-        processed_data = {}
-        input_map = {'h': h, 'p_prob': p_prob, 'y': y, 'weights': weights}
+        Basic preprocessing for input data dictionaries from OTDataManager.
+        Ensures required keys are present and tensors are on CPU.
+        Relies on OTDataManager._process_client_data for detailed validation
+        (e.g., probability formatting, loss calculation, weight generation).
 
-        # Process each input tensor
-        for key, tensor in input_map.items():
-            if tensor is None:
-                if key in required_keys:
-                    logger.warning(f"Preprocessing failed: Required input '{key}' is None.")
-                    return None
-                processed_data[key] = None
-                continue
+        Args:
+            data_client1: Processed data dictionary for client 1.
+            data_client2: Processed data dictionary for client 2.
+            required_keys: List of keys that must be non-None in both dictionaries.
 
-            # Ensure CPU tensor
-            if not isinstance(tensor, torch.Tensor):
-                try:
-                    tensor = torch.tensor(tensor)
-                except Exception as e:
-                    logger.warning(f"Preprocessing failed: Could not convert input '{key}' to tensor: {e}")
-                    return None
-            processed_data[key] = tensor.detach().cpu()
-
-        # Extract useful info for validation
-        n_samples = processed_data.get('y', None)
-        n_samples = n_samples.shape[0] if n_samples is not None else None
-        
-        if n_samples is None and 'y' in required_keys:
-            return None  # Need y if required
-
-        # Validate tensor shapes
-        if n_samples is not None:
-            # Check h shape
-            if processed_data.get('h') is not None and processed_data['h'].shape[0] != n_samples:
-                logger.warning(f"Shape mismatch: h({processed_data['h'].shape[0]}) vs y/expected({n_samples})")
-                return None
-                
-            # Check weights shape
-            if processed_data.get('weights') is not None and processed_data['weights'].shape[0] != n_samples:
-                logger.warning(f"Shape mismatch: weights({processed_data['weights'].shape[0]}) vs y/expected({n_samples})")
-                return None
-                
-            # Validate p_prob dimensions and format - enhanced for multiclass
-            if processed_data.get('p_prob') is not None:
-                p_tensor = processed_data['p_prob']
-                
-                # Case 1: Standard multiclass format [N, K]
-                expected_shape = (p_tensor.ndim == 2 and p_tensor.shape[0] == n_samples and 
-                                p_tensor.shape[1] == self.num_classes)
-                
-                # Case 2: Binary probability as [N] or [N,1]
-                binary_format = (self.num_classes == 2 and 
-                                ((p_tensor.ndim == 1 and p_tensor.shape[0] == n_samples) or
-                                (p_tensor.ndim == 2 and p_tensor.shape[0] == n_samples and p_tensor.shape[1] == 1)))
-                
-                if not expected_shape and not binary_format:
-                    # Handle incorrect shapes
-                    if p_tensor.ndim == 2 and p_tensor.shape[0] == n_samples:
-                        logger.warning(f"Probability shape mismatch: p_prob has {p_tensor.shape[1]} columns "
-                                    f"but expected {self.num_classes} classes")
-                    else:
-                        logger.warning(f"Shape mismatch: p_prob({p_tensor.shape}) vs "
-                                    f"expected N x K ({n_samples} x {self.num_classes})")
-                    return None
-                    
-                # For binary case, convert to standard [N, 2] format
-                if binary_format and p_tensor.ndim != 2:
-                    p1 = p_tensor.view(-1).clamp(0.0, 1.0)
-                    p0 = 1.0 - p1
-                    processed_data['p_prob'] = torch.stack([p0, p1], dim=1)
-                
-                # Validate probabilities sum to approximately 1
-                if processed_data['p_prob'].ndim == 2:
-                    row_sums = processed_data['p_prob'].sum(dim=1)
-                    if not torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-3):
-                        logger.warning(f"Probability rows don't sum to 1 (min={row_sums.min().item():.4f}, "
-                                    f"max={row_sums.max().item():.4f}). Attempting normalization.")
-                        # Try to normalize
-                        probs = processed_data['p_prob'].clamp(min=self.eps_num)
-                        processed_data['p_prob'] = probs / probs.sum(dim=1, keepdim=True)
-
-        # Final check for required keys
-        missing_keys = [k for k in required_keys if processed_data.get(k) is None]
-        if missing_keys:
-            logger.warning(f"Preprocessing failed: Required keys {missing_keys} are None after processing.")
+        Returns:
+            A tuple of (processed_data_client1, processed_data_client2) or None if validation fails.
+        """
+        if not isinstance(data_client1, dict) or not isinstance(data_client2, dict):
+            logger.warning("Calculator _preprocess_input: Inputs must be dictionaries.")
             return None
 
-        return processed_data
+        processed_data_c1 = {}
+        processed_data_c2 = {}
+
+        for client_idx, (data_in, data_out) in enumerate([(data_client1, processed_data_c1), 
+                                                          (data_client2, processed_data_c2)]):
+            client_name = self.client_id_1 if client_idx == 0 else self.client_id_2
+            for key in data_in: # Iterate over all keys present in the input dict
+                tensor = data_in.get(key)
+                if tensor is None:
+                    if key in required_keys:
+                        logger.warning(f"Client {client_name}: Required input '{key}' is None.")
+                        return None
+                    data_out[key] = None
+                    continue
+
+                if isinstance(tensor, torch.Tensor):
+                    data_out[key] = tensor.detach().cpu()
+                else:
+                    # This case should ideally not happen if OTDataManager prepares tensors
+                    try:
+                        data_out[key] = torch.tensor(tensor).cpu() 
+                    except Exception as e:
+                        logger.warning(f"Client {client_name}: Could not convert input '{key}' to CPU tensor: {e}")
+                        return None
+            
+            # Final check for required keys after processing all available keys
+            missing_keys = [k_req for k_req in required_keys if k_req not in data_out or data_out[k_req] is None]
+            if missing_keys:
+                logger.warning(f"Client {client_name}: Missing required keys {missing_keys} after processing.")
+                return None
+        
+        # Basic check: Ensure 'h' features have same dimension if both present
+        h1 = processed_data_c1.get('h')
+        h2 = processed_data_c2.get('h')
+        if h1 is not None and h2 is not None:
+            if h1.ndim < 2 or h2.ndim < 2 : # Expect at least [N, D]
+                 logger.warning(f"Feature dimensions are less than 2D (h1: {h1.shape}, h2: {h2.shape}).")
+                 return None
+            if h1.shape[0] == 0 or h2.shape[0] == 0: # No samples
+                 logger.info(f"One or both clients have zero samples (h1: {h1.shape[0]}, h2: {h2.shape[0]}).")
+                 # This is not an error for _preprocess_input, calculators handle it.
+            elif h1.shape[1] != h2.shape[1]:
+                 logger.warning(f"Feature dimension mismatch: h1 dim {h1.shape[1]} vs h2 dim {h2.shape[1]}.")
+                 return None
+
+        return processed_data_c1, processed_data_c2
 
 # --- Concrete Calculator Implementations ---
 

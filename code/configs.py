@@ -56,6 +56,7 @@ COMMON_TABULAR_PARAMS = dict(
     max_parallel_clients=None,
     use_weighted_loss=False,
     shift_after_split=False, # Default: no shift after splitting
+    activation_extractor_type='hook_based', # Default extractor
 )
 
 # --- Common Configuration for Image Datasets ---
@@ -82,6 +83,7 @@ COMMON_IMAGE_PARAMS = dict(
     shift_after_split=True, # Default: no shift after splitting
     source_args={}, # Placeholder for dataset specific args
     transform_config={}, # Placeholder
+    activation_extractor_type='hook_based', # Default extractor
 )
 
 
@@ -230,10 +232,8 @@ DEFAULT_PARAMS = {
             'site_mappings': { 0.01: [['Guys'], ['HH']], 0.02: [['IOP'], ['Guys']], 0.03: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] },
             'image_shape': (48, 60, 48)
         },
-        'transform_config': {}, # Handled internally by IXITinyDataset
-        'partitioner_args': {},
         'samples_per_client': None, # Uses all available data per site
-        'fixed_classes': None,
+        'fixed_classes': None, # Corrected: IXITiny is segmentation, num_classes = output channels (e.g. 2 for foreground/background)
         'default_lr': 1e-3, 'learning_rates_try': [1e-2, 5e-3, 1e-3],
         'default_reg_param': 0.1, 'reg_params_try':[1, 0.1, 1e-2],
         'batch_size': 4,
@@ -243,6 +243,7 @@ DEFAULT_PARAMS = {
         'servers_tune_lr': ALGORITHMS, 'servers_tune_reg': [],
         'max_parallel_clients' : 2,
         'use_weighted_loss': False, # DICE loss
+        'activation_extractor_type': 'rep_vector', # Specific extractor for IXITiny
     }
 }
 

@@ -2,10 +2,13 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import warnings
+# import warnings # Replaced with logging
 import os
 from typing import Optional, List, Dict
 import matplotlib.lines as mlines 
+import logging # Added
+
+logger = logging.getLogger(__name__) # Added
 
 def pivot_results_comparison(results_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -51,7 +54,7 @@ def pivot_results_comparison(results_df: pd.DataFrame) -> pd.DataFrame:
                                   values='Primary_Metric')
         return pivot_df.reset_index() # Reset index to make index_cols regular columns
     except Exception as e:
-        print(f"Could not pivot table: {e}")
+        logger.error(f"Could not pivot table: {e}") # Changed from print to logger.error
         return pd.DataFrame()
 
 
@@ -73,14 +76,14 @@ def plot_ot_metrics_vs_perf_delta(
     """
     # --- Input Validation & Setup ---
     if results_df is None or results_df.empty:
-        warnings.warn("Input DataFrame is empty or None. Cannot generate plot.")
+        logger.warning("Input DataFrame is empty or None. Cannot generate plot.") # Changed from warnings.warn
         return
 
     required_cols = ['Cost', 'OT_Method', 'Param_Set_Name',
                      'Local_Final_Loss', 'FedAvg_Final_Loss', 'Loss_Delta']
     if not all(col in results_df.columns for col in required_cols):
         missing = [col for col in required_cols if col not in results_df.columns]
-        warnings.warn(f"Input DataFrame missing required columns: {missing}. Cannot plot.")
+        logger.warning(f"Input DataFrame missing required columns: {missing}. Cannot plot.") # Changed from warnings.warn
         return
 
     plot_df = results_df.copy()
@@ -117,7 +120,7 @@ def plot_ot_metrics_vs_perf_delta(
     available_methods = sorted([m for m in plot_df['OT_Method'].unique() if m in primary_metric_map])
 
     if not available_methods:
-        warnings.warn("No defined OT methods found in the DataFrame. Cannot plot.")
+        logger.warning("No defined OT methods found in the DataFrame. Cannot plot.") # Changed from warnings.warn
         return
 
     # --- Subplot Setup ---
@@ -137,7 +140,7 @@ def plot_ot_metrics_vs_perf_delta(
         metric_label = metric_labels.get(method_type, method_type)
 
         if metric_col not in plot_df.columns:
-            warnings.warn(f"Primary metric column '{metric_col}' for method '{method_type}' not found. Skipping subplot.")
+            logger.warning(f"Primary metric column '{metric_col}' for method '{method_type}' not found. Skipping subplot.") # Changed from warnings.warn
             ax.set_title(f"{metric_label}\n(Data Unavailable)", fontsize=14)
             ax.text(0.5, 0.5, "Data Unavailable", ha='center', va='center', transform=ax.transAxes, fontsize=12, color='red')
             continue
@@ -146,7 +149,7 @@ def plot_ot_metrics_vs_perf_delta(
         method_df = plot_df[plot_df['OT_Method'] == method_type].dropna(subset=[metric_col, y_var, hue_var]).copy()
 
         if method_df.empty:
-            warnings.warn(f"No valid data for subplot ('{metric_col}' vs '{y_var}' for method '{method_type}'). Skipping.")
+            logger.warning(f"No valid data for subplot ('{metric_col}' vs '{y_var}' for method '{method_type}'). Skipping.") # Changed from warnings.warn
             ax.set_title(f"{metric_label}\n(No Valid Data)", fontsize=14)
             ax.text(0.5, 0.5, "No Valid Data", ha='center', va='center', transform=ax.transAxes, fontsize=12, color='orange')
             continue
@@ -154,7 +157,7 @@ def plot_ot_metrics_vs_perf_delta(
         # Check unique parameter sets for this method
         param_sets_in_subplot = method_df[hue_var].unique()
         if len(param_sets_in_subplot) == 0:
-             warnings.warn(f"No unique '{hue_var}' values found for method '{method_type}' after filtering. Skipping plot elements.")
+             logger.warning(f"No unique '{hue_var}' values found for method '{method_type}' after filtering. Skipping plot elements.") # Changed from warnings.warn
              ax.set_title(f"{metric_label}\n(No Param Sets)", fontsize=14)
              ax.text(0.5, 0.5, "No Param Sets", ha='center', va='center', transform=ax.transAxes, fontsize=12, color='grey')
              continue
@@ -164,7 +167,7 @@ def plot_ot_metrics_vs_perf_delta(
             method_df[metric_col] = pd.to_numeric(method_df[metric_col])
             method_df[y_var] = pd.to_numeric(method_df[y_var])
         except Exception as e:
-             warnings.warn(f"Numeric conversion error for subplot '{metric_label}': {e}. Skipping.")
+             logger.warning(f"Numeric conversion error for subplot '{metric_label}': {e}. Skipping.") # Changed from warnings.warn
              ax.set_title(f"{metric_label}\n(Conversion Error)", fontsize=14)
              ax.text(0.5, 0.5, "Data Conversion Error", ha='center', va='center', transform=ax.transAxes, fontsize=12, color='purple')
              continue
@@ -183,10 +186,10 @@ def plot_ot_metrics_vs_perf_delta(
                 plt.setp(current_legend.get_texts(), fontsize='small') # Adjust font size if needed
                 plt.setp(current_legend.get_title(), fontsize='small')
             # else: # Should not happen with legend='auto' unless no data plotted
-            #     warnings.warn(f"Legend not automatically created for subplot {i} ({method_type})")
+            #     logger.warning(f"Legend not automatically created for subplot {i} ({method_type})")
 
         except Exception as plot_err:
-             warnings.warn(f"Seaborn lineplot failed for subplot '{metric_label}': {plot_err}. Skipping plot elements.")
+             logger.warning(f"Seaborn lineplot failed for subplot '{metric_label}': {plot_err}. Skipping plot elements.") # Changed from warnings.warn
              ax.set_title(f"{metric_label}\n(Plotting Error)", fontsize=14)
              ax.text(0.5, 0.5, "Plotting Error", ha='center', va='center', transform=ax.transAxes, fontsize=12, color='brown')
              continue
@@ -200,7 +203,7 @@ def plot_ot_metrics_vs_perf_delta(
 
     # --- Figure-Level Customization ---
     if not plot_successful:
-         warnings.warn("No subplots could be generated.")
+         logger.warning("No subplots could be generated.") # Changed from warnings.warn
          plt.close(fig)
          return
 
@@ -225,9 +228,9 @@ def plot_ot_metrics_vs_perf_delta(
                 os.makedirs(save_dir)
             # Save with bbox_inches='tight' to try and include legends if they extend slightly
             fig.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Plot saved to: {save_path}")
+            logger.info(f"Plot saved to: {save_path}") # Changed from print
         except Exception as e:
-            warnings.warn(f"Failed to save plot to {save_path}: {e}")
+            logger.warning(f"Failed to save plot to {save_path}: {e}") # Changed from warnings.warn
         plt.close(fig)
     else:
         plt.show()
