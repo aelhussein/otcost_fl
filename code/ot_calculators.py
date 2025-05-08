@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, Tuple, Type, Union # Added Type
 # Import utilities from ot_utils.py
 from ot_utils import (
     compute_ot_cost, pairwise_euclidean_sq, calculate_label_emd, compute_anchors,
+    validate_samples_for_ot, validate_samples_for_decomposed_ot,logger,
     DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER, DEFAULT_EPS, calculate_sample_loss # Added calculate_sample_loss
 )
 
@@ -245,7 +246,7 @@ class BaseOTCalculator(ABC):
 
 class FeatureErrorOTCalculator(BaseOTCalculator):
     """ Calculates OT cost using the additive feature-error cost. """
-    # ... (Implementation remains the same as before) ...
+    
     def _reset_results(self) -> None:
         self.results = {
             'ot_cost': np.nan,
@@ -262,23 +263,81 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
         normalize_cost = params.get('normalize_cost', True)
         reg = params.get('reg', DEFAULT_OT_REG)
         max_iter = params.get('max_iter', DEFAULT_OT_MAX_ITER)
+        min_samples_threshold = params.get('min_samples', 20)  # Get minimum samples threshold
+        max_samples_threshold = params.get('min_samples', 900)
 
+        # --- Check if this is a segmentation case (like IXITiny) ---
+        is_segmentation = data1.get('p_prob') is None and data2.get('p_prob') is None
+        
         # --- Preprocess and Validate ---
-        required_keys = ['h', 'p_prob', 'y']
-        if use_loss_weighting: required_keys.append('weights')
+        required_keys = ['h']
+        if not is_segmentation:
+            required_keys.extend(['p_prob', 'y'])
+            
+        if use_loss_weighting and not is_segmentation: 
+            required_keys.append('weights')
 
         proc_data1 = self._preprocess_input(data1.get('h'), data1.get('p_prob'), data1.get('y'), data1.get('weights'), required_keys)
         proc_data2 = self._preprocess_input(data2.get('h'), data2.get('p_prob'), data2.get('y'), data2.get('weights'), required_keys)
 
         if proc_data1 is None or proc_data2 is None:
             missing_str = "'weights'" if use_loss_weighting and (data1.get('weights') is None or data2.get('weights') is None) else "h, p_prob, or y"
+            if is_segmentation:
+                missing_str = "activations ('h')"
             warnings.warn(f"Feature-Error OT calculation requires {missing_str}. Preprocessing failed or data missing. Skipping.")
             self.results['weighting_used'] = 'Loss' if use_loss_weighting else 'Uniform' # Still record intent
             return
 
-        h1, p1_prob, y1, w1 = proc_data1['h'], proc_data1['p_prob'], proc_data1['y'], proc_data1.get('weights')
-        h2, p2_prob, y2, w2 = proc_data2['h'], proc_data2['p_prob'], proc_data2['y'], proc_data2.get('weights')
+        h1 = proc_data1['h']
+        h2 = proc_data2['h']
+        
+        # For segmentation data, set these to None
+        p1_prob = proc_data1.get('p_prob')
+        y1 = proc_data1.get('y')
+        w1 = proc_data1.get('weights')
+        p2_prob = proc_data2.get('p_prob')
+        y2 = proc_data2.get('y')
+        w2 = proc_data2.get('weights')
+        
         N, M = h1.shape[0], h2.shape[0]
+
+        # Validate sample counts and get sampling indices
+        features_dict = {
+            "client1": h1.cpu().numpy(),
+            "client2": h2.cpu().numpy()
+        }
+        all_sufficient, sample_indices = validate_samples_for_ot(
+            features_dict, min_samples_threshold, max_samples_threshold)
+
+        if not all_sufficient:
+            warnings.warn(f"Feature-Error OT: One or both clients have insufficient samples (min={min_samples_threshold}). Skipping.")
+            self.results['weighting_used'] = 'Loss' if use_loss_weighting else 'Uniform'
+            return
+
+        # Apply sampling if needed
+        if "client1" in sample_indices and len(sample_indices["client1"]) < N:
+            # Sample client 1 data
+            indices1 = torch.from_numpy(sample_indices["client1"]).long()
+            h1 = h1[indices1]
+            if not is_segmentation:
+                p1_prob = p1_prob[indices1] if p1_prob is not None else None
+                y1 = y1[indices1] if y1 is not None else None
+            w1 = w1[indices1] if w1 is not None else None
+            N = len(indices1)
+            if verbose:
+                print(f"Sampled client1 data: {len(h1)} from original {N}")
+
+        if "client2" in sample_indices and len(sample_indices["client2"]) < M:
+            # Sample client 2 data
+            indices2 = torch.from_numpy(sample_indices["client2"]).long()
+            h2 = h2[indices2]
+            if not is_segmentation:
+                p2_prob = p2_prob[indices2] if p2_prob is not None else None
+                y2 = y2[indices2] if y2 is not None else None
+            w2 = w2[indices2] if w2 is not None else None
+            M = len(indices2)
+            if verbose:
+                print(f"Sampled client2 data: {len(h2)} from original {M}")
 
         if N == 0 or M == 0:
             warnings.warn("Feature-Error OT: One or both clients have zero samples. OT cost is 0.")
@@ -288,9 +347,14 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
             return
 
         # --- Calculate Cost Matrix ---
-        cost_matrix, max_cost = self._calculate_cost_feature_error_additive(
-            h1, p1_prob, y1, h2, p2_prob, y2, **params
-        )
+        # For segmentation data, use only feature distance
+        if is_segmentation:
+            cost_matrix, max_cost = self._calculate_feature_distance_only(h1, h2, **params)
+        else:
+            cost_matrix, max_cost = self._calculate_cost_feature_error_additive(
+                h1, p1_prob, y1, h2, p2_prob, y2, **params
+            )
+            
         self.results['cost_matrix_max_val'] = max_cost
 
         if cost_matrix is None or not (np.isfinite(max_cost) and max_cost > self.eps_num):
@@ -304,7 +368,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
             normalized_cost_matrix = cost_matrix / max_cost
         else:
             if normalize_cost and not np.isfinite(max_cost):
-                 warnings.warn("Max cost is not finite, cannot normalize cost matrix.")
+                warnings.warn("Max cost is not finite, cannot normalize cost matrix.")
             normalized_cost_matrix = cost_matrix # Use unnormalized
         self.cost_matrices['feature_error_ot'] = normalized_cost_matrix.cpu().numpy() # Store numpy version
 
@@ -337,7 +401,46 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
         self.results['transport_plan'] = Gs
         if verbose: print(f"  Feature-Error OT Cost ({weighting_type_str} Marginals, NormalizedCost={normalize_cost}): {f'{ot_cost:.4f}' if not np.isnan(ot_cost) else 'Failed'}")
 
+    def _calculate_feature_distance_only(self, h1, h2, **params) -> Tuple[Optional[torch.Tensor], float]:
+        """
+        Calculates feature distance for segmentation models (IXITiny) where only h is available.
+        Uses L2-normalized Euclidean distance.
+        
+        Args:
+            h1: Features from client 1
+            h2: Features from client 2
+            **params: Additional parameters
+            
+        Returns:
+            Tuple of (cost_matrix, max_possible_cost)
+        """
+        norm_eps = params.get('norm_eps', self.eps_num)
+        device = 'cpu'
 
+        N, M = h1.shape[0], h2.shape[0]
+        if N == 0 or M == 0:
+            return torch.empty((N, M), device=device, dtype=torch.float), 0.0
+
+        try:
+            # L2 normalize feature vectors
+            h1_norm = F.normalize(h1.float(), p=2, dim=1, eps=norm_eps)
+            h2_norm = F.normalize(h2.float(), p=2, dim=1, eps=norm_eps)
+            
+            # Compute Euclidean distance (range [0, 2] for normalized vectors)
+            D_h = torch.cdist(h1_norm, h2_norm, p=2)
+            
+            # Scale to [0, 1] range
+            D_h_scaled = D_h / 2.0
+            
+            # Maximum possible value is 1.0 after scaling
+            max_cost = 1.0
+            
+            return D_h_scaled, max_cost
+            
+        except Exception as e:
+            warnings.warn(f"Feature distance calculation failed: {e}")
+            return None, np.nan
+            
     def _calculate_cost_feature_error_additive(self, h1, p1_prob, y1, h2, p2_prob, y2, **params) -> Tuple[Optional[torch.Tensor], float]:
         """
         Calculates the additive cost: C = alpha * D_h_scaled + beta * D_e_scaled.
@@ -355,6 +458,10 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
         Returns:
             Tuple of (cost_matrix, max_possible_cost)
         """
+        # If p_prob or y is None, revert to feature distance only
+        if p1_prob is None or p2_prob is None or y1 is None or y2 is None:
+            return self._calculate_feature_distance_only(h1, h2, **params)
+            
         alpha = params.get('alpha', 1.0)
         beta = params.get('beta', 1.0)
         norm_eps = params.get('norm_eps', self.eps_num) # Use class eps if not provided
@@ -466,7 +573,8 @@ class DecomposedOTCalculator(BaseOTCalculator):
         ot_max_iter = params.get('ot_max_iter', DEFAULT_OT_MAX_ITER)
         agg_method_param = params.get('aggregate_conditional_method', 'mean')
         beta_within = params.get('beta_within', 0.0) # Check if probs needed for within-cost
-
+        min_samples_threshold = params.get('min_samples', 20) # Get the minimum samples threshold
+        max_samples_threshold = params.get('max_samples', 900) # Get the maximum samples threshold
 
         # --- Preprocess and Validate ---
         # Need h, y, weights always. Need p_prob if aggregating by loss or beta_within > 0.
@@ -497,15 +605,15 @@ class DecomposedOTCalculator(BaseOTCalculator):
         loss1, loss2 = None, None
         can_use_loss_agg = False
         if agg_method_param in ['avg_loss', 'total_loss_share']:
-             if p1_prob is not None and p2_prob is not None:
-                 loss1 = calculate_sample_loss(p1_prob, y1, self.num_classes, self.eps_num)
-                 loss2 = calculate_sample_loss(p2_prob, y2, self.num_classes, self.eps_num)
-                 if loss1 is not None and loss2 is not None and torch.isfinite(loss1).all() and torch.isfinite(loss2).all():
-                     can_use_loss_agg = True
-                 else:
-                     warnings.warn(f"Cannot use loss aggregation: Loss calculation failed or resulted in NaN/Inf.")
-             else:
-                 warnings.warn(f"Cannot use loss aggregation: Probabilities (p_prob) missing.")
+            if p1_prob is not None and p2_prob is not None:
+                loss1 = calculate_sample_loss(p1_prob, y1, self.num_classes, self.eps_num)
+                loss2 = calculate_sample_loss(p2_prob, y2, self.num_classes, self.eps_num)
+                if loss1 is not None and loss2 is not None and torch.isfinite(loss1).all() and torch.isfinite(loss2).all():
+                    can_use_loss_agg = True
+                else:
+                    warnings.warn(f"Cannot use loss aggregation: Loss calculation failed or resulted in NaN/Inf.")
+            else:
+                warnings.warn(f"Cannot use loss aggregation: Probabilities (p_prob) missing.")
 
         # --- 1. Label EMD ---
         label_emd_raw = calculate_label_emd(y1, y2, self.num_classes)
@@ -516,10 +624,43 @@ class DecomposedOTCalculator(BaseOTCalculator):
         self.results['label_emd'] = label_emd_normalized
 
         # --- 2. Class-Conditional OT ---
+        # Organize features by label for validation and sampling
+        features_by_label = {}
+        for c in range(self.num_classes):
+            # Client 1
+            client1_indices = torch.where(y1 == c)[0]
+            if client1_indices.shape[0] > 0:
+                features_by_label["client1"] = features_by_label.get("client1", {})
+                features_by_label["client1"][c] = h1[client1_indices].cpu().numpy()
+            
+            # Client 2
+            client2_indices = torch.where(y2 == c)[0]
+            if client2_indices.shape[0] > 0:
+                features_by_label["client2"] = features_by_label.get("client2", {})
+                features_by_label["client2"][c] = h2[client2_indices].cpu().numpy()
+        
+        # Validate which labels have sufficient samples and get sampling indices
+        label_validity, sample_indices_by_client_label = validate_samples_for_decomposed_ot(
+            features_by_label, min_samples_threshold, max_samples_threshold)
+        
+        if verbose:
+            valid_labels = [l for l, v in label_validity.items() if v]
+            invalid_labels = [l for l, v in label_validity.items() if not v]
+            print(f"Label validation: {len(valid_labels)} valid, {len(invalid_labels)} skipped")
+            if invalid_labels:
+                print(f"Skipping labels due to insufficient samples: {invalid_labels}")
+                
+            # Report on sampling
+            for client_id, label_indices in sample_indices_by_client_label.items():
+                for label, indices in label_indices.items():
+                    orig_count = len(features_by_label[client_id][label])
+                    if len(indices) < orig_count:
+                        print(f"Sampling {client_id}, label {label}: {orig_count} → {len(indices)}")
+
         all_class_results = {} # Stores {'ot_cost': float, 'avg_loss': float, 'total_loss': float, 'sample_count': tuple, 'valid': bool}
         total_loss_across_classes = 0.0
         if can_use_loss_agg and loss1 is not None and loss2 is not None:
-             total_loss_across_classes = (loss1.sum() + loss2.sum()).item()
+            total_loss_across_classes = (loss1.sum() + loss2.sum()).item()
 
         for c in range(self.num_classes):
             class_result = {'ot_cost': np.nan, 'avg_loss': 0.0, 'total_loss': 0.0, 'sample_count': (0, 0), 'valid': False}
@@ -527,36 +668,68 @@ class DecomposedOTCalculator(BaseOTCalculator):
             n_c, m_c = idx1_c.shape[0], idx2_c.shape[0]
             class_result['sample_count'] = (n_c, m_c)
 
+            # Skip this label if it fails the validation check
+            if not label_validity.get(c, False):
+                if verbose: 
+                    print(f"Class {c}: Skipping due to insufficient samples (min={min_samples_threshold})")
+                all_class_results[c] = class_result
+                continue
+            
             if n_c == 0 or m_c == 0:
                 all_class_results[c] = class_result; continue # Skip if no samples in either client
 
             # --- Gather class data & handle loss ---
-            h1_c, w1_c, y1_c = h1[idx1_c], w1[idx1_c], y1[idx1_c]
-            h2_c, w2_c, y2_c = h2[idx2_c], w2[idx2_c], y2[idx2_c]
-            p1_prob_c = p1_prob[idx1_c] if p1_prob is not None else None
-            p2_prob_c = p2_prob[idx2_c] if p2_prob is not None else None
+            # Apply sampling to client 1 data
+            if "client1" in sample_indices_by_client_label and c in sample_indices_by_client_label["client1"]:
+                sample1_indices = sample_indices_by_client_label["client1"][c]
+                # Map sample indices to actual indices in the full dataset
+                full_sample1_indices = idx1_c[torch.from_numpy(sample1_indices).long()]
+                h1_c = h1[full_sample1_indices]
+                w1_c = w1[full_sample1_indices]
+                y1_c = y1[full_sample1_indices]
+                p1_prob_c = p1_prob[full_sample1_indices] if p1_prob is not None else None
+                loss1_c = loss1[full_sample1_indices] if loss1 is not None else None
+                n_c_final = len(sample1_indices)
+            else:
+                h1_c, w1_c, y1_c = h1[idx1_c], w1[idx1_c], y1[idx1_c]
+                p1_prob_c = p1_prob[idx1_c] if p1_prob is not None else None
+                loss1_c = loss1[idx1_c] if loss1 is not None else None
+                n_c_final = n_c
 
-            if can_use_loss_agg and loss1 is not None and loss2 is not None:
-                loss1_c = loss1[idx1_c]; loss2_c = loss2[idx2_c]
+            # Apply sampling to client 2 data
+            if "client2" in sample_indices_by_client_label and c in sample_indices_by_client_label["client2"]:
+                sample2_indices = sample_indices_by_client_label["client2"][c]
+                # Map sample indices to actual indices in the full dataset
+                full_sample2_indices = idx2_c[torch.from_numpy(sample2_indices).long()]
+                h2_c = h2[full_sample2_indices]
+                w2_c = w2[full_sample2_indices]
+                y2_c = y2[full_sample2_indices]
+                p2_prob_c = p2_prob[full_sample2_indices] if p2_prob is not None else None
+                loss2_c = loss2[full_sample2_indices] if loss2 is not None else None
+                m_c_final = len(sample2_indices)
+            else:
+                h2_c, w2_c, y2_c = h2[idx2_c], w2[idx2_c], y2[idx2_c]
+                p2_prob_c = p2_prob[idx2_c] if p2_prob is not None else None
+                loss2_c = loss2[idx2_c] if loss2 is not None else None
+                m_c_final = m_c
+
+            # Update sample counts after sampling
+            class_result['sample_count'] = (n_c_final, m_c_final)
+
+            if can_use_loss_agg and loss1_c is not None and loss2_c is not None:
                 if torch.isfinite(loss1_c).all() and torch.isfinite(loss2_c).all():
                     total_loss_c = (loss1_c.sum() + loss2_c.sum()).item()
-                    avg_loss_c = total_loss_c / (n_c + m_c) if (n_c + m_c) > 0 else 0.0
+                    avg_loss_c = total_loss_c / (n_c_final + m_c_final) if (n_c_final + m_c_final) > 0 else 0.0
                     class_result['total_loss'] = total_loss_c; class_result['avg_loss'] = avg_loss_c
 
             # Check if probs are needed for cost and available
             if beta_within > self.eps_num and (p1_prob_c is None or p2_prob_c is None):
-                 if verbose: warnings.warn(f"Class {c}: Skipped conditional OT - probs needed for cost (beta_within>0) but unavailable.");
-                 all_class_results[c] = class_result; continue
-
-            h1_c_final, w1_c_final, y1_c_final = h1_c, w1_c, y1_c
-            h2_c_final, w2_c_final, y2_c_final = h2_c, w2_c, y2_c
-            p1_prob_c_final, p2_prob_c_final = p1_prob_c, p2_prob_c
-            n_c_final, m_c_final = n_c, m_c
-
+                if verbose: warnings.warn(f"Class {c}: Skipped conditional OT - probs needed for cost (beta_within>0) but unavailable.");
+                all_class_results[c] = class_result; continue
 
             # --- Calculate Within-Class Cost Matrix ---
             cost_matrix_c, max_cost_c = self._calculate_cost_within_class(
-                h1_c_final, p1_prob_c_final, y1_c_final, h2_c_final, p2_prob_c_final, y2_c_final, **params
+                h1_c, p1_prob_c, y1_c, h2_c, p2_prob_c, y2_c, **params
             )
             if cost_matrix_c is None or not (np.isfinite(max_cost_c) and max_cost_c > self.eps_num):
                 fail_reason = "within-class cost calc failed" if cost_matrix_c is None else "within-class max cost near zero/invalid"
@@ -565,13 +738,13 @@ class DecomposedOTCalculator(BaseOTCalculator):
 
             # --- Normalize Cost & Compute OT ---
             if normalize_within_cost and np.isfinite(max_cost_c) and max_cost_c > self.eps_num:
-                 norm_cost_matrix_c = cost_matrix_c / max_cost_c
+                norm_cost_matrix_c = cost_matrix_c / max_cost_c
             else: norm_cost_matrix_c = cost_matrix_c
             self.cost_matrices['within_class'][c] = norm_cost_matrix_c.cpu().numpy()
 
             # Use weights for marginals, fallback to uniform
-            w1_c_np = w1_c_final.cpu().numpy().astype(np.float64); sum1_c = w1_c_np.sum()
-            w2_c_np = w2_c_final.cpu().numpy().astype(np.float64); sum2_c = w2_c_np.sum()
+            w1_c_np = w1_c.cpu().numpy().astype(np.float64); sum1_c = w1_c_np.sum()
+            w2_c_np = w2_c.cpu().numpy().astype(np.float64); sum2_c = w2_c_np.sum()
             a_c = (w1_c_np / sum1_c) if sum1_c > self.eps_num else (np.ones(n_c_final)/max(1,n_c_final))
             b_c = (w2_c_np / sum2_c) if sum2_c > self.eps_num else (np.ones(m_c_final)/max(1,m_c_final))
             if sum1_c <= self.eps_num: warnings.warn(f"C{c}: C1 weights sum zero.")
@@ -618,7 +791,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
                 weights_agg = np.array([all_class_results[c]['avg_loss'] for c in valid_classes], dtype=np.float64)
             elif effective_agg_method == 'total_loss_share':
                 if total_loss_across_classes > self.eps_num:
-                     weights_agg = np.array([all_class_results[c]['total_loss'] / total_loss_across_classes for c in valid_classes], dtype=np.float64)
+                    weights_agg = np.array([all_class_results[c]['total_loss'] / total_loss_across_classes for c in valid_classes], dtype=np.float64)
                 else: weights_agg = np.ones_like(costs_agg); agg_method_used_str += " (Fallback - Zero Total Loss)"
 
             # Normalize weights and compute weighted average
@@ -634,15 +807,29 @@ class DecomposedOTCalculator(BaseOTCalculator):
 
             agg_weights_dict = {c: w for c, w in zip(valid_classes, normalized_weights_agg)}
         else:
-             warnings.warn("No valid conditional OT costs calculated to aggregate.")
+            warnings.warn("No valid conditional OT costs calculated to aggregate.")
 
         self.results['conditional_ot_agg'] = agg_conditional_ot
         self.results['aggregation_method_used'] = agg_method_used_str
         self.results['aggregation_weights'] = agg_weights_dict
+        
+        # Track skipped and sampled labels for reporting
+        self.results['skipped_labels'] = [c for c in range(self.num_classes) if c not in valid_classes]
+        self.results['sampled_labels'] = {}
+        for client_id, label_indices in sample_indices_by_client_label.items():
+            for label, indices in label_indices.items():
+                orig_count = features_by_label.get(client_id, {}).get(label, [])
+                # Fix the ambiguous boolean check:
+                if hasattr(orig_count, '__len__') and len(indices) < len(orig_count):
+                    if label not in self.results['sampled_labels']:
+                        self.results['sampled_labels'][label] = {}
+                    self.results['sampled_labels'][label][client_id] = (len(orig_count), len(indices))
+
+        
         # --- 4. Calculate Combined Score ---
         if not np.isnan(label_emd_normalized) and not np.isnan(agg_conditional_ot):
-             # Simple average, consider weighting later if needed
-             self.results['combined_score'] = (label_emd_normalized + agg_conditional_ot) / 2.0
+            # Simple average, consider weighting later if needed
+            self.results['combined_score'] = (label_emd_normalized + agg_conditional_ot) / 2.0
         else: self.results['combined_score'] = np.nan
 
         if verbose:
@@ -652,15 +839,24 @@ class DecomposedOTCalculator(BaseOTCalculator):
             print(f"  Label EMD (Normalized={normalize_emd_flag}): {emd_str}")
             print(f"  Conditional Within-Class OT Costs (NormCost={normalize_within_cost}):")
             for c in range(self.num_classes):
-                 cost_val = self.results['conditional_ot_per_class'].get(c, np.nan)
-                 cost_str = f"{cost_val:.3f}" if not np.isnan(cost_val) else 'Skipped/Failed'
-                 print(f"     - Class {c}: Cost={cost_str}")
+                cost_val = self.results['conditional_ot_per_class'].get(c, np.nan)
+                cost_str = f"{cost_val:.3f}" if not np.isnan(cost_val) else 'Skipped/Failed'
+                count_str = f"(samples: {all_class_results.get(c, {}).get('sample_count', (0,0))})"
+                print(f"     - Class {c}: Cost={cost_str} {count_str}")
             cond_ot_agg_str = f"{self.results['conditional_ot_agg']:.3f}" if not np.isnan(self.results['conditional_ot_agg']) else 'Failed'
             print(f"  Aggregated Conditional OT ({agg_method_used_str}): {cond_ot_agg_str}")
+            print(f"  Skipped Labels: {self.results['skipped_labels']}")
+            
+            # Report sampling if any occurred
+            if self.results['sampled_labels']:
+                print(f"  Sampled Labels (original→sampled):")
+                for label, clients in self.results['sampled_labels'].items():
+                    client_info = ", ".join([f"{cid}: {orig}→{sampled}" for cid, (orig, sampled) in clients.items()])
+                    print(f"     - Label {label}: {client_info}")
+                
             comb_score_str = f"{self.results['combined_score']:.3f}" if not np.isnan(self.results['combined_score']) else 'Invalid'
             print(f"  Combined Score (/2): {comb_score_str}")
             print("-" * 30)
-
 
     def _calculate_cost_within_class(self, h1_c, p1_prob_c, y1_c, h2_c, p2_prob_c, y2_c, **params) -> Tuple[Optional[torch.Tensor], float]:
         """ Calculates within-class cost: alpha * D_h_scaled + beta * D_e_scaled. """
@@ -750,8 +946,8 @@ class DirectOTCalculator(BaseOTCalculator):
         }
     
     def calculate_similarity(self, data1: Dict[str, Optional[torch.Tensor]], 
-                           data2: Dict[str, Optional[torch.Tensor]], 
-                           params: Dict[str, Any]) -> None:
+                        data2: Dict[str, Optional[torch.Tensor]], 
+                        params: Dict[str, Any]) -> None:
         """
         Calculate direct OT similarity with label Hellinger distance.
         
@@ -759,14 +955,14 @@ class DirectOTCalculator(BaseOTCalculator):
             data1: Processed data for client 1, including activations and labels
             data2: Processed data for client 2, including activations and labels
             params: Configuration parameters including:
-                   - normalize_activations: Whether to L2 normalize features
-                   - distance_method: Method for feature distance calculation
-                   - use_label_hellinger: Whether to use label Hellinger distance
-                   - label_weight: Weight for label cost (default 1.0)
-                   - feature_weight: Weight for feature cost (default 2.0)
-                   - use_loss_weighting: Whether to use loss-based weighting for margins
-                   - compress_vectors: Whether to compress high-dimensional vectors
-                   - verbose: Print detailed information
+                - normalize_activations: Whether to L2 normalize features
+                - distance_method: Method for feature distance calculation
+                - use_label_hellinger: Whether to use label Hellinger distance
+                - label_weight: Weight for label cost (default 1.0)
+                - feature_weight: Weight for feature cost (default 2.0)
+                - use_loss_weighting: Whether to use loss-based weighting for margins
+                - compress_vectors: Whether to compress high-dimensional vectors
+                - verbose: Print detailed information
         """
         self._reset_results()
         
@@ -784,6 +980,8 @@ class DirectOTCalculator(BaseOTCalculator):
         compression_ratio = params.get('compression_ratio', 0.8)  # Used for PCA variance ratio
         reg = params.get('reg', DEFAULT_OT_REG)
         max_iter = params.get('max_iter', DEFAULT_OT_MAX_ITER)
+        min_samples_threshold = params.get('min_samples', 20)
+        max_samples_threshold = params.get('max_samples', 900)  # Get minimum samples threshold
         
         # Store configuration in results
         self.results['feature_distance_method'] = distance_method
@@ -797,27 +995,73 @@ class DirectOTCalculator(BaseOTCalculator):
             required_keys.append('y')
         if use_loss_weighting:
             required_keys.append('weights')
-            
         proc_data1 = self._preprocess_input(data1.get('h'), data1.get('p_prob'), data1.get('y'), 
-                                          data1.get('weights'), required_keys)
+                                        data1.get('weights'), required_keys)
         proc_data2 = self._preprocess_input(data2.get('h'), data2.get('p_prob'), data2.get('y'), 
-                                          data2.get('weights'), required_keys)
+                                        data2.get('weights'), required_keys)
         
         if proc_data1 is None or proc_data2 is None:
             warnings.warn("Enhanced DirectOT calculation requires neural network activations ('h')" +
-                         " and labels ('y' when using Hellinger). " + 
-                         "Preprocessing failed or data missing. Skipping.")
+                        " and labels ('y' when using Hellinger). " + 
+                        "Preprocessing failed or data missing. Skipping.")
             weight_type = "Loss" if use_loss_weighting else "Uniform"
             self.results['weighting_used'] = weight_type
             return
             
         h1 = proc_data1['h']  # Neural network activations for client 1
-        h2 = proc_data2['h']  # Neural network activations for client 2
+        h2 = proc_data2['h']  # Neural network activations for client 2        
+        y1 = proc_data1.get('y')
+        y2 = proc_data2.get('y')
         w1 = proc_data1.get('weights')
         w2 = proc_data2.get('weights')
+        p1_prob = proc_data1.get('p_prob')  # Initialize explicitly, might be None
+        p2_prob = proc_data2.get('p_prob')  # Initialize explicitly, might be None
         
         N, M = h1.shape[0], h2.shape[0]
         
+        # Validate sample counts
+        features_dict = {
+            "client1": h1.cpu().numpy(),
+            "client2": h2.cpu().numpy()
+        }
+        all_sufficient, sample_indices = validate_samples_for_ot(
+            features_dict, min_samples_threshold, max_samples_threshold)
+
+        if not all_sufficient:
+            warnings.warn(f"DirectOT: One or both clients have insufficient samples (min={min_samples_threshold}). Skipping.")
+            weight_type = "Loss" if use_loss_weighting else "Uniform"
+            self.results['weighting_used'] = weight_type
+            return
+        
+        # Apply sampling if needed
+        if "client1" in sample_indices and len(sample_indices["client1"]) < N:
+            # Sample client 1 data with careful handling of possibly None values
+            indices1 = torch.from_numpy(sample_indices["client1"]).long()
+            h1 = h1[indices1]
+            if y1 is not None:
+                y1 = y1[indices1]
+            if p1_prob is not None:  # Check if p1_prob exists before indexing
+                p1_prob = p1_prob[indices1]
+            if w1 is not None:
+                w1 = w1[indices1]
+            N = len(indices1)
+            if verbose:
+                print(f"Sampled client1 data: {len(indices1)} from original {N}")
+
+        if "client2" in sample_indices and len(sample_indices["client2"]) < M:
+            # Sample client 2 data with careful handling
+            indices2 = torch.from_numpy(sample_indices["client2"]).long()
+            h2 = h2[indices2]
+            if y2 is not None:
+                y2 = y2[indices2]
+            if p2_prob is not None:  # Check if p2_prob exists before indexing
+                p2_prob = p2_prob[indices2]
+            if w2 is not None:
+                w2 = w2[indices2]
+            M = len(indices2)
+            if verbose:
+                print(f"Sampled client2 data: {len(indices2)} from original {M}")
+                
         if N == 0 or M == 0:
             warnings.warn("Enhanced DirectOT: One or both clients have zero samples. OT cost is 0.")
             self.results['direct_ot_cost'] = 0.0
@@ -867,10 +1111,7 @@ class DirectOTCalculator(BaseOTCalculator):
         label_cost_matrix = torch.zeros_like(feature_cost_matrix)
         
         if use_label_hellinger and 'y' in proc_data1 and 'y' in proc_data2:
-            try:
-                y1 = proc_data1['y']  # Labels for client 1
-                y2 = proc_data2['y']  # Labels for client 2
-                
+            try:                
                 # Convert to numpy for easier handling
                 h1_np = h1.cpu().numpy()
                 h2_np = h2.cpu().numpy()
@@ -907,7 +1148,6 @@ class DirectOTCalculator(BaseOTCalculator):
                             # Calculate distribution parameters
                             mu_1, sigma_1 = self._get_normal_params(h1_label)
                             mu_2, sigma_2 = self._get_normal_params(h2_label)
-                            
                             # Calculate Hellinger distance
                             hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
                             
@@ -917,16 +1157,16 @@ class DirectOTCalculator(BaseOTCalculator):
                                 self.results['label_costs'].append(((label1, label2), hellinger_dist))
                             else:
                                 # Fallback to a neutral midpoint if calculation fails
-                                label_pair_distances[(label1, label2)] = 0.5
-                                self.results['label_costs'].append(((label1, label2), 0.5))
+                                label_pair_distances[(label1, label2)] = 1
+                                self.results['label_costs'].append(((label1, label2), 1))
                                 if verbose:
-                                    print(f"Hellinger distance calculation failed for labels {label1},{label2}. Using 0.5.")
+                                    print(f"Hellinger distance calculation failed for labels {label1},{label2}")
                         else:
                             # Not enough samples for distribution, use midpoint
-                            label_pair_distances[(label1, label2)] = 0.5
-                            self.results['label_costs'].append(((label1, label2), 0.5))
+                            label_pair_distances[(label1, label2)] = 1
+                            self.results['label_costs'].append(((label1, label2), 1))
                             if verbose:
-                                print(f"Not enough samples for labels {label1},{label2}. Using 0.5.")
+                                print(f"Not enough samples for labels {label1},{label2}.")
                 
                 # Fill the label cost matrix based on the calculated distances
                 for i in range(N):
@@ -966,7 +1206,7 @@ class DirectOTCalculator(BaseOTCalculator):
             
             # Combine costs
             combined_cost_matrix = (norm_feature_weight * feature_cost_matrix + 
-                                   norm_label_weight * label_cost_matrix)
+                                norm_label_weight * label_cost_matrix)
             
             # Track contributions for reporting
             feature_contribution = (norm_feature_weight * feature_cost_matrix).mean().item()
@@ -1017,7 +1257,13 @@ class DirectOTCalculator(BaseOTCalculator):
         if verbose:
             feature_msg = f"Feature Cost ({distance_method}): {feature_contribution:.4f}" if use_label_hellinger else ""
             label_msg = f", Label Cost: {label_contribution:.4f}" if use_label_hellinger else ""
-            print(f"  Enhanced DirectOT Cost ({weight_type} weights): {ot_cost:.4f if not np.isnan(ot_cost) else 'Failed'}")
+            
+            # Fix the format specifier error
+            if np.isfinite(ot_cost):
+                print(f"  Enhanced DirectOT Cost ({weight_type} weights): {ot_cost:.4f}")
+            else:
+                print(f"  Enhanced DirectOT Cost ({weight_type} weights): Failed")
+                
             if use_label_hellinger:
                 print(f"  {feature_msg}{label_msg}, Combined using weights {norm_feature_weight:.2f}:{norm_label_weight:.2f}")
                 print(f"  Label Hellinger distances by class pairs:")
@@ -1068,22 +1314,19 @@ class DirectOTCalculator(BaseOTCalculator):
         # Add small regularization to ensure positive definiteness
         sigma += 1e-6 * np.eye(sigma.shape[0])
         return mu, sigma
-    
+        
     def _hellinger_distance(self, mu_1: np.ndarray, sigma_1: np.ndarray, 
-                           mu_2: np.ndarray, sigma_2: np.ndarray) -> Optional[float]:
+                        mu_2: np.ndarray, sigma_2: np.ndarray) -> Optional[float]:
         """
         Calculate the Hellinger distance between two multivariate normal distributions.
-        
-        Args:
-            mu_1: Mean vector of first distribution
-            sigma_1: Covariance matrix of first distribution
-            mu_2: Mean vector of second distribution
-            sigma_2: Covariance matrix of second distribution
-            
-        Returns:
-            Hellinger distance or None if calculation fails
         """
         try:
+            # Add explicit shape checks
+            if mu_1.shape != mu_2.shape or sigma_1.shape != sigma_2.shape:
+                logger.warning(f"Shape mismatch: mu_1{mu_1.shape}, mu_2{mu_2.shape}, "
+                            f"sigma_1{sigma_1.shape}, sigma_2{sigma_2.shape}")
+                return None
+                
             # Ensure positive definiteness through eigendecomposition
             s1_vals, s1_vecs = np.linalg.eigh(sigma_1)
             s2_vals, s2_vecs = np.linalg.eigh(sigma_2)
@@ -1102,7 +1345,6 @@ class DirectOTCalculator(BaseOTCalculator):
             det_s1 = np.linalg.det(s1_recon)
             det_s2 = np.linalg.det(s2_recon)
             det_avg_sigma = np.linalg.det(avg_sigma)
-            
             # Avoid numerical issues with determinants
             if det_s1 <= 0 or det_s2 <= 0 or det_avg_sigma <= 0:
                 return None
@@ -1117,17 +1359,21 @@ class DirectOTCalculator(BaseOTCalculator):
             
             # Final Hellinger distance
             distance = 1 - np.sqrt(term1 * term2)
-            
             # Handle numerical issues
             if not np.isfinite(distance):
                 return None
                 
             return float(distance)
             
-        except np.linalg.LinAlgError:
+        except np.linalg.LinAlgError as e:
             # Handle linear algebra errors (singular matrices, etc)
+            logger.warning(f"Linear algebra error in Hellinger calculation: {e}")
+            return None
+        except IndexError as e:
+            # Handle indexing errors explicitly
+            logger.warning(f"Indexing error in Hellinger calculation: {e}") 
             return None
         except Exception as e:
             # Handle other errors
-            print(f"Hellinger distance calculation error: {e}")
+            logger.warning(f"Hellinger distance calculation error: {e}")
             return None

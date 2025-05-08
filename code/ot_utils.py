@@ -6,6 +6,7 @@ import warnings
 import ot
 from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
+import logging
 
 # --- Constants ---
 DEFAULT_OT_REG = 0.001
@@ -418,3 +419,122 @@ def compute_anchors(
     else:
         warnings.warn(f"Unknown anchor method: {method}")
         return None
+
+logger = logging.getLogger(__name__)
+
+def validate_samples_for_ot(features_dict: Dict[str, np.ndarray], 
+                           min_samples: int = 100,
+                           max_samples: int = 900) -> Tuple[bool, Dict[str, np.ndarray]]:
+    """
+    Validates if clients have enough samples and samples down if exceeding maximum.
+    """
+    indices_to_use = {}
+    all_sufficient = True
+    
+    for client_id, features in features_dict.items():
+        n_samples = len(features)
+        
+        # Check minimum threshold
+        if n_samples < min_samples:
+            logger.info(f"Client {client_id} has insufficient samples: {n_samples} < {min_samples}")
+            all_sufficient = False
+            indices_to_use[client_id] = np.arange(n_samples)  # Use all available samples
+        # Check maximum threshold - only sample if we're strictly over the max
+        elif n_samples > max_samples:
+            # Sample down to max_samples
+            rng = np.random.RandomState(42)  # Fixed seed for reproducibility
+            indices = rng.choice(n_samples, max_samples, replace=False)
+            indices.sort()  # Keep original order
+            indices_to_use[client_id] = indices
+            
+            # Log the sampling
+            logger.info(f"Client {client_id} samples reduced: {n_samples} → {max_samples}")
+        else:
+            # Use all samples (already within limits)
+            indices_to_use[client_id] = np.arange(n_samples)
+    
+    return all_sufficient, indices_to_use
+
+
+def validate_samples_for_decomposed_ot(features_by_label: Dict[str, Dict[int, np.ndarray]],
+                                      min_samples: int = 100,
+                                      max_samples: int = 900) -> Tuple[Dict[int, bool], Dict[str, Dict[int, np.ndarray]]]:
+    """
+    Validates which labels have sufficient samples and samples down if exceeding maximum.
+    """
+    # Collect all unique labels across clients
+    all_labels = set()
+    for client_labels in features_by_label.values():
+        all_labels.update(client_labels.keys())
+    
+    # Check each label
+    label_validity = {}
+    indices_by_client_label = {client_id: {} for client_id in features_by_label.keys()}
+    
+    for label in all_labels:
+        valid = True
+        for client_id, label_dict in features_by_label.items():
+            # Check if this client has this label
+            if label not in label_dict:
+                valid = False
+                logger.info(f"Client {client_id} is missing label {label}")
+                break
+            
+            # Check sample count
+            n_samples = len(label_dict[label])
+            if n_samples < min_samples:
+                valid = False
+                logger.info(f"Client {client_id} has insufficient samples for label {label}: "
+                           f"{n_samples} < {min_samples}")
+            
+            # Store indices for this label (sampling if needed)
+            # Only sample if strictly greater than max_samples
+            if n_samples > max_samples:
+                # Sample down to max_samples
+                rng = np.random.RandomState(42 + n_samples)  # Seed varies by label for diversity
+                indices = rng.choice(n_samples, max_samples, replace=False)
+                indices.sort()  # Keep original order
+                logger.info(f"Label {label}, client {client_id} samples reduced: {n_samples} → {max_samples}")
+            else:
+                # Use all samples
+                indices = np.arange(n_samples)
+                
+            indices_by_client_label[client_id][label] = indices
+        
+        label_validity[label] = valid
+    
+    return label_validity, indices_by_client_label
+
+def apply_sampling_to_data(tensors_dict: Dict[str, Optional[torch.Tensor]], 
+                          indices_dict: Dict[str, np.ndarray]) -> Dict[str, Optional[torch.Tensor]]:
+    """
+    Apply sampling indices to multiple tensors consistently.
+    
+    Args:
+        tensors_dict: Dictionary of tensors to sample (h, y, p_prob, weights, etc.)
+        indices_dict: Dictionary mapping keys to indices arrays
+        
+    Returns:
+        Dictionary with sampled tensors
+    """
+    sampled_tensors = {}
+    for name, tensor in tensors_dict.items():
+        if tensor is None:
+            sampled_tensors[name] = None
+            continue
+            
+        if name in indices_dict:
+            indices = indices_dict[name]
+            # Convert indices to tensor for indexing
+            if isinstance(indices, np.ndarray):
+                indices_tensor = torch.from_numpy(indices).long()
+            else:
+                indices_tensor = torch.tensor(indices, dtype=torch.long)
+                
+            # Apply sampling
+            sampled_tensors[name] = tensor[indices_tensor]
+        else:
+            # No sampling needed for this tensor
+            sampled_tensors[name] = tensor
+            
+    return sampled_tensors

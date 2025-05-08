@@ -196,11 +196,12 @@ class OTDataManager:
     def _extract_activations_with_model(
         self, model: torch.nn.Module, client_id: str, 
         dataloaders: Dict, loader_type: str, 
-        num_classes: int
+        num_classes: int, dataset_name: str = None  # Add dataset_name parameter
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Extracts activations for a client using the loaded model.
-        Intelligently identifies the final linear layer regardless of model architecture.
+        Intelligently identifies the final linear layer for standard models,
+        or uses rep_vector for IXITiny model.
         """
         client_id_str = str(client_id)
         #print(f"    Extracting activations for client {client_id_str} using {loader_type} loader")
@@ -224,121 +225,170 @@ class OTDataManager:
                     loader_key = int_key
             except ValueError:
                 pass
-                
+                    
         if loader_key is None:
             print(f"Client {client_id_str} not found in dataloaders")
             return None, None, None
-            
+                
         # Get loader by type
         loader_idx = {'train': 0, 'val': 1, 'test': 2}.get(loader_type.lower())
         if loader_idx is None or not isinstance(dataloaders[loader_key], (list, tuple)) or len(dataloaders[loader_key]) <= loader_idx:
             print(f"Invalid loader structure for client {client_id_str}")
             return None, None, None
-            
+                
         data_loader = dataloaders[loader_key][loader_idx]
         if data_loader is None or len(data_loader.dataset) == 0:
             print(f"Empty {loader_type} loader for client {client_id_str}")
             return None, None, None
         
-        # Find final linear layer by structure analysis
-        final_linear = self._find_final_linear_layer(model, num_classes)
-                
-        if final_linear is None:
-            print(f"Could not find suitable final linear layer for model")
-            return None, None, None
+        # Check if this is IXITiny dataset
+        is_ixitiny = dataset_name == 'IXITiny' or isinstance(model, ms.IXITiny)
         
         # Set up storage for activations
-        current_batch_pre_acts = []
-        current_batch_post_logits = []
         all_pre_activations = []
         all_post_activations = []
         all_labels = []
         
-        # Rest of the method remains the same...
-        # Define hooks, process data, etc.
-        
-        # Define hooks
-        def pre_hook(module, input_data):
-            inp = input_data[0] if isinstance(input_data, tuple) else input_data
-            if isinstance(inp, torch.Tensor):
-                current_batch_pre_acts.append(inp.detach())
-                
-        def post_hook(module, input_data, output_data):
-            out = output_data if not isinstance(output_data, tuple) else output_data[0]
-            if isinstance(out, torch.Tensor):
-                current_batch_post_logits.append(out.detach())
-                
-        # Register hooks
-        pre_handle = final_linear.register_forward_pre_hook(pre_hook)
-        post_handle = final_linear.register_forward_hook(post_hook)
-        
-        # Process data through model
-        try:
-            with torch.no_grad():
-                for batch_data in data_loader:
-                    # Extract batch data appropriately
-                    if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 2:
-                        batch_x, batch_y = batch_data[0], batch_data[1]
-                    elif isinstance(batch_data, dict):
-                        batch_x = batch_data.get('features')
-                        batch_y = batch_data.get('labels')
-                        if batch_x is None or batch_y is None:
+        # For IXITiny, we'll collect representations directly using rep_vector=True
+        if is_ixitiny:
+            try:
+                with torch.no_grad():
+                    for batch_data in data_loader:
+                        # Extract batch data appropriately
+                        if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 2:
+                            batch_x, batch_y = batch_data[0], batch_data[1]
+                        elif isinstance(batch_data, dict):
+                            batch_x = batch_data.get('features')
+                            batch_y = batch_data.get('labels')
+                            if batch_x is None or batch_y is None:
+                                continue
+                        else:
                             continue
-                    else:
-                        continue
+                            
+                        if batch_x.shape[0] == 0:
+                            continue # Skip empty batches
+                            
+                        # Move data to device
+                        batch_x = batch_x.to(self.device)
                         
-                    if batch_x.shape[0] == 0:
-                        continue # Skip empty batches
+                        # Get representation vector directly using rep_vector=True
+                        representation = model(batch_x, rep_vector=True)
                         
-                    # Move data to device and reset storage
-                    batch_x = batch_x.to(self.device)
-                    current_batch_pre_acts.clear()
-                    current_batch_post_logits.clear()
+                        # Collect results - for IXITiny, set all labels to 0 
+                        all_pre_activations.append(representation.cpu())
+                        all_labels.append(torch.zeros(batch_x.shape[0], dtype=torch.long))
+                        
+                # Check if any data was collected
+                if not all_pre_activations:
+                    print(f"No activations collected for client {client_id_str}")
+                    return None, None, None
                     
-                    # Forward pass to trigger hooks
-                    _ = model(batch_x)
-                    
-                    # Check if hooks captured data
-                    if not current_batch_pre_acts or not current_batch_post_logits:
-                        continue
-                        
-                    # Process captured activations
-                    pre_acts_batch = current_batch_pre_acts[0].cpu()
-                    post_logits_batch = current_batch_post_logits[0].cpu()
-                    
-                    # Convert logits to probabilities based on task type
-                    if num_classes == 1:  # Binary or regression
-                        post_probs_batch = torch.sigmoid(post_logits_batch).squeeze(-1)
-                    elif post_logits_batch.ndim == 1:  # Already squeezed binary
-                        post_probs_batch = torch.sigmoid(post_logits_batch)
-                    else:  # Multi-class
-                        post_probs_batch = torch.softmax(post_logits_batch, dim=-1)
-                        
-                    # Collect results
-                    all_pre_activations.append(pre_acts_batch)
-                    all_post_activations.append(post_probs_batch)
-                    all_labels.append(batch_y.cpu().reshape(-1))  # Ensure 1D
-        finally:
-            # Always remove hooks
-            pre_handle.remove()
-            post_handle.remove()
+                # Concatenate results
+                try:
+                    final_h = torch.cat(all_pre_activations, dim=0)
+                    final_y = torch.cat(all_labels, dim=0)
+                    final_p = None  # Set probabilities to None for IXITiny
+                    return final_h, final_p, final_y
+                except Exception as e:
+                    print(f"Error concatenating activation results: {e}")
+                    return None, None, None
             
-        # Check if any data was collected
-        if not all_pre_activations:
-            print(f"No activations collected for client {client_id_str}")
-            return None, None, None
+            except Exception as e:
+                print(f"Error extracting IXITiny representations: {e}")
+                return None, None, None
+        
+        # For non-IXITiny datasets, use the original hook-based approach
+        else:
+            # Find final linear layer by structure analysis
+            final_linear = self._find_final_linear_layer(model, num_classes)
+                    
+            if final_linear is None:
+                print(f"Could not find suitable final linear layer for model")
+                return None, None, None
+        
+            current_batch_pre_acts = []
+            current_batch_post_logits = []
             
-        # Concatenate results
-        try:
-            final_h = torch.cat(all_pre_activations, dim=0)
-            final_p = torch.cat(all_post_activations, dim=0)
-            final_y = torch.cat(all_labels, dim=0)
-            #print(f"    Extracted activations: h={final_h.shape}, p={final_p.shape}, y={final_y.shape}")
-            return final_h, final_p, final_y
-        except Exception as e:
-            print(f"Error concatenating activation results: {e}")
-            return None, None, None
-
+            # Define hooks
+            def pre_hook(module, input_data):
+                inp = input_data[0] if isinstance(input_data, tuple) else input_data
+                if isinstance(inp, torch.Tensor):
+                    current_batch_pre_acts.append(inp.detach())
+                    
+            def post_hook(module, input_data, output_data):
+                out = output_data if not isinstance(output_data, tuple) else output_data[0]
+                if isinstance(out, torch.Tensor):
+                    current_batch_post_logits.append(out.detach())
+                    
+            # Register hooks
+            pre_handle = final_linear.register_forward_pre_hook(pre_hook)
+            post_handle = final_linear.register_forward_hook(post_hook)
+            
+            # Process data through model
+            try:
+                with torch.no_grad():
+                    for batch_data in data_loader:
+                        # Extract batch data appropriately
+                        if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 2:
+                            batch_x, batch_y = batch_data[0], batch_data[1]
+                        elif isinstance(batch_data, dict):
+                            batch_x = batch_data.get('features')
+                            batch_y = batch_data.get('labels')
+                            if batch_x is None or batch_y is None:
+                                continue
+                        else:
+                            continue
+                            
+                        if batch_x.shape[0] == 0:
+                            continue # Skip empty batches
+                            
+                        # Move data to device and reset storage
+                        batch_x = batch_x.to(self.device)
+                        current_batch_pre_acts.clear()
+                        current_batch_post_logits.clear()
+                        
+                        # Forward pass to trigger hooks
+                        _ = model(batch_x)
+                        
+                        # Check if hooks captured data
+                        if not current_batch_pre_acts or not current_batch_post_logits:
+                            continue
+                            
+                        # Process captured activations
+                        pre_acts_batch = current_batch_pre_acts[0].cpu()
+                        post_logits_batch = current_batch_post_logits[0].cpu()
+                        
+                        # Convert logits to probabilities based on task type
+                        if num_classes == 1:  # Binary or regression
+                            post_probs_batch = torch.sigmoid(post_logits_batch).squeeze(-1)
+                        elif post_logits_batch.ndim == 1:  # Already squeezed binary
+                            post_probs_batch = torch.sigmoid(post_logits_batch)
+                        else:  # Multi-class
+                            post_probs_batch = torch.softmax(post_logits_batch, dim=-1)
+                            
+                        # Collect results
+                        all_pre_activations.append(pre_acts_batch)
+                        all_post_activations.append(post_probs_batch)
+                        all_labels.append(batch_y.cpu().reshape(-1))  # Ensure 1D
+            finally:
+                # Always remove hooks
+                pre_handle.remove()
+                post_handle.remove()
+                
+            # Check if any data was collected
+            if not all_pre_activations:
+                print(f"No activations collected for client {client_id_str}")
+                return None, None, None
+                
+            # Concatenate results
+            try:
+                final_h = torch.cat(all_pre_activations, dim=0)
+                final_p = torch.cat(all_post_activations, dim=0)
+                final_y = torch.cat(all_labels, dim=0)
+                return final_h, final_p, final_y
+            except Exception as e:
+                print(f"Error concatenating activation results: {e}")
+                return None, None, None
     def _find_final_linear_layer(self, model: torch.nn.Module, num_classes: int) -> Optional[torch.nn.Linear]:
         """
         Intelligently locate the final linear layer in a model using multiple strategies.
@@ -418,17 +468,17 @@ class OTDataManager:
             if model is None or dataloaders is None:
                 return None
                 
-            # Extract activations for each client
+            # Extract activations for each client, passing dataset name
             h1, p1, y1 = self._extract_activations_with_model(
-                model, client_id_1, dataloaders, loader_type, num_classes
+                model, client_id_1, dataloaders, loader_type, num_classes, dataset_name=dataset
             )
-            
             h2, p2, y2 = self._extract_activations_with_model(
-                model, client_id_2, dataloaders, loader_type, num_classes
+                model, client_id_2, dataloaders, loader_type, num_classes, dataset_name=dataset
             )
             
-            # Validate all outputs are present
-            if h1 is None or p1 is None or y1 is None or h2 is None or p2 is None or y2 is None:
+            # For regular datasets, validate h, p, and y are all present
+            # For IXITiny, p1/p2 can be None
+            if h1 is None or y1 is None or h2 is None or y2 is None:
                 return None
                 
             return (h1, p1, y1, h2, p2, y2)
@@ -437,17 +487,18 @@ class OTDataManager:
             pass#print(f"Error during activation generation: {e}")
             traceback.print_exc()
             return None
-
+    
     def _process_client_data(
         self, h: Optional[torch.Tensor], p_prob_in: Optional[torch.Tensor], y: Optional[torch.Tensor],
         client_id: str, num_classes: int
     ) -> Optional[Dict[str, Optional[torch.Tensor]]]:
         """
         Processes raw data for one client: validates probs, calculates loss & weights.
+        Handles IXITiny case where p_prob_in is None and y contains zeros.
         
         Args:
             h: Feature activations tensor
-            p_prob_in: Model probability outputs tensor
+            p_prob_in: Model probability outputs tensor (can be None for segmentation tasks like IXITiny)
             y: Ground truth labels tensor
             client_id: Client identifier
             num_classes: Number of classes in the dataset
@@ -460,17 +511,14 @@ class OTDataManager:
             
         # Convert to CPU tensors
         h_cpu = h.detach().cpu() if isinstance(h, torch.Tensor) else torch.tensor(h).cpu()
-        h_cpu = h[:900]
         y_cpu = y.detach().cpu().long() if isinstance(y, torch.Tensor) else torch.tensor(y).long().cpu()
-        y_cpu = y[:900]
         p_prob_cpu = p_prob_in.detach().cpu() if isinstance(p_prob_in, torch.Tensor) else \
                     torch.tensor(p_prob_in).cpu() if p_prob_in is not None else None
-        p_prob_cpu = p_prob_cpu[:900] if p_prob_cpu is not None else None
         n_samples = y_cpu.shape[0]
         if n_samples == 0:
             return None
             
-        # Validate and normalize probabilities
+        # Validate and normalize probabilities (only if p_prob_cpu is not None)
         p_prob_validated = None
         if p_prob_cpu is not None:
             with torch.no_grad():
@@ -506,40 +554,32 @@ class OTDataManager:
                         # Stack to create [N,2] format
                         p_prob_validated = torch.stack([p0, p1], dim=1)
                 
-                # Case 3: Logits (pre-softmax) - add this if needed
-                # elif is_logits condition (e.g., large values or values outside [0,1]):
-                #     p_prob_validated = torch.softmax(p_prob_float, dim=1)
-                
                 # If no cases matched, p_prob_validated remains None
-                if p_prob_validated is None:
+                if p_prob_validated is None and p_prob_in is not None:
                     print(f"Warning: Unable to validate probability tensor with shape {p_prob_float.shape} "
                         f"for client {client_id} (n_samples={n_samples}, num_classes={num_classes})")
         
         # Calculate loss and weights
         loss = None
-        weights = None
         
+        # Only calculate loss if probabilities are available
         if p_prob_validated is not None:
             loss = calculate_sample_loss(p_prob_validated, y_cpu, num_classes, self.loss_eps)
         
-        # Handle weights assignment
+        # For all cases (including IXITiny without probabilities), use uniform weights
+        weights = torch.ones(n_samples, dtype=torch.float32) / n_samples
+        
+        # If loss is None (IXITiny case) or invalid, create a placeholder
         if loss is None or not torch.isfinite(loss).all() or loss.sum().item() <= self.loss_eps:
-            # Use uniform weights if loss is invalid
-            weights = torch.ones(n_samples, dtype=torch.float32) / n_samples
             loss = torch.full_like(y_cpu, float('nan'), dtype=torch.float32) if loss is None else loss
-        else:
-            # Use loss for weighting
-            weights = loss / loss.sum()
-            weights = torch.ones(n_samples, dtype=torch.float32) / n_samples
         
         return {
             'h': h_cpu, 
-            'p_prob': p_prob_validated, 
+            'p_prob': p_prob_validated,  # Will be None for IXITiny
             'y': y_cpu, 
             'loss': loss, 
             'weights': weights
         }
-
 
     def get_activations(
         self, dataset_name: str, cost: Any, seed: int,

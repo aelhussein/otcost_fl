@@ -66,7 +66,7 @@ COMMON_IMAGE_PARAMS = dict(
     reg_params_try=[1, 0.1, 1e-2],
     batch_size=96,
     epochs_per_round=3,
-    rounds=40,
+    rounds=60,
     rounds_tune_inner=20,
     runs=10,
     runs_tune=3,
@@ -173,7 +173,7 @@ DEFAULT_PARAMS = {
         'source_args': {
             'dataset_name': 'CIFAR10',
             'feature_shift_kind': 'image',   # Identify the shift type
-            'max_rotation_angle': 30.0,        # Max angle at delta=1
+            'max_rotation_angle': 45.0,        # Max angle at delta=1
             'max_zoom': 0.3,
             'max_frequency': 1,
         },
@@ -227,7 +227,7 @@ DEFAULT_PARAMS = {
         'partitioning_strategy': 'pre_split',
         'dataset_class': 'IXITinyDataset',
         'source_args': {
-            'site_mappings': { 0.09: [['Guys'], ['HH']], 0.29: [['IOP'], ['Guys']], 0.31: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] },
+            'site_mappings': { 0.01: [['Guys'], ['HH']], 0.02: [['IOP'], ['Guys']], 0.03: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] },
             'image_shape': (48, 60, 48)
         },
         'transform_config': {}, # Handled internally by IXITinyDataset
@@ -263,7 +263,7 @@ DATASET_COSTS = {
     'Synthetic_Concept': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 
     # Site mapping keys - Used directly by load_heart_raw, load_isic_paths_raw, load_ixi_paths_raw
-    'IXITiny': [0.09, 0.29, 0.31],
+    'IXITiny': [0.01, 0.02, 0.03],
     'ISIC': [0.15, 0.19, 0.25, 0.3],
     'Heart': [1, 2, 3, 4, 5, 6]
 }
