@@ -2,59 +2,26 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-import warnings
+import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple, Type, Union # Added Type
+
+# Import OTConfig from ot_configs
+from ot_configs import OTConfig
 
 # Import utilities from ot_utils.py
 from ot_utils import (
     compute_ot_cost, pairwise_euclidean_sq, calculate_label_emd, compute_anchors,
-    validate_samples_for_ot, validate_samples_for_decomposed_ot,logger,
-    DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER, DEFAULT_EPS, calculate_sample_loss # Added calculate_sample_loss
+    validate_samples_for_ot, validate_samples_for_decomposed_ot,
+    DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER, DEFAULT_EPS, calculate_sample_loss, 
+    prepare_ot_marginals, normalize_cost_matrix
 )
 
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-# +++ Added OTConfig and OTCalculatorFactory classes below +++
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-class OTConfig:
-    """
-    Configuration object for a single OT calculation run.
-    Includes basic validation.
-    """
-    # Define known method types to prevent typos
-    KNOWN_METHOD_TYPES = {'feature_error', 'decomposed', 'direct_ot'}
-
-    def __init__(self, method_type: str, name: str, params: Optional[Dict[str, Any]] = None):
-        """
-        Args:
-            method_type (str): The type of OT calculator (e.g., 'feature_error').
-            name (str): A unique descriptive name for this configuration set (e.g., 'FE_LossW_Norm').
-            params (dict, optional): Dictionary of parameters specific to the OT method. Defaults to {}.
-        """
-        if not isinstance(method_type, str) or not method_type:
-            raise ValueError("method_type must be a non-empty string.")
-        if method_type not in self.KNOWN_METHOD_TYPES:
-            warnings.warn(f"Unknown method_type '{method_type}'. Ensure a corresponding calculator exists in the factory.", UserWarning)
-        self.method_type = method_type
-
-        if not isinstance(name, str) or not name:
-            raise ValueError("name must be a non-empty string.")
-        self.name = name
-
-        self.params = params if params is not None else {}
-        if not isinstance(self.params, dict):
-            raise ValueError("params must be a dictionary.")
-
-    def __repr__(self) -> str:
-        return f"OTConfig(method_type='{self.method_type}', name='{self.name}', params={self.params})"
-
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 class OTCalculatorFactory:
     """ Factory class for creating OT calculator instances. """
-
-    # Forward declaration for type hints within the class if needed
-    # _calculator_map: Dict[str, Type['BaseOTCalculator']] # Not strictly necessary here
 
     @classmethod
     def _get_calculator_map(cls) -> Dict[str, Type['BaseOTCalculator']]:
@@ -74,15 +41,22 @@ class OTCalculatorFactory:
         # but kept for potential future dynamic loading.
         if not issubclass(calculator_class, BaseOTCalculator):
              raise TypeError(f"{calculator_class.__name__} must inherit from BaseOTCalculator")
-        # cls._calculator_map[method_type] = calculator_class # Need to handle how map is stored/accessed if dynamic
-        print(f"Note: Dynamic registration not fully implemented with static map. Add '{method_type}' to _get_calculator_map.")
+        logger.info(f"Note: Dynamic registration not fully implemented with static map. Add '{method_type}' to _get_calculator_map.")
 
 
     @staticmethod
     def create_calculator(config: OTConfig, client_id_1: str, client_id_2: str, num_classes: int) -> Optional['BaseOTCalculator']:
         """
         Creates an instance of the appropriate OT calculator based on the config.
-        (Docstring remains the same)
+        
+        Args:
+            config: OTConfig object with method_type and parameters
+            client_id_1: First client identifier
+            client_id_2: Second client identifier
+            num_classes: Number of classes in the dataset
+            
+        Returns:
+            An instance of the appropriate calculator or None if creation fails
         """
         calculator_map = OTCalculatorFactory._get_calculator_map()
         calculator_class = calculator_map.get(config.method_type)
@@ -96,10 +70,10 @@ class OTCalculatorFactory:
                 )
                 return instance
             except Exception as e:
-                warnings.warn(f"Failed to instantiate calculator for config '{config.name}' (type: {config.method_type}): {e}", stacklevel=2)
+                logger.warning(f"Failed to instantiate calculator for config '{config.name}' (type: {config.method_type}): {e}")
                 return None
         else:
-            warnings.warn(f"No calculator registered for method type '{config.method_type}' in config '{config.name}'. Skipping.", stacklevel=2)
+            logger.warning(f"No calculator registered for method type '{config.method_type}' in config '{config.name}'. Skipping.")
             return None
 
 # --- Base OT Calculator Class ---
@@ -121,7 +95,7 @@ class BaseOTCalculator(ABC):
 
     @abstractmethod
     def calculate_similarity(self, data1: Dict[str, Optional[torch.Tensor]], data2: Dict[str, Optional[torch.Tensor]], params: Dict[str, Any]) -> None:
-        """ Calculates the specific OT similarity metric. (Docstring same) """
+        """ Calculates the specific OT similarity metric. Must be implemented by subclasses. """
         pass
 
     @abstractmethod
@@ -162,7 +136,7 @@ class BaseOTCalculator(ABC):
         for key, tensor in input_map.items():
             if tensor is None:
                 if key in required_keys:
-                    warnings.warn(f"Preprocessing failed: Required input '{key}' is None.")
+                    logger.warning(f"Preprocessing failed: Required input '{key}' is None.")
                     return None
                 processed_data[key] = None
                 continue
@@ -172,7 +146,7 @@ class BaseOTCalculator(ABC):
                 try:
                     tensor = torch.tensor(tensor)
                 except Exception as e:
-                    warnings.warn(f"Preprocessing failed: Could not convert input '{key}' to tensor: {e}")
+                    logger.warning(f"Preprocessing failed: Could not convert input '{key}' to tensor: {e}")
                     return None
             processed_data[key] = tensor.detach().cpu()
 
@@ -187,12 +161,12 @@ class BaseOTCalculator(ABC):
         if n_samples is not None:
             # Check h shape
             if processed_data.get('h') is not None and processed_data['h'].shape[0] != n_samples:
-                warnings.warn(f"Shape mismatch: h({processed_data['h'].shape[0]}) vs y/expected({n_samples})")
+                logger.warning(f"Shape mismatch: h({processed_data['h'].shape[0]}) vs y/expected({n_samples})")
                 return None
                 
             # Check weights shape
             if processed_data.get('weights') is not None and processed_data['weights'].shape[0] != n_samples:
-                warnings.warn(f"Shape mismatch: weights({processed_data['weights'].shape[0]}) vs y/expected({n_samples})")
+                logger.warning(f"Shape mismatch: weights({processed_data['weights'].shape[0]}) vs y/expected({n_samples})")
                 return None
                 
             # Validate p_prob dimensions and format - enhanced for multiclass
@@ -211,10 +185,10 @@ class BaseOTCalculator(ABC):
                 if not expected_shape and not binary_format:
                     # Handle incorrect shapes
                     if p_tensor.ndim == 2 and p_tensor.shape[0] == n_samples:
-                        warnings.warn(f"Probability shape mismatch: p_prob has {p_tensor.shape[1]} columns "
+                        logger.warning(f"Probability shape mismatch: p_prob has {p_tensor.shape[1]} columns "
                                     f"but expected {self.num_classes} classes")
                     else:
-                        warnings.warn(f"Shape mismatch: p_prob({p_tensor.shape}) vs "
+                        logger.warning(f"Shape mismatch: p_prob({p_tensor.shape}) vs "
                                     f"expected N x K ({n_samples} x {self.num_classes})")
                     return None
                     
@@ -228,7 +202,7 @@ class BaseOTCalculator(ABC):
                 if processed_data['p_prob'].ndim == 2:
                     row_sums = processed_data['p_prob'].sum(dim=1)
                     if not torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-3):
-                        warnings.warn(f"Probability rows don't sum to 1 (min={row_sums.min().item():.4f}, "
+                        logger.warning(f"Probability rows don't sum to 1 (min={row_sums.min().item():.4f}, "
                                     f"max={row_sums.max().item():.4f}). Attempting normalization.")
                         # Try to normalize
                         probs = processed_data['p_prob'].clamp(min=self.eps_num)
@@ -237,7 +211,7 @@ class BaseOTCalculator(ABC):
         # Final check for required keys
         missing_keys = [k for k in required_keys if processed_data.get(k) is None]
         if missing_keys:
-            warnings.warn(f"Preprocessing failed: Required keys {missing_keys} are None after processing.")
+            logger.warning(f"Preprocessing failed: Required keys {missing_keys} are None after processing.")
             return None
 
         return processed_data
@@ -264,7 +238,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
         reg = params.get('reg', DEFAULT_OT_REG)
         max_iter = params.get('max_iter', DEFAULT_OT_MAX_ITER)
         min_samples_threshold = params.get('min_samples', 20)  # Get minimum samples threshold
-        max_samples_threshold = params.get('min_samples', 900)
+        max_samples_threshold = params.get('max_samples', 900)
 
         # --- Check if this is a segmentation case (like IXITiny) ---
         is_segmentation = data1.get('p_prob') is None and data2.get('p_prob') is None
@@ -284,7 +258,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
             missing_str = "'weights'" if use_loss_weighting and (data1.get('weights') is None or data2.get('weights') is None) else "h, p_prob, or y"
             if is_segmentation:
                 missing_str = "activations ('h')"
-            warnings.warn(f"Feature-Error OT calculation requires {missing_str}. Preprocessing failed or data missing. Skipping.")
+            logger.warning(f"Feature-Error OT calculation requires {missing_str}. Preprocessing failed or data missing. Skipping.")
             self.results['weighting_used'] = 'Loss' if use_loss_weighting else 'Uniform' # Still record intent
             return
 
@@ -310,7 +284,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
             features_dict, min_samples_threshold, max_samples_threshold)
 
         if not all_sufficient:
-            warnings.warn(f"Feature-Error OT: One or both clients have insufficient samples (min={min_samples_threshold}). Skipping.")
+            logger.warning(f"Feature-Error OT: One or both clients have insufficient samples (min={min_samples_threshold}). Skipping.")
             self.results['weighting_used'] = 'Loss' if use_loss_weighting else 'Uniform'
             return
 
@@ -325,7 +299,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
             w1 = w1[indices1] if w1 is not None else None
             N = len(indices1)
             if verbose:
-                print(f"Sampled client1 data: {len(h1)} from original {N}")
+                logger.info(f"Sampled client1 data: {len(h1)} from original {N}")
 
         if "client2" in sample_indices and len(sample_indices["client2"]) < M:
             # Sample client 2 data
@@ -337,10 +311,10 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
             w2 = w2[indices2] if w2 is not None else None
             M = len(indices2)
             if verbose:
-                print(f"Sampled client2 data: {len(h2)} from original {M}")
+                logger.info(f"Sampled client2 data: {len(h2)} from original {M}")
 
         if N == 0 or M == 0:
-            warnings.warn("Feature-Error OT: One or both clients have zero samples. OT cost is 0.")
+            logger.warning("Feature-Error OT: One or both clients have zero samples. OT cost is 0.")
             self.results['ot_cost'] = 0.0
             self.results['transport_plan'] = np.zeros((N, M)) if N > 0 and M > 0 else None
             self.results['weighting_used'] = 'Loss' if use_loss_weighting else 'Uniform'
@@ -359,34 +333,22 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
 
         if cost_matrix is None or not (np.isfinite(max_cost) and max_cost > self.eps_num):
             fail_reason = "Cost matrix calculation failed" if cost_matrix is None else "Max cost near zero/invalid"
-            warnings.warn(f"Feature-Error OT calculation skipped: {fail_reason}.")
+            logger.warning(f"Feature-Error OT calculation skipped: {fail_reason}.")
             self.results['weighting_used'] = 'Loss' if use_loss_weighting else 'Uniform'
             return
 
         # --- Normalize Cost Matrix ---
-        if normalize_cost and np.isfinite(max_cost) and max_cost > self.eps_num:
-            normalized_cost_matrix = cost_matrix / max_cost
-        else:
-            if normalize_cost and not np.isfinite(max_cost):
-                warnings.warn("Max cost is not finite, cannot normalize cost matrix.")
-            normalized_cost_matrix = cost_matrix # Use unnormalized
+        normalized_cost_matrix = normalize_cost_matrix(cost_matrix, max_cost, normalize_cost, self.eps_num)
         self.cost_matrices['feature_error_ot'] = normalized_cost_matrix.cpu().numpy() # Store numpy version
 
         # --- Define Marginal Weights ---
         weighting_type_str = ""
         if use_loss_weighting and w1 is not None and w2 is not None:
-            weights1_np = w1.cpu().numpy().astype(np.float64)
-            weights2_np = w2.cpu().numpy().astype(np.float64)
+            a, b = prepare_ot_marginals(w1.cpu().numpy(), w2.cpu().numpy(), N, M, self.eps_num)
             weighting_type_str = "Loss-Weighted"
-            # Renormalize marginals
-            sum1 = weights1_np.sum(); sum2 = weights2_np.sum()
-            if not np.isclose(sum1, 1.0) and sum1 > self.eps_num: weights1_np /= sum1
-            elif sum1 <= self.eps_num: weights1_np = np.ones_like(weights1_np) / N; warnings.warn("Client 1 loss weights sum zero, using uniform.")
-            if not np.isclose(sum2, 1.0) and sum2 > self.eps_num: weights2_np /= sum2
-            elif sum2 <= self.eps_num: weights2_np = np.ones_like(weights2_np) / M; warnings.warn("Client 2 loss weights sum zero, using uniform.")
-            a, b = weights1_np, weights2_np
         else:
-            if use_loss_weighting: warnings.warn("Loss weighting requested but weights unavailable. Using uniform.")
+            if use_loss_weighting: 
+                logger.warning("Loss weighting requested but weights unavailable. Using uniform.")
             a = np.ones(N, dtype=np.float64) / N
             b = np.ones(M, dtype=np.float64) / M
             weighting_type_str = "Uniform"
@@ -399,7 +361,8 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
 
         self.results['ot_cost'] = ot_cost
         self.results['transport_plan'] = Gs
-        if verbose: print(f"  Feature-Error OT Cost ({weighting_type_str} Marginals, NormalizedCost={normalize_cost}): {f'{ot_cost:.4f}' if not np.isnan(ot_cost) else 'Failed'}")
+        if verbose: 
+            logger.info(f"  Feature-Error OT Cost ({weighting_type_str} Marginals, NormalizedCost={normalize_cost}): {f'{ot_cost:.4f}' if not np.isnan(ot_cost) else 'Failed'}")
 
     def _calculate_feature_distance_only(self, h1, h2, **params) -> Tuple[Optional[torch.Tensor], float]:
         """
@@ -438,7 +401,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
             return D_h_scaled, max_cost
             
         except Exception as e:
-            warnings.warn(f"Feature distance calculation failed: {e}")
+            logger.warning(f"Feature distance calculation failed: {e}")
             return None, np.nan
             
     def _calculate_cost_feature_error_additive(self, h1, p1_prob, y1, h2, p2_prob, y2, **params) -> Tuple[Optional[torch.Tensor], float]:
@@ -473,7 +436,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
 
         # Validate probability tensor shapes
         if p1_prob.shape[1] != self.num_classes or p2_prob.shape[1] != self.num_classes:
-            warnings.warn(f"Internal Cost Calc: Probability shape mismatch: "
+            logger.warning(f"Internal Cost Calc: Probability shape mismatch: "
                         f"P1({p1_prob.shape}), P2({p2_prob.shape}), K={self.num_classes}")
             return None, np.nan
 
@@ -494,7 +457,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
                 term1 = alpha * D_h_scaled
                 max_term1_contrib = alpha * 1.0
             except Exception as e:
-                warnings.warn(f"Feature distance calculation failed: {e}")
+                logger.warning(f"Feature distance calculation failed: {e}")
                 return None, np.nan
 
         # --- Term 2: Scaled Error Distance ---
@@ -527,7 +490,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
                 term2 = beta * D_e_scaled
                 max_term2_contrib = beta * 1.0
             except Exception as e:
-                warnings.warn(f"Error distance calculation failed: {e}")
+                logger.warning(f"Error distance calculation failed: {e}")
                 return None, np.nan
 
         # --- Combine Terms ---
@@ -540,7 +503,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
         
         # Check for NaN/Inf values
         if not torch.isfinite(cost_matrix).all():
-            warnings.warn("Non-finite values detected in cost matrix. Replacing with max cost.")
+            logger.warning("Non-finite values detected in cost matrix. Replacing with max cost.")
             cost_matrix = torch.where(
                 torch.isfinite(cost_matrix),
                 cost_matrix,
@@ -551,7 +514,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
 
 class DecomposedOTCalculator(BaseOTCalculator):
     """ Calculates Decomposed Similarity: Label EMD + Aggregated Conditional OT. """
-    # ... (Implementation remains the same as before) ...
+    
     def _reset_results(self) -> None:
         self.results = {
             'label_emd': np.nan,
@@ -588,7 +551,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
         proc_data2 = self._preprocess_input(data2.get('h'), data2.get('p_prob'), data2.get('y'), data2.get('weights'), required_keys)
 
         if proc_data1 is None or proc_data2 is None:
-            warnings.warn(f"Decomposed OT requires {required_keys}. Preprocessing failed or data missing. Skipping.")
+            logger.warning(f"Decomposed OT requires {required_keys}. Preprocessing failed or data missing. Skipping.")
             return
 
         h1, y1, w1 = proc_data1['h'], proc_data1['y'], proc_data1['weights']
@@ -598,7 +561,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
         N, M = h1.shape[0], h2.shape[0]
 
         if N == 0 or M == 0:
-            warnings.warn("Decomposed OT: One or both clients have zero samples. Skipping.")
+            logger.warning("Decomposed OT: One or both clients have zero samples. Skipping.")
             return
 
         # Calculate loss if needed for aggregation (can move to DataManager preprocessing later)
@@ -611,14 +574,14 @@ class DecomposedOTCalculator(BaseOTCalculator):
                 if loss1 is not None and loss2 is not None and torch.isfinite(loss1).all() and torch.isfinite(loss2).all():
                     can_use_loss_agg = True
                 else:
-                    warnings.warn(f"Cannot use loss aggregation: Loss calculation failed or resulted in NaN/Inf.")
+                    logger.warning(f"Cannot use loss aggregation: Loss calculation failed or resulted in NaN/Inf.")
             else:
-                warnings.warn(f"Cannot use loss aggregation: Probabilities (p_prob) missing.")
+                logger.warning(f"Cannot use loss aggregation: Probabilities (p_prob) missing.")
 
         # --- 1. Label EMD ---
         label_emd_raw = calculate_label_emd(y1, y2, self.num_classes)
         if np.isnan(label_emd_raw):
-            warnings.warn("Label EMD failed. Decomposed OT aborted."); return
+            logger.warning("Label EMD failed. Decomposed OT aborted."); return
         emd_norm_factor = max(1.0, float(self.num_classes - 1)) if self.num_classes > 1 else 1.0
         label_emd_normalized = label_emd_raw / emd_norm_factor if normalize_emd_flag else label_emd_raw
         self.results['label_emd'] = label_emd_normalized
@@ -646,16 +609,16 @@ class DecomposedOTCalculator(BaseOTCalculator):
         if verbose:
             valid_labels = [l for l, v in label_validity.items() if v]
             invalid_labels = [l for l, v in label_validity.items() if not v]
-            print(f"Label validation: {len(valid_labels)} valid, {len(invalid_labels)} skipped")
+            logger.info(f"Label validation: {len(valid_labels)} valid, {len(invalid_labels)} skipped")
             if invalid_labels:
-                print(f"Skipping labels due to insufficient samples: {invalid_labels}")
+                logger.info(f"Skipping labels due to insufficient samples: {invalid_labels}")
                 
             # Report on sampling
             for client_id, label_indices in sample_indices_by_client_label.items():
                 for label, indices in label_indices.items():
                     orig_count = len(features_by_label[client_id][label])
                     if len(indices) < orig_count:
-                        print(f"Sampling {client_id}, label {label}: {orig_count} → {len(indices)}")
+                        logger.info(f"Sampling {client_id}, label {label}: {orig_count} → {len(indices)}")
 
         all_class_results = {} # Stores {'ot_cost': float, 'avg_loss': float, 'total_loss': float, 'sample_count': tuple, 'valid': bool}
         total_loss_across_classes = 0.0
@@ -671,7 +634,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
             # Skip this label if it fails the validation check
             if not label_validity.get(c, False):
                 if verbose: 
-                    print(f"Class {c}: Skipping due to insufficient samples (min={min_samples_threshold})")
+                    logger.info(f"Class {c}: Skipping due to insufficient samples (min={min_samples_threshold})")
                 all_class_results[c] = class_result
                 continue
             
@@ -724,7 +687,8 @@ class DecomposedOTCalculator(BaseOTCalculator):
 
             # Check if probs are needed for cost and available
             if beta_within > self.eps_num and (p1_prob_c is None or p2_prob_c is None):
-                if verbose: warnings.warn(f"Class {c}: Skipped conditional OT - probs needed for cost (beta_within>0) but unavailable.");
+                if verbose: 
+                    logger.warning(f"Class {c}: Skipped conditional OT - probs needed for cost (beta_within>0) but unavailable.");
                 all_class_results[c] = class_result; continue
 
             # --- Calculate Within-Class Cost Matrix ---
@@ -733,22 +697,16 @@ class DecomposedOTCalculator(BaseOTCalculator):
             )
             if cost_matrix_c is None or not (np.isfinite(max_cost_c) and max_cost_c > self.eps_num):
                 fail_reason = "within-class cost calc failed" if cost_matrix_c is None else "within-class max cost near zero/invalid"
-                if verbose: warnings.warn(f"Class {c}: Skipped conditional OT - {fail_reason}.")
+                if verbose: 
+                    logger.warning(f"Class {c}: Skipped conditional OT - {fail_reason}.")
                 all_class_results[c] = class_result; continue
 
             # --- Normalize Cost & Compute OT ---
-            if normalize_within_cost and np.isfinite(max_cost_c) and max_cost_c > self.eps_num:
-                norm_cost_matrix_c = cost_matrix_c / max_cost_c
-            else: norm_cost_matrix_c = cost_matrix_c
+            norm_cost_matrix_c = normalize_cost_matrix(cost_matrix_c, max_cost_c, normalize_within_cost, self.eps_num)
             self.cost_matrices['within_class'][c] = norm_cost_matrix_c.cpu().numpy()
 
-            # Use weights for marginals, fallback to uniform
-            w1_c_np = w1_c.cpu().numpy().astype(np.float64); sum1_c = w1_c_np.sum()
-            w2_c_np = w2_c.cpu().numpy().astype(np.float64); sum2_c = w2_c_np.sum()
-            a_c = (w1_c_np / sum1_c) if sum1_c > self.eps_num else (np.ones(n_c_final)/max(1,n_c_final))
-            b_c = (w2_c_np / sum2_c) if sum2_c > self.eps_num else (np.ones(m_c_final)/max(1,m_c_final))
-            if sum1_c <= self.eps_num: warnings.warn(f"C{c}: C1 weights sum zero.")
-            if sum2_c <= self.eps_num: warnings.warn(f"C{c}: C2 weights sum zero.")
+            # Get prepared marginals using utility function
+            a_c, b_c = prepare_ot_marginals(w1_c.cpu().numpy(), w2_c.cpu().numpy(), n_c_final, m_c_final, self.eps_num)
 
             ot_cost_c, _ = compute_ot_cost(norm_cost_matrix_c, a=a_c, b=b_c, reg=ot_reg, sinkhorn_max_iter=ot_max_iter, eps_num=self.eps_num)
             if not np.isnan(ot_cost_c):
@@ -756,7 +714,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
                 class_result['valid'] = True
                 self.results['conditional_ot_per_class'][c] = ot_cost_c # Store individual result
             elif verbose:
-                warnings.warn(f"Conditional OT cost calculation failed for class {c}.")
+                logger.warning(f"Conditional OT cost calculation failed for class {c}.")
 
             all_class_results[c] = class_result
 
@@ -773,7 +731,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
 
             # Check feasibility of loss aggregation
             if effective_agg_method in ['avg_loss', 'total_loss_share'] and not can_use_loss_agg:
-                warnings.warn(f"Cannot use '{agg_method_param}' due to invalid losses. Falling back to 'mean'.")
+                logger.warning(f"Cannot use '{agg_method_param}' due to invalid losses. Falling back to 'mean'.")
                 effective_agg_method = 'mean'
 
             agg_method_used_str = f"{effective_agg_method}"
@@ -786,13 +744,17 @@ class DecomposedOTCalculator(BaseOTCalculator):
                 if total_samples > 0:
                     weights_agg_list = [(all_class_results[c]['sample_count'][0] + all_class_results[c]['sample_count'][1]) / total_samples for c in valid_classes]
                     weights_agg = np.array(weights_agg_list, dtype=np.float64)
-                else: weights_agg = np.ones_like(costs_agg); agg_method_used_str += " (Fallback - Zero Total Samples)"
+                else: 
+                    weights_agg = np.ones_like(costs_agg)
+                    agg_method_used_str += " (Fallback - Zero Total Samples)"
             elif effective_agg_method == 'avg_loss':
                 weights_agg = np.array([all_class_results[c]['avg_loss'] for c in valid_classes], dtype=np.float64)
             elif effective_agg_method == 'total_loss_share':
                 if total_loss_across_classes > self.eps_num:
                     weights_agg = np.array([all_class_results[c]['total_loss'] / total_loss_across_classes for c in valid_classes], dtype=np.float64)
-                else: weights_agg = np.ones_like(costs_agg); agg_method_used_str += " (Fallback - Zero Total Loss)"
+                else: 
+                    weights_agg = np.ones_like(costs_agg)
+                    agg_method_used_str += " (Fallback - Zero Total Loss)"
 
             # Normalize weights and compute weighted average
             weights_agg = np.maximum(weights_agg, 0) # Ensure non-negative
@@ -807,7 +769,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
 
             agg_weights_dict = {c: w for c, w in zip(valid_classes, normalized_weights_agg)}
         else:
-            warnings.warn("No valid conditional OT costs calculated to aggregate.")
+            logger.warning("No valid conditional OT costs calculated to aggregate.")
 
         self.results['conditional_ot_agg'] = agg_conditional_ot
         self.results['aggregation_method_used'] = agg_method_used_str
@@ -833,30 +795,30 @@ class DecomposedOTCalculator(BaseOTCalculator):
         else: self.results['combined_score'] = np.nan
 
         if verbose:
-            print("-" * 30)
-            print("--- Decomposed Similarity Results ---")
+            logger.info("-" * 30)
+            logger.info("--- Decomposed Similarity Results ---")
             emd_str = f"{self.results['label_emd']:.3f}" if not np.isnan(self.results['label_emd']) else 'Failed'
-            print(f"  Label EMD (Normalized={normalize_emd_flag}): {emd_str}")
-            print(f"  Conditional Within-Class OT Costs (NormCost={normalize_within_cost}):")
+            logger.info(f"  Label EMD (Normalized={normalize_emd_flag}): {emd_str}")
+            logger.info(f"  Conditional Within-Class OT Costs (NormCost={normalize_within_cost}):")
             for c in range(self.num_classes):
                 cost_val = self.results['conditional_ot_per_class'].get(c, np.nan)
                 cost_str = f"{cost_val:.3f}" if not np.isnan(cost_val) else 'Skipped/Failed'
                 count_str = f"(samples: {all_class_results.get(c, {}).get('sample_count', (0,0))})"
-                print(f"     - Class {c}: Cost={cost_str} {count_str}")
+                logger.info(f"     - Class {c}: Cost={cost_str} {count_str}")
             cond_ot_agg_str = f"{self.results['conditional_ot_agg']:.3f}" if not np.isnan(self.results['conditional_ot_agg']) else 'Failed'
-            print(f"  Aggregated Conditional OT ({agg_method_used_str}): {cond_ot_agg_str}")
-            print(f"  Skipped Labels: {self.results['skipped_labels']}")
+            logger.info(f"  Aggregated Conditional OT ({agg_method_used_str}): {cond_ot_agg_str}")
+            logger.info(f"  Skipped Labels: {self.results['skipped_labels']}")
             
             # Report sampling if any occurred
             if self.results['sampled_labels']:
-                print(f"  Sampled Labels (original→sampled):")
+                logger.info(f"  Sampled Labels (original→sampled):")
                 for label, clients in self.results['sampled_labels'].items():
                     client_info = ", ".join([f"{cid}: {orig}→{sampled}" for cid, (orig, sampled) in clients.items()])
-                    print(f"     - Label {label}: {client_info}")
+                    logger.info(f"     - Label {label}: {client_info}")
                 
             comb_score_str = f"{self.results['combined_score']:.3f}" if not np.isnan(self.results['combined_score']) else 'Invalid'
-            print(f"  Combined Score (/2): {comb_score_str}")
-            print("-" * 30)
+            logger.info(f"  Combined Score (/2): {comb_score_str}")
+            logger.info("-" * 30)
 
     def _calculate_cost_within_class(self, h1_c, p1_prob_c, y1_c, h2_c, p2_prob_c, y2_c, **params) -> Tuple[Optional[torch.Tensor], float]:
         """ Calculates within-class cost: alpha * D_h_scaled + beta * D_e_scaled. """
@@ -884,7 +846,9 @@ class DecomposedOTCalculator(BaseOTCalculator):
                 D_h_scaled = D_h / 2.0
                 term1 = alpha_within * D_h_scaled
                 max_term1_contrib = alpha_within * 1.0
-            except Exception as e: warnings.warn(f"Within-class feature dist failed: {e}"); return None, np.nan
+            except Exception as e: 
+                logger.warning(f"Within-class feature dist failed: {e}")
+                return None, np.nan
 
         # --- Error Distance ---
         term2 = torch.zeros((N, M), device=device, dtype=torch.float)
@@ -892,7 +856,7 @@ class DecomposedOTCalculator(BaseOTCalculator):
         if prob_needed and p1_prob_c is not None and p2_prob_c is not None:
              # Validate prob shapes
              if p1_prob_c.shape != (N, self.num_classes) or p2_prob_c.shape != (M, self.num_classes):
-                  warnings.warn(f"Within-class Cost: Prob shape mismatch P1({p1_prob_c.shape}), P2({p2_prob_c.shape})")
+                  logger.warning(f"Within-class Cost: Prob shape mismatch P1({p1_prob_c.shape}), P2({p2_prob_c.shape})")
                   return None, np.nan
              try:
                 y1_oh = F.one_hot(y1_c.view(-1), num_classes=self.num_classes).float()
@@ -904,7 +868,9 @@ class DecomposedOTCalculator(BaseOTCalculator):
                 D_e_scaled = D_e_raw / max_raw_error_dist
                 term2 = beta_within * D_e_scaled
                 max_term2_contrib = beta_within * 1.0
-             except Exception as e: warnings.warn(f"Within-class error dist failed: {e}"); return None, np.nan
+             except Exception as e: 
+                logger.warning(f"Within-class error dist failed: {e}")
+                return None, np.nan
 
         # --- Combine ---
         cost_matrix_c = term1 + term2
@@ -1001,7 +967,7 @@ class DirectOTCalculator(BaseOTCalculator):
                                         data2.get('weights'), required_keys)
         
         if proc_data1 is None or proc_data2 is None:
-            warnings.warn("Enhanced DirectOT calculation requires neural network activations ('h')" +
+            logger.warning("Enhanced DirectOT calculation requires neural network activations ('h')" +
                         " and labels ('y' when using Hellinger). " + 
                         "Preprocessing failed or data missing. Skipping.")
             weight_type = "Loss" if use_loss_weighting else "Uniform"
@@ -1028,7 +994,7 @@ class DirectOTCalculator(BaseOTCalculator):
             features_dict, min_samples_threshold, max_samples_threshold)
 
         if not all_sufficient:
-            warnings.warn(f"DirectOT: One or both clients have insufficient samples (min={min_samples_threshold}). Skipping.")
+            logger.warning(f"DirectOT: One or both clients have insufficient samples (min={min_samples_threshold}). Skipping.")
             weight_type = "Loss" if use_loss_weighting else "Uniform"
             self.results['weighting_used'] = weight_type
             return
@@ -1046,7 +1012,7 @@ class DirectOTCalculator(BaseOTCalculator):
                 w1 = w1[indices1]
             N = len(indices1)
             if verbose:
-                print(f"Sampled client1 data: {len(indices1)} from original {N}")
+                logger.info(f"Sampled client1 data: {len(indices1)} from original {N}")
 
         if "client2" in sample_indices and len(sample_indices["client2"]) < M:
             # Sample client 2 data with careful handling
@@ -1060,10 +1026,10 @@ class DirectOTCalculator(BaseOTCalculator):
                 w2 = w2[indices2]
             M = len(indices2)
             if verbose:
-                print(f"Sampled client2 data: {len(indices2)} from original {M}")
+                logger.info(f"Sampled client2 data: {len(indices2)} from original {M}")
                 
         if N == 0 or M == 0:
-            warnings.warn("Enhanced DirectOT: One or both clients have zero samples. OT cost is 0.")
+            logger.warning("Enhanced DirectOT: One or both clients have zero samples. OT cost is 0.")
             self.results['direct_ot_cost'] = 0.0
             weight_type = "Loss" if use_loss_weighting else "Uniform"
             self.results['weighting_used'] = weight_type
@@ -1091,17 +1057,16 @@ class DirectOTCalculator(BaseOTCalculator):
             feature_cost_matrix = pairwise_euclidean_sq(h1_norm, h2_norm)
             max_feature_cost = 4.0 if normalize_activations else float('inf')
         else:
-            warnings.warn(f"Unknown distance method: {distance_method}. Using euclidean.")
+            logger.warning(f"Unknown distance method: {distance_method}. Using euclidean.")
             feature_cost_matrix = torch.cdist(h1_norm, h2_norm, p=2)
             max_feature_cost = 2.0 if normalize_activations else float('inf')
         
         if feature_cost_matrix is None:
-            warnings.warn(f"Failed to compute feature cost matrix with method: {distance_method}")
+            logger.warning(f"Failed to compute feature cost matrix with method: {distance_method}")
             return
             
         # Normalize feature cost matrix if requested
-        if normalize_cost and np.isfinite(max_feature_cost):
-            feature_cost_matrix = feature_cost_matrix / max_feature_cost
+        feature_cost_matrix = normalize_cost_matrix(feature_cost_matrix, max_feature_cost, normalize_cost, self.eps_num)
             
         # Store the feature cost matrix
         self.cost_matrices['feature_cost'] = feature_cost_matrix.cpu().numpy()
@@ -1122,7 +1087,7 @@ class DirectOTCalculator(BaseOTCalculator):
                 vector_dim = h1_np.shape[1]
                 if compress_vectors and vector_dim > compression_threshold:
                     if verbose:
-                        print(f"Compressing vectors from dimension {vector_dim} for Hellinger calculation")
+                        logger.info(f"Compressing vectors from dimension {vector_dim} for Hellinger calculation")
                     h1_comp, h2_comp = self._compress_vectors(h1_np, h2_np, compression_ratio)
                 else:
                     h1_comp, h2_comp = h1_np, h2_np
@@ -1160,13 +1125,13 @@ class DirectOTCalculator(BaseOTCalculator):
                                 label_pair_distances[(label1, label2)] = 1
                                 self.results['label_costs'].append(((label1, label2), 1))
                                 if verbose:
-                                    print(f"Hellinger distance calculation failed for labels {label1},{label2}")
+                                    logger.warning(f"Hellinger distance calculation failed for labels {label1},{label2}")
                         else:
                             # Not enough samples for distribution, use midpoint
                             label_pair_distances[(label1, label2)] = 1
                             self.results['label_costs'].append(((label1, label2), 1))
                             if verbose:
-                                print(f"Not enough samples for labels {label1},{label2}.")
+                                logger.info(f"Not enough samples for labels {label1},{label2}.")
                 
                 # Fill the label cost matrix based on the calculated distances
                 for i in range(N):
@@ -1184,14 +1149,14 @@ class DirectOTCalculator(BaseOTCalculator):
                 self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
                 
             except Exception as e:
-                warnings.warn(f"Label Hellinger distance calculation failed: {e}")
+                logger.warning(f"Label Hellinger distance calculation failed: {e}")
                 # Set all label costs to a neutral midpoint value
                 label_cost_matrix.fill_(0.5)
                 self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
                 use_label_hellinger = False  # Disable for the rest of the calculation
         else:
             if use_label_hellinger:
-                warnings.warn("Label Hellinger requested but labels not available. Using only feature distance.")
+                logger.warning("Label Hellinger requested but labels not available. Using only feature distance.")
             use_label_hellinger = False
             # Fill with neutral value just in case
             label_cost_matrix.fill_(0.5)
@@ -1227,18 +1192,11 @@ class DirectOTCalculator(BaseOTCalculator):
         
         # --- Prepare Weights for OT ---
         if use_loss_weighting and w1 is not None and w2 is not None:
-            weights1_np = w1.cpu().numpy().astype(np.float64)
-            weights2_np = w2.cpu().numpy().astype(np.float64)
+            a, b = prepare_ot_marginals(w1.cpu().numpy(), w2.cpu().numpy(), N, M, self.eps_num)
             weight_type = "Loss-Weighted"
-            # Renormalize marginals
-            sum1 = weights1_np.sum(); sum2 = weights2_np.sum()
-            if not np.isclose(sum1, 1.0) and sum1 > self.eps_num: weights1_np /= sum1
-            elif sum1 <= self.eps_num: weights1_np = np.ones_like(weights1_np) / N; warnings.warn("Client 1 loss weights sum zero, using uniform.")
-            if not np.isclose(sum2, 1.0) and sum2 > self.eps_num: weights2_np /= sum2
-            elif sum2 <= self.eps_num: weights2_np = np.ones_like(weights2_np) / M; warnings.warn("Client 2 loss weights sum zero, using uniform.")
-            a, b = weights1_np, weights2_np
         else:
-            if use_loss_weighting: warnings.warn("Loss weighting requested but weights unavailable. Using uniform.")
+            if use_loss_weighting: 
+                logger.warning("Loss weighting requested but weights unavailable. Using uniform.")
             a = np.ones(N, dtype=np.float64) / N
             b = np.ones(M, dtype=np.float64) / M
             weight_type = "Uniform"
@@ -1260,17 +1218,17 @@ class DirectOTCalculator(BaseOTCalculator):
             
             # Fix the format specifier error
             if np.isfinite(ot_cost):
-                print(f"  Enhanced DirectOT Cost ({weight_type} weights): {ot_cost:.4f}")
+                logger.info(f"  Enhanced DirectOT Cost ({weight_type} weights): {ot_cost:.4f}")
             else:
-                print(f"  Enhanced DirectOT Cost ({weight_type} weights): Failed")
+                logger.info(f"  Enhanced DirectOT Cost ({weight_type} weights): Failed")
                 
             if use_label_hellinger:
-                print(f"  {feature_msg}{label_msg}, Combined using weights {norm_feature_weight:.2f}:{norm_label_weight:.2f}")
-                print(f"  Label Hellinger distances by class pairs:")
+                logger.info(f"  {feature_msg}{label_msg}, Combined using weights {norm_feature_weight:.2f}:{norm_label_weight:.2f}")
+                logger.info(f"  Label Hellinger distances by class pairs:")
                 for (label1, label2), dist in self.results['label_costs']:
-                    print(f"    Labels ({label1},{label2}): {dist:.4f}")
+                    logger.info(f"    Labels ({label1},{label2}): {dist:.4f}")
             else:
-                print(f"  Using only feature distances ({distance_method})")
+                logger.info(f"  Using only feature distances ({distance_method})")
 
     def _compress_vectors(self, X1: np.ndarray, X2: np.ndarray, 
                          variance_ratio: float = 0.8) -> Tuple[np.ndarray, np.ndarray]:

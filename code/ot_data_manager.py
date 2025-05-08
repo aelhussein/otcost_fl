@@ -2,9 +2,10 @@
 import os
 import torch
 import numpy as np
-import warnings
+import logging
 import traceback
 from typing import Dict, Optional, Tuple, List, Union, Any
+from abc import ABC, abstractmethod
 
 from configs import ROOT_DIR, ACTIVATION_DIR
 import models as ms
@@ -13,6 +14,320 @@ from ot_utils import calculate_sample_loss, DEFAULT_EPS
 
 # Import the new ResultsManager and related classes
 from results_manager import ResultsManager, ExperimentType
+
+# Configure module logger
+logger = logging.getLogger(__name__)
+
+# Abstract Base Class for Activation Extractors
+class ActivationExtractor(ABC):
+    """
+    Abstract base class for extracting activations from models.
+    Different models may require different extraction strategies.
+    """
+    
+    @abstractmethod
+    def extract(self, 
+                model: torch.nn.Module, 
+                dataloader: torch.utils.data.DataLoader, 
+                num_classes: int, 
+                dataset_name: str) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Extract activations (features), probabilities, and labels from a model and dataloader.
+        
+        Args:
+            model: Neural network model
+            dataloader: DataLoader containing samples
+            num_classes: Number of classes in the dataset
+            dataset_name: Name of the dataset (for logging/info)
+            
+        Returns:
+            Tuple of (features, probabilities, labels) tensors
+        """
+        pass
+
+class HookBasedExtractor(ActivationExtractor):
+    """
+    Uses forward hooks to extract activations from the final layer of a neural network.
+    Works for most standard neural network architectures.
+    """
+    
+    def extract(self, 
+                model: torch.nn.Module, 
+                dataloader: torch.utils.data.DataLoader, 
+                num_classes: int, 
+                dataset_name: str) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Extract activations using hooks on the final linear layer.
+        
+        Args:
+            model: Neural network model
+            dataloader: DataLoader containing samples
+            num_classes: Number of classes in the dataset
+            dataset_name: Name of the dataset (for logging)
+            
+        Returns:
+            Tuple of (features, probabilities, labels) tensors
+        """
+        if not dataloader or len(dataloader.dataset) == 0:
+            logger.warning("Empty dataloader provided to HookBasedExtractor")
+            return None, None, None
+            
+        # Find the final linear layer
+        final_linear = self._find_final_linear_layer(model, num_classes)
+        if final_linear is None:
+            logger.warning(f"Could not find suitable final linear layer for model")
+            return None, None, None
+            
+        # Set model to eval mode and move to appropriate device
+        device = next(model.parameters()).device
+        model.eval()
+        
+        # Storage for activations
+        all_pre_activations = []
+        all_post_activations = []
+        all_labels = []
+        
+        # Temporary storage for current batch
+        current_batch_pre_acts = []
+        current_batch_post_logits = []
+        
+        # Define hooks
+        def pre_hook(module, input_data):
+            inp = input_data[0] if isinstance(input_data, tuple) else input_data
+            if isinstance(inp, torch.Tensor):
+                current_batch_pre_acts.append(inp.detach())
+                
+        def post_hook(module, input_data, output_data):
+            out = output_data if not isinstance(output_data, tuple) else output_data[0]
+            if isinstance(out, torch.Tensor):
+                current_batch_post_logits.append(out.detach())
+                
+        # Register hooks
+        pre_handle = final_linear.register_forward_pre_hook(pre_hook)
+        post_handle = final_linear.register_forward_hook(post_hook)
+        
+        # Process data through model
+        try:
+            with torch.no_grad():
+                for batch_data in dataloader:
+                    # Extract batch data appropriately
+                    if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 2:
+                        batch_x, batch_y = batch_data[0], batch_data[1]
+                    elif isinstance(batch_data, dict):
+                        batch_x = batch_data.get('features')
+                        batch_y = batch_data.get('labels')
+                        if batch_x is None or batch_y is None:
+                            continue
+                    else:
+                        continue
+                        
+                    if batch_x.shape[0] == 0:
+                        continue # Skip empty batches
+                        
+                    # Move data to device and reset storage
+                    batch_x = batch_x.to(device)
+                    current_batch_pre_acts.clear()
+                    current_batch_post_logits.clear()
+                    
+                    # Forward pass to trigger hooks
+                    _ = model(batch_x)
+                    
+                    # Check if hooks captured data
+                    if not current_batch_pre_acts or not current_batch_post_logits:
+                        continue
+                        
+                    # Process captured activations
+                    pre_acts_batch = current_batch_pre_acts[0].cpu()
+                    post_logits_batch = current_batch_post_logits[0].cpu()
+                    
+                    # Convert logits to probabilities based on task type
+                    if num_classes == 1:  # Binary or regression
+                        post_probs_batch = torch.sigmoid(post_logits_batch).squeeze(-1)
+                    elif post_logits_batch.ndim == 1:  # Already squeezed binary
+                        post_probs_batch = torch.sigmoid(post_logits_batch)
+                    else:  # Multi-class
+                        post_probs_batch = torch.softmax(post_logits_batch, dim=-1)
+                        
+                    # Collect results
+                    all_pre_activations.append(pre_acts_batch)
+                    all_post_activations.append(post_probs_batch)
+                    all_labels.append(batch_y.cpu().reshape(-1))  # Ensure 1D
+        finally:
+            # Always remove hooks
+            pre_handle.remove()
+            post_handle.remove()
+            
+        # Check if any data was collected
+        if not all_pre_activations:
+            logger.warning(f"No activations collected by HookBasedExtractor")
+            return None, None, None
+            
+        # Concatenate results
+        try:
+            final_h = torch.cat(all_pre_activations, dim=0)
+            final_p = torch.cat(all_post_activations, dim=0)
+            final_y = torch.cat(all_labels, dim=0)
+            
+            logger.info(f"HookBasedExtractor: Extracted {len(final_h)} samples with "
+                       f"feature shape {tuple(final_h.shape[1:])}, prob shape {tuple(final_p.shape[1:])}")
+            
+            return final_h, final_p, final_y
+            
+        except Exception as e:
+            logger.exception(f"Error concatenating activation results: {e}")
+            return None, None, None
+            
+    def _find_final_linear_layer(self, model: torch.nn.Module, num_classes: int) -> Optional[torch.nn.Linear]:
+        """
+        Intelligently locate the final linear layer in a model using multiple strategies.
+        
+        Args:
+            model: The PyTorch model to analyze
+            num_classes: Number of classes in dataset (used for output dimension verification)
+            
+        Returns:
+            The final linear layer or None if not found
+        """
+        # Strategy 1: Check common attribute names for the final layer
+        common_names = ['output_layer', 'fc', 'linear', 'classifier', 'output', 'fc3', 'fc2', 'fc1']
+        for name in common_names:
+            module = getattr(model, name, None)
+            if isinstance(module, torch.nn.Linear):
+                # Verify if this could be the output layer based on output dimension
+                if module.out_features == num_classes or (num_classes == 2 and module.out_features == 1):
+                    logger.debug(f"Found final linear layer by name: {name}")
+                    return module
+            elif isinstance(module, torch.nn.Sequential) and len(module) > 0:
+                # Check if the last layer in the sequential is a Linear
+                last_layer = module[-1]
+                if isinstance(last_layer, torch.nn.Linear):
+                    if last_layer.out_features == num_classes or (num_classes == 2 and last_layer.out_features == 1):
+                        logger.debug(f"Found final linear layer in sequential module: {name}[-1]")
+                        return last_layer
+        
+        # Strategy 2: Find all linear layers and select the last one that matches output dimension
+        linear_layers = []
+        
+        def collect_candidate_layers(module):
+            if isinstance(module, torch.nn.Linear):
+                linear_layers.append(module)
+            for _, child in module.named_children():
+                collect_candidate_layers(child)
+        
+        collect_candidate_layers(model)
+        
+        # If we found linear layers, select candidates with appropriate output size
+        if linear_layers:
+            # First try to find layers with output matching num_classes
+            matching_layers = [layer for layer in linear_layers 
+                            if layer.out_features == num_classes or 
+                                (num_classes == 2 and layer.out_features == 1)]
+            
+            if matching_layers:
+                logger.debug(f"Found final linear layer with output size matching num_classes={num_classes}")
+                return matching_layers[-1]  # Return the last matching layer
+                
+            # If all else fails, just use the last linear layer
+            logger.debug(f"No exact match for num_classes={num_classes}, using last linear layer with out_features={linear_layers[-1].out_features}")
+            return linear_layers[-1]
+        
+        return None
+
+
+class RepVectorExtractor(ActivationExtractor):
+    """
+    Extracts activations using model-specific 'rep_vector' parameter.
+    Designed for models like IXITiny that provide a special extraction mode.
+    """
+    
+    def extract(self, 
+                model: torch.nn.Module, 
+                dataloader: torch.utils.data.DataLoader, 
+                num_classes: int, 
+                dataset_name: str) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Extract activations using the model's rep_vector mode (special parameter).
+        
+        Args:
+            model: Neural network model that supports rep_vector parameter
+            dataloader: DataLoader containing samples
+            num_classes: Number of classes in the dataset
+            dataset_name: Name of the dataset (for logging)
+            
+        Returns:
+            Tuple of (features, None, dummy_labels) - no probabilities are extracted
+        """
+        if not hasattr(model, 'forward') or 'rep_vector' not in model.forward.__code__.co_varnames:
+            logger.warning(f"Model does not support 'rep_vector' parameter. Model parameters: "
+                          f"{model.forward.__code__.co_varnames if hasattr(model, 'forward') else 'Not available'}")
+            return None, None, None
+        
+        if not dataloader or len(dataloader.dataset) == 0:
+            logger.warning("Empty dataloader provided to RepVectorExtractor")
+            return None, None, None
+            
+        # Set model to eval mode and move to appropriate device
+        device = next(model.parameters()).device
+        model.eval()
+        
+        # Set up storage for activations
+        all_rep_vectors = []
+        all_batch_sizes = []
+        
+        # Extract representations
+        try:
+            with torch.no_grad():
+                for batch_data in dataloader:
+                    # Extract batch data
+                    if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 1:
+                        batch_x = batch_data[0]
+                    elif isinstance(batch_data, dict):
+                        batch_x = batch_data.get('features')
+                        if batch_x is None:
+                            continue
+                    else:
+                        continue
+                        
+                    if batch_x.shape[0] == 0:
+                        continue  # Skip empty batches
+                        
+                    # Move data to device
+                    batch_x = batch_x.to(device)
+                    
+                    # Get representation directly using rep_vector=True
+                    rep_vector = model(batch_x, rep_vector=True)
+                    
+                    # Collect results
+                    all_rep_vectors.append(rep_vector.cpu())
+                    all_batch_sizes.append(batch_x.shape[0])
+        except Exception as e:
+            logger.exception(f"Error in RepVectorExtractor extraction: {e}")
+            return None, None, None
+            
+        # Check if any data was collected
+        if not all_rep_vectors:
+            logger.warning("No representation vectors collected")
+            return None, None, None
+            
+        # Concatenate results
+        try:
+            combined_reps = torch.cat(all_rep_vectors, dim=0)
+            total_samples = sum(all_batch_sizes)
+            
+            # For segmentation models like IXITiny, we don't have probabilities
+            # We also don't have ground truth labels for segmentation data typically,
+            # so create dummy labels of 0 to maintain API compatibility
+            dummy_labels = torch.zeros(total_samples, dtype=torch.long)
+            
+            logger.info(f"RepVectorExtractor: Extracted {len(combined_reps)} samples with "
+                       f"feature shape {tuple(combined_reps.shape[1:])}")
+            
+            return combined_reps, None, dummy_labels
+            
+        except Exception as e:
+            logger.exception(f"Error concatenating representation vectors: {e}")
+            return None, None, None
+
 
 class OTDataManager:
     """
@@ -42,7 +357,13 @@ class OTDataManager:
         # ResultsManager is initialized per-dataset in methods that need it
         self.results_manager = None
         
-        pass#print(f"DataManager initialized targeting results for {self.num_clients} clients on device {self.device}.")
+        logger.info(f"DataManager initialized targeting results for {self.num_clients} clients on device {self.device}.")
+        
+        # Create activation extractor instances
+        self.extractors = {
+            'hook_based': HookBasedExtractor(),
+            'rep_vector': RepVectorExtractor()
+        }
     
     def _initialize_results_manager(self, dataset_name: str):
         """Initialize ResultsManager for a specific dataset."""
@@ -82,10 +403,10 @@ class OTDataManager:
         try:
             data = torch.load(path, map_location='cpu')
             if isinstance(data, tuple) and len(data) == 6 and data[0] is not None and data[3] is not None:
-                pass#print(f"  Successfully loaded activations from cache: {os.path.basename(path)}")
+                logger.info(f"Successfully loaded activations from cache: {os.path.basename(path)}")
                 return data
         except Exception as e:
-            pass#print(f"Failed loading activation cache {path}: {e}")
+            logger.warning(f"Failed loading activation cache {path}: {e}")
         
         return None
 
@@ -96,9 +417,9 @@ class OTDataManager:
             cpu_data = tuple(d.cpu() if isinstance(d, torch.Tensor) else d for d in data)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             torch.save(cpu_data, path)
-            pass#print(f"  Saved activations to cache: {os.path.basename(path)}")
+            logger.info(f"Saved activations to cache: {os.path.basename(path)}")
         except Exception as e:
-            pass#print(f"Failed saving activation cache {path}: {e}")
+            logger.warning(f"Failed saving activation cache {path}: {e}")
 
     def _get_model_path(self, dataset: str, cost: Any, seed: int, model_type: str = 'round0') -> str:
         """
@@ -124,7 +445,7 @@ class OTDataManager:
             cost_counts = metadata.get('cost_client_counts', {})
             if cost in cost_counts:
                 actual_clients = cost_counts[cost]
-                pass#print(f"Found actual client count in metadata: {actual_clients} for cost {cost}")
+                logger.info(f"Found actual client count in metadata: {actual_clients} for cost {cost}")
         
         # Get path from ResultsManager
         return self.results_manager.path_builder.get_model_save_path(
@@ -146,25 +467,26 @@ class OTDataManager:
             cost: Cost parameter
             seed: Seed used in the run
             num_clients: Target client count
+            model_type: Type of model to load ('round0', 'best', 'final')
             
         Returns:
             Tuple of (model, dataloaders, actual_client_count)
         """
-        pass#print(f"  Loading model for activation generation:")
-        pass#print(f"    Dataset: {dataset}, Cost: {cost}, Seed: {seed}, Target Clients: {num_clients}")
+        logger.info(f"Loading model for activation generation:")
+        logger.info(f"Dataset: {dataset}, Cost: {cost}, Seed: {seed}, Target Clients: {num_clients}")
         
         # Try ONLY the round0 model as required
         model_path = self._get_model_path(dataset, cost, seed, model_type)
                     
         if not os.path.exists(model_path):
-            pass#print(f"Round0 model not found for {dataset}, cost {cost}, seed {seed}")
+            logger.warning(f"Round0 model not found for {dataset}, cost {cost}, seed {seed}")
             return None, None, num_clients
             
         # Load model
         try:
             # Load state dict and instantiate model
             model_state_dict = torch.load(model_path, map_location=self.device)
-            pass#print(f"    Loaded {model_type} model state from: {os.path.basename(model_path)}")
+            logger.info(f"Loaded {model_type} model state from: {os.path.basename(model_path)}")
             
             # Initialize model architecture based on dataset name
             model_name = 'Synthetic' if 'Synthetic_' in dataset else dataset
@@ -189,26 +511,57 @@ class OTDataManager:
             return model, dataloaders, actual_clients
             
         except Exception as e:
-            #print(f"Error loading model/dataloaders: {e}")
-            traceback.print_exc()
+            logger.exception(f"Error loading model/dataloaders: {e}")
             return None, None, num_clients
 
-    def _extract_activations_with_model(
+    def _get_extractor_for_dataset(self, dataset_name: str, config: Dict[str, Any] = None) -> ActivationExtractor:
+        """
+        Gets the appropriate activation extractor for the dataset.
+        
+        Args:
+            dataset_name: Name of the dataset
+            config: Dataset configuration dict, if available
+            
+        Returns:
+            ActivationExtractor: The appropriate extractor instance
+        """
+        # Check if config specifies an extractor type
+        if config and 'activation_extractor_type' in config:
+            extractor_type = config['activation_extractor_type']
+            if extractor_type in self.extractors:
+                logger.info(f"Using {extractor_type} extractor for {dataset_name} as specified in config")
+                return self.extractors[extractor_type]
+        
+        # Dataset-specific extractor selection
+        if dataset_name == 'IXITiny':
+            logger.info(f"Using rep_vector extractor for {dataset_name}")
+            return self.extractors['rep_vector']
+        
+        # Default to hook-based extraction for other datasets
+        logger.info(f"Using hook_based extractor for {dataset_name}")
+        return self.extractors['hook_based']
+
+    def _extract_activations(
         self, model: torch.nn.Module, client_id: str, 
         dataloaders: Dict, loader_type: str, 
-        num_classes: int, dataset_name: str = None  # Add dataset_name parameter
+        num_classes: int, dataset_name: str
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
-        Extracts activations for a client using the loaded model.
-        Intelligently identifies the final linear layer for standard models,
-        or uses rep_vector for IXITiny model.
+        Extracts activations for a client using the appropriate extractor.
+        
+        Args:
+            model: The trained model
+            client_id: Client identifier
+            dataloaders: Dictionary of dataloaders by client
+            loader_type: Type of loader to use ('train', 'val', 'test')
+            num_classes: Number of classes in the dataset
+            dataset_name: Name of the dataset
+            
+        Returns:
+            Tuple of (h, p_prob, y) - features, probabilities, labels
         """
         client_id_str = str(client_id)
-        #print(f"    Extracting activations for client {client_id_str} using {loader_type} loader")
-        
-        # Set model to eval mode
-        model.to(self.device)
-        model.eval()
+        logger.info(f"Extracting activations for client {client_id_str} using {loader_type} loader")
         
         # Find the appropriate dataloader
         loader_key = None
@@ -227,295 +580,65 @@ class OTDataManager:
                 pass
                     
         if loader_key is None:
-            print(f"Client {client_id_str} not found in dataloaders")
+            logger.warning(f"Client {client_id_str} not found in dataloaders")
             return None, None, None
                 
         # Get loader by type
         loader_idx = {'train': 0, 'val': 1, 'test': 2}.get(loader_type.lower())
         if loader_idx is None or not isinstance(dataloaders[loader_key], (list, tuple)) or len(dataloaders[loader_key]) <= loader_idx:
-            print(f"Invalid loader structure for client {client_id_str}")
+            logger.warning(f"Invalid loader structure for client {client_id_str}")
             return None, None, None
                 
         data_loader = dataloaders[loader_key][loader_idx]
         if data_loader is None or len(data_loader.dataset) == 0:
-            print(f"Empty {loader_type} loader for client {client_id_str}")
+            logger.warning(f"Empty {loader_type} loader for client {client_id_str}")
             return None, None, None
-        
-        # Check if this is IXITiny dataset
-        is_ixitiny = dataset_name == 'IXITiny' or isinstance(model, ms.IXITiny)
-        
-        # Set up storage for activations
-        all_pre_activations = []
-        all_post_activations = []
-        all_labels = []
-        
-        # For IXITiny, we'll collect representations directly using rep_vector=True
-        if is_ixitiny:
-            try:
-                with torch.no_grad():
-                    for batch_data in data_loader:
-                        # Extract batch data appropriately
-                        if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 2:
-                            batch_x, batch_y = batch_data[0], batch_data[1]
-                        elif isinstance(batch_data, dict):
-                            batch_x = batch_data.get('features')
-                            batch_y = batch_data.get('labels')
-                            if batch_x is None or batch_y is None:
-                                continue
-                        else:
-                            continue
-                            
-                        if batch_x.shape[0] == 0:
-                            continue # Skip empty batches
-                            
-                        # Move data to device
-                        batch_x = batch_x.to(self.device)
-                        
-                        # Get representation vector directly using rep_vector=True
-                        representation = model(batch_x, rep_vector=True)
-                        
-                        # Collect results - for IXITiny, set all labels to 0 
-                        all_pre_activations.append(representation.cpu())
-                        all_labels.append(torch.zeros(batch_x.shape[0], dtype=torch.long))
-                        
-                # Check if any data was collected
-                if not all_pre_activations:
-                    print(f"No activations collected for client {client_id_str}")
-                    return None, None, None
-                    
-                # Concatenate results
-                try:
-                    final_h = torch.cat(all_pre_activations, dim=0)
-                    final_y = torch.cat(all_labels, dim=0)
-                    final_p = None  # Set probabilities to None for IXITiny
-                    return final_h, final_p, final_y
-                except Exception as e:
-                    print(f"Error concatenating activation results: {e}")
-                    return None, None, None
             
-            except Exception as e:
-                print(f"Error extracting IXITiny representations: {e}")
-                return None, None, None
-        
-        # For non-IXITiny datasets, use the original hook-based approach
-        else:
-            # Find final linear layer by structure analysis
-            final_linear = self._find_final_linear_layer(model, num_classes)
-                    
-            if final_linear is None:
-                print(f"Could not find suitable final linear layer for model")
-                return None, None, None
-        
-            current_batch_pre_acts = []
-            current_batch_post_logits = []
+        # Get config from model's DEFAULT_PARAMS if possible
+        config = None
+        from configs import DEFAULT_PARAMS
+        if dataset_name in DEFAULT_PARAMS:
+            config = DEFAULT_PARAMS[dataset_name]
             
-            # Define hooks
-            def pre_hook(module, input_data):
-                inp = input_data[0] if isinstance(input_data, tuple) else input_data
-                if isinstance(inp, torch.Tensor):
-                    current_batch_pre_acts.append(inp.detach())
-                    
-            def post_hook(module, input_data, output_data):
-                out = output_data if not isinstance(output_data, tuple) else output_data[0]
-                if isinstance(out, torch.Tensor):
-                    current_batch_post_logits.append(out.detach())
-                    
-            # Register hooks
-            pre_handle = final_linear.register_forward_pre_hook(pre_hook)
-            post_handle = final_linear.register_forward_hook(post_hook)
-            
-            # Process data through model
-            try:
-                with torch.no_grad():
-                    for batch_data in data_loader:
-                        # Extract batch data appropriately
-                        if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 2:
-                            batch_x, batch_y = batch_data[0], batch_data[1]
-                        elif isinstance(batch_data, dict):
-                            batch_x = batch_data.get('features')
-                            batch_y = batch_data.get('labels')
-                            if batch_x is None or batch_y is None:
-                                continue
-                        else:
-                            continue
-                            
-                        if batch_x.shape[0] == 0:
-                            continue # Skip empty batches
-                            
-                        # Move data to device and reset storage
-                        batch_x = batch_x.to(self.device)
-                        current_batch_pre_acts.clear()
-                        current_batch_post_logits.clear()
-                        
-                        # Forward pass to trigger hooks
-                        _ = model(batch_x)
-                        
-                        # Check if hooks captured data
-                        if not current_batch_pre_acts or not current_batch_post_logits:
-                            continue
-                            
-                        # Process captured activations
-                        pre_acts_batch = current_batch_pre_acts[0].cpu()
-                        post_logits_batch = current_batch_post_logits[0].cpu()
-                        
-                        # Convert logits to probabilities based on task type
-                        if num_classes == 1:  # Binary or regression
-                            post_probs_batch = torch.sigmoid(post_logits_batch).squeeze(-1)
-                        elif post_logits_batch.ndim == 1:  # Already squeezed binary
-                            post_probs_batch = torch.sigmoid(post_logits_batch)
-                        else:  # Multi-class
-                            post_probs_batch = torch.softmax(post_logits_batch, dim=-1)
-                            
-                        # Collect results
-                        all_pre_activations.append(pre_acts_batch)
-                        all_post_activations.append(post_probs_batch)
-                        all_labels.append(batch_y.cpu().reshape(-1))  # Ensure 1D
-            finally:
-                # Always remove hooks
-                pre_handle.remove()
-                post_handle.remove()
-                
-            # Check if any data was collected
-            if not all_pre_activations:
-                print(f"No activations collected for client {client_id_str}")
-                return None, None, None
-                
-            # Concatenate results
-            try:
-                final_h = torch.cat(all_pre_activations, dim=0)
-                final_p = torch.cat(all_post_activations, dim=0)
-                final_y = torch.cat(all_labels, dim=0)
-                return final_h, final_p, final_y
-            except Exception as e:
-                print(f"Error concatenating activation results: {e}")
-                return None, None, None
-    def _find_final_linear_layer(self, model: torch.nn.Module, num_classes: int) -> Optional[torch.nn.Linear]:
-        """
-        Intelligently locate the final linear layer in a model using multiple strategies.
-        
-        Args:
-            model: The PyTorch model to analyze
-            num_classes: Number of classes in dataset (used for output dimension verification)
-            
-        Returns:
-            The final linear layer or None if not found
-        """
-        # Strategy 1: Check common attribute names for the final layer
-        common_names = ['output_layer', 'fc', 'linear', 'classifier', 'output', 'fc3', 'fc2', 'fc1']
-        for name in common_names:
-            module = getattr(model, name, None)
-            if isinstance(module, torch.nn.Linear):
-                # Verify if this could be the output layer based on output dimension
-                if module.out_features == num_classes or (num_classes == 2 and module.out_features == 1):
-                    #print(f"Found final linear layer by name: {name}")
-                    return module
-            elif isinstance(module, torch.nn.Sequential) and len(module) > 0:
-                # Check if the last layer in the sequential is a Linear
-                last_layer = module[-1]
-                if isinstance(last_layer, torch.nn.Linear):
-                    if last_layer.out_features == num_classes or (num_classes == 2 and last_layer.out_features == 1):
-                        #print(f"Found final linear layer in sequential module: {name}[-1]")
-                        return last_layer
-        
-        # Strategy 2: Find all linear layers and select the last one that matches output dimension
-        linear_layers = []
-        
-        def collect_candidate_layers(module):
-            if isinstance(module, torch.nn.Linear):
-                linear_layers.append(module)
-            for _, child in module.named_children():
-                collect_candidate_layers(child)
-        
-        collect_candidate_layers(model)
-        
-        # If we found linear layers, select candidates with appropriate output size
-        if linear_layers:
-            # First try to find layers with output matching num_classes
-            matching_layers = [layer for layer in linear_layers 
-                            if layer.out_features == num_classes or 
-                                (num_classes == 2 and layer.out_features == 1)]
-            
-            if matching_layers:
-                #print(f"Found final linear layer with output size matching num_classes={num_classes}")
-                return matching_layers[-1]  # Return the last matching layer
-                
-            # If all else fails, just use the last linear layer
-            #print(f"No exact match for num_classes={num_classes}, using last linear layer with out_features={linear_layers[-1].out_features}")
-            return linear_layers[-1]
-        
-        return None
+        # Select and use the appropriate extractor
+        extractor = self._get_extractor_for_dataset(dataset_name, config)
+        return extractor.extract(model, data_loader, num_classes, dataset_name)
 
-    def _generate_activations(
-        self, dataset: str, cost: Any, seed: int,
-        client_id_1: Union[str, int], client_id_2: Union[str, int],
-        num_clients: int, num_classes: int, loader_type: str, model_type: str
-    ) -> Optional[Tuple]:
-        """
-        Generates activations by loading a pre-trained model and running inference.
-        
-        Returns:
-            Tuple of (h1, p1, y1, h2, p2, y2) or None if generation failed
-        """
-        pass#print(f"  Generating activations for clients ({client_id_1}, {client_id_2})")
-        pass#print(f"  Dataset: {dataset}, Cost: {cost},  Seed: {seed}")
-        
-        try:
-            # Load the model and dataloaders
-            model, dataloaders, actual_clients = self._load_model_for_activation_generation(
-                dataset, cost, seed, num_clients, model_type
-            )
-            
-            if model is None or dataloaders is None:
-                return None
-                
-            # Extract activations for each client, passing dataset name
-            h1, p1, y1 = self._extract_activations_with_model(
-                model, client_id_1, dataloaders, loader_type, num_classes, dataset_name=dataset
-            )
-            h2, p2, y2 = self._extract_activations_with_model(
-                model, client_id_2, dataloaders, loader_type, num_classes, dataset_name=dataset
-            )
-            
-            # For regular datasets, validate h, p, and y are all present
-            # For IXITiny, p1/p2 can be None
-            if h1 is None or y1 is None or h2 is None or y2 is None:
-                return None
-                
-            return (h1, p1, y1, h2, p2, y2)
-            
-        except Exception as e:
-            pass#print(f"Error during activation generation: {e}")
-            traceback.print_exc()
-            return None
-    
     def _process_client_data(
-        self, h: Optional[torch.Tensor], p_prob_in: Optional[torch.Tensor], y: Optional[torch.Tensor],
-        client_id: str, num_classes: int
+        self, h_raw: Optional[torch.Tensor], 
+        p_raw: Optional[torch.Tensor], 
+        y_raw: Optional[torch.Tensor],
+        client_id: str, 
+        num_classes: int,
+        use_loss_weighting_hint: bool = False
     ) -> Optional[Dict[str, Optional[torch.Tensor]]]:
         """
         Processes raw data for one client: validates probs, calculates loss & weights.
-        Handles IXITiny case where p_prob_in is None and y contains zeros.
+        Handles IXITiny case where p_raw is None and y contains zeros.
         
         Args:
-            h: Feature activations tensor
-            p_prob_in: Model probability outputs tensor (can be None for segmentation tasks like IXITiny)
-            y: Ground truth labels tensor
+            h_raw: Raw feature activations tensor
+            p_raw: Raw model probability outputs tensor (can be None for segmentation tasks like IXITiny)
+            y_raw: Raw ground truth labels tensor
             client_id: Client identifier
             num_classes: Number of classes in the dataset
+            use_loss_weighting_hint: Whether to use loss weighting for OT marginals
             
         Returns:
             Dictionary of processed tensors or None if processing fails
         """
-        if h is None or y is None:
+        if h_raw is None or y_raw is None:
+            logger.warning(f"Client {client_id}: Missing required inputs (h or y)")
             return None
             
         # Convert to CPU tensors
-        h_cpu = h.detach().cpu() if isinstance(h, torch.Tensor) else torch.tensor(h).cpu()
-        y_cpu = y.detach().cpu().long() if isinstance(y, torch.Tensor) else torch.tensor(y).long().cpu()
-        p_prob_cpu = p_prob_in.detach().cpu() if isinstance(p_prob_in, torch.Tensor) else \
-                    torch.tensor(p_prob_in).cpu() if p_prob_in is not None else None
+        h_cpu = h_raw.detach().cpu() if isinstance(h_raw, torch.Tensor) else torch.tensor(h_raw).cpu()
+        y_cpu = y_raw.detach().cpu().long() if isinstance(y_raw, torch.Tensor) else torch.tensor(y_raw).long().cpu()
+        p_prob_cpu = p_raw.detach().cpu() if isinstance(p_raw, torch.Tensor) and p_raw is not None else None
+        
         n_samples = y_cpu.shape[0]
         if n_samples == 0:
+            logger.warning(f"Client {client_id}: No samples available")
             return None
             
         # Validate and normalize probabilities (only if p_prob_cpu is not None)
@@ -555,23 +678,26 @@ class OTDataManager:
                         p_prob_validated = torch.stack([p0, p1], dim=1)
                 
                 # If no cases matched, p_prob_validated remains None
-                if p_prob_validated is None and p_prob_in is not None:
-                    print(f"Warning: Unable to validate probability tensor with shape {p_prob_float.shape} "
-                        f"for client {client_id} (n_samples={n_samples}, num_classes={num_classes})")
+                if p_prob_validated is None and p_raw is not None:
+                    logger.warning(f"Client {client_id}: Unable to validate probability tensor with shape {p_prob_float.shape} "
+                                 f"(n_samples={n_samples}, num_classes={num_classes})")
         
-        # Calculate loss and weights
+        # Calculate loss if we have valid probabilities
         loss = None
-        
-        # Only calculate loss if probabilities are available
         if p_prob_validated is not None:
             loss = calculate_sample_loss(p_prob_validated, y_cpu, num_classes, self.loss_eps)
         
-        # For all cases (including IXITiny without probabilities), use uniform weights
-        weights = torch.ones(n_samples, dtype=torch.float32) / n_samples
-        
-        # If loss is None (IXITiny case) or invalid, create a placeholder
-        if loss is None or not torch.isfinite(loss).all() or loss.sum().item() <= self.loss_eps:
-            loss = torch.full_like(y_cpu, float('nan'), dtype=torch.float32) if loss is None else loss
+        # Calculate weights based on loss or use uniform weights
+        weights = None
+        if use_loss_weighting_hint and loss is not None and torch.isfinite(loss).all() and loss.sum() > self.loss_eps:
+            # Use loss values as weights (normalized to sum to 1)
+            weights = loss / loss.sum()
+            logger.debug(f"Client {client_id}: Using loss-based weights (mean={weights.mean().item():.4f})")
+        else:
+            # Uniform weights
+            weights = torch.ones(n_samples, dtype=torch.float32) / n_samples
+            if use_loss_weighting_hint:
+                logger.debug(f"Client {client_id}: Using uniform weights (loss weighting requested but unavailable)")
         
         return {
             'h': h_cpu, 
@@ -581,17 +707,72 @@ class OTDataManager:
             'weights': weights
         }
 
+    def _generate_activations(
+        self, dataset: str, cost: Any, seed: int,
+        client_id_1: Union[str, int], client_id_2: Union[str, int],
+        num_clients: int, num_classes: int, loader_type: str, model_type: str
+    ) -> Optional[Tuple]:
+        """
+        Generates activations by loading a pre-trained model and running inference.
+        
+        Returns:
+            Tuple of (h1, p1, y1, h2, p2, y2) or None if generation failed
+        """
+        logger.info(f"Generating activations for clients ({client_id_1}, {client_id_2})")
+        logger.info(f"Dataset: {dataset}, Cost: {cost},  Seed: {seed}")
+        
+        try:
+            # Load the model and dataloaders
+            model, dataloaders, actual_clients = self._load_model_for_activation_generation(
+                dataset, cost, seed, num_clients, model_type
+            )
+            
+            if model is None or dataloaders is None:
+                return None
+                
+            # Extract activations for each client using appropriate extractor
+            h1, p1, y1 = self._extract_activations(
+                model, client_id_1, dataloaders, loader_type, num_classes, dataset
+            )
+            h2, p2, y2 = self._extract_activations(
+                model, client_id_2, dataloaders, loader_type, num_classes, dataset
+            )
+            
+            # For regular datasets, validate h, p, and y are all present
+            # For IXITiny, p1/p2 can be None
+            if h1 is None or y1 is None or h2 is None or y2 is None:
+                return None
+                
+            return (h1, p1, y1, h2, p2, y2)
+            
+        except Exception as e:
+            logger.exception(f"Error during activation generation: {e}")
+            return None
+    
     def get_activations(
         self, dataset_name: str, cost: Any, seed: int,
         client_id_1: Union[str, int], client_id_2: Union[str, int],
         num_clients: int, num_classes: int,
         loader_type: str = 'val',
         force_regenerate: bool = False,
-        model_type: str = 'round0'
+        model_type: str = 'round0',
+        use_loss_weighting_hint: bool = False
     ) -> Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]]:
         """
         Gets processed activations for a specific client pair.
         
+        Args:
+            dataset_name: Name of the dataset
+            cost: Cost parameter 
+            seed: Random seed
+            client_id_1, client_id_2: Client identifiers
+            num_clients: Number of clients
+            num_classes: Number of classes
+            loader_type: Type of loader to use ('train', 'val', 'test')
+            force_regenerate: Whether to regenerate activations even if cached
+            model_type: Type of model to use ('round0', 'best', 'final')
+            use_loss_weighting_hint: Whether to use loss weighting for marginals
+            
         Returns:
             Dictionary of processed client data or None if failed
         """
@@ -611,7 +792,7 @@ class OTDataManager:
             raw_activations = self._load_activations_from_cache(cache_path)
             
         if raw_activations is None:
-            pass#print(f"  Cache {'miss' if not force_regenerate else 'bypass'} for {os.path.basename(cache_path)}")
+            logger.info(f"Cache {'miss' if not force_regenerate else 'bypass'} for {os.path.basename(cache_path)}")
             
             # Generate activations by loading model
             raw_activations = self._generate_activations(
@@ -628,10 +809,15 @@ class OTDataManager:
                 
         # Unpack and process the raw activations
         h1_raw, p1_raw, y1_raw, h2_raw, p2_raw, y2_raw = raw_activations
-        pass#print(f"  Processing activations for clients ({cid1_str}, {cid2_str})")
+        logger.info(f"Processing activations for clients ({cid1_str}, {cid2_str})")
         
-        processed_data1 = self._process_client_data(h1_raw, p1_raw, y1_raw, cid1_str, num_classes)
-        processed_data2 = self._process_client_data(h2_raw, p2_raw, y2_raw, cid2_str, num_classes)
+        processed_data1 = self._process_client_data(
+            h1_raw, p1_raw, y1_raw, cid1_str, num_classes, use_loss_weighting_hint
+        )
+        processed_data2 = self._process_client_data(
+            h2_raw, p2_raw, y2_raw, cid2_str, num_classes, use_loss_weighting_hint
+        )
+        
         if processed_data1 is None or processed_data2 is None:
             return None
             
@@ -657,14 +843,14 @@ class OTDataManager:
         all_records, _ = self.results_manager.load_results(ExperimentType.EVALUATION)
         
         if not all_records:
-            pass#print(f"No performance results found for {dataset_name}")
+            logger.warning(f"No performance results found for {dataset_name}")
             return np.nan, np.nan
         
         # Filter records by cost
         cost_records = [r for r in all_records if r.cost == cost]
         
         if not cost_records:
-            pass#print(f"Cost {cost} not found in results for {dataset_name}")
+            logger.warning(f"Cost {cost} not found in results for {dataset_name}")
             return np.nan, np.nan
         
         # Extract final losses for local and fedavg
@@ -698,5 +884,5 @@ class OTDataManager:
             else:  # Default to mean
                 fedavg_score = float(np.mean(fedavg_losses))
                 
-        pass#print(f"Performance for {dataset_name}, cost {cost}: Local={local_score:.4f}, FedAvg={fedavg_score:.4f}")
+        logger.info(f"Performance for {dataset_name}, cost {cost}: Local={local_score:.4f}, FedAvg={fedavg_score:.4f}")
         return local_score, fedavg_score
