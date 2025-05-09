@@ -211,7 +211,9 @@ DEFAULT_PARAMS = {
         'partitioning_strategy': 'pre_split',
         'dataset_class': 'ISICDataset',
         'source_args': {
-            'site_mappings': {0.15: [[2], [0]], 0.19: [[2], [3]], 0.25: [[2], [1]], 0.3: [[1], [3]], 'all': [[0], [1], [2], [3]] },
+            'site_mappings': {'bcn_vmole': [[0], [1]], 'bcn_vmod': [[0], [2]], 'bcn_rose': [[0], [3]], 'bcn_msk': [[0], [4]], 'bcn_vienna': [[0], [5]],
+                              'vmole_vmod': [[1], [2]], 'vmole_rose': [[1], [3]], 'vmole_msk': [[1], [4]], 'vmole_vienna': [[1], [5]], 'vmod_rose': [[2], [3]],
+                              'vmod_msk': [[2], [4]], 'vmod_vienna': [[2], [5]], 'rose_msk': [[3], [4]], 'rose_vienna': [[3], [5]], 'msk_vienna': [[4], [5]]}, 
             'image_size': 200
         },
         'samples_per_client': 2000,
@@ -222,6 +224,7 @@ DEFAULT_PARAMS = {
         'max_clients': 4,
         'use_weighted_loss': True,
         'batch_size': 128,
+        'default_lr' : 1e-3,
     },
     'IXITiny': {
         'dataset_name': 'IXITiny',
@@ -229,7 +232,7 @@ DEFAULT_PARAMS = {
         'partitioning_strategy': 'pre_split',
         'dataset_class': 'IXITinyDataset',
         'source_args': {
-            'site_mappings': { 0.01: [['Guys'], ['HH']], 0.02: [['IOP'], ['Guys']], 0.03: [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] },
+            'site_mappings': { 'guys_hh': [['Guys'], ['HH']], 'iop_guys': [['IOP'], ['Guys']], 'iop_hh': [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] },
             'image_shape': (48, 60, 48)
         },
         'samples_per_client': None, # Uses all available data per site
@@ -258,13 +261,13 @@ DATASET_COSTS = {
     'Synthetic_Feature': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     'Credit': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     'EMNIST': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
-    #'CIFAR': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     'CIFAR': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
     # Concept shift parameter (0=baseline) - Used directly by load_synthetic_raw
     'Synthetic_Concept': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
 
     # Site mapping keys - Used directly by load_heart_raw, load_isic_paths_raw, load_ixi_paths_raw
-    'IXITiny': [0.01, 0.02, 0.03],
-    'ISIC': [0.15, 0.19, 0.25, 0.3],
-    'Heart': [1, 2, 3, 4, 5, 6]
+    'IXITiny': ['guys_hh', 'iop_guys', 'iop_hh', 'all'],
+    'ISIC': ['bcn_vmole', 'bcn_vmod', 'bcn_rose', 'bcn_msk', 'bcn_vienna',
+             'vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose', 
+             'vmod_msk', 'vmod_vienna','rose_msk', 'rose_vienna','msk_vienna'],
 }

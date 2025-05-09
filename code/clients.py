@@ -9,8 +9,9 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Iterator, Any, Callable, Union
-from helper import gpu_scope, TrainerConfig, SiteData, ModelState, TrainingManager, MetricsCalculator
-
+from helper import (gpu_scope, TrainerConfig, SiteData, ModelState, TrainingManager, 
+                    MetricsCalculator, calculate_class_weights, get_parameters_for_dataset)
+from losses import ISICLoss, WeightedCELoss, get_dice_loss
 # =============================================================================
 # == Base Client Class ==
 # =============================================================================
@@ -19,7 +20,7 @@ class Client:
     def __init__(self,
                 config: TrainerConfig,
                 data: SiteData,
-                initial_global_state: ModelState, # Has model/criterion from server
+                initial_global_state: ModelState,
                 metric_fn: Callable,
                 personal_model: bool = False):
         from helper import get_model_instance  # Import the helper function
@@ -31,15 +32,17 @@ class Client:
         self.requires_personal_model = personal_model
         self.training_manager = TrainingManager(config.device)
 
+        # Initialize client-specific criterion before creating model states
+        self._initialize_criterion()
+
         # Initialize ModelStates with fresh model instances
-        # Create a fresh model instance instead of copying
         global_model = get_model_instance(self.config.dataset_name)
         # Load the state dict from the initial model
         global_model.load_state_dict(initial_global_state.model.state_dict())
         
         self.global_state = ModelState(
             model=global_model.cpu(),
-            criterion=initial_global_state.criterion
+            criterion=self.criterion  # Use the client-specific criterion
         )
         self.global_state.optimizer = self._create_optimizer(self.global_state.model)
 
@@ -52,7 +55,7 @@ class Client:
             
             self.personal_state = ModelState(
                 model=personal_model.cpu(),
-                criterion=initial_global_state.criterion
+                criterion=self.criterion  # Use the same client-specific criterion
             )
             self.personal_state.optimizer = self._create_optimizer(self.personal_state.model)
 
@@ -61,6 +64,45 @@ class Client:
         wd = self.config.algorithm_params.get('weight_decay', 1e-4)
         lr = self.config.learning_rate
         return optim.AdamW(model.parameters(), lr=lr, weight_decay=wd, eps = 1e-8)
+    
+    def _initialize_criterion(self):
+        """Initialize criterion based on configuration."""
+
+        
+        criterion_type = getattr(self.config, 'criterion_type', 'CrossEntropyLoss')
+        dataset_params = get_parameters_for_dataset(self.config.dataset_name)
+        
+        # Get fixed_classes consistently, with error if missing when needed
+        num_classes = dataset_params.get('fixed_classes')
+        
+        if criterion_type == 'CrossEntropyLoss':
+            if getattr(self.config, 'use_weighted_loss', False) and hasattr(self.data.train_loader, 'dataset'):
+                if num_classes is None:
+                    raise ValueError(f"'fixed_classes' must be defined in config for {self.config.dataset_name} when using weighted loss")
+                # Calculate class weights
+                class_weights = calculate_class_weights(self.data.train_loader.dataset, num_classes)
+                # Pass weights directly to constructor
+                self.criterion = WeightedCELoss(weights=class_weights)
+            else:
+                self.criterion = nn.CrossEntropyLoss()
+        
+        elif criterion_type == 'ISICLoss':
+            if num_classes is None:
+                raise ValueError(f"'fixed_classes' must be defined in config for {self.config.dataset_name} when using ISICLoss")
+            
+            if hasattr(self.data.train_loader, 'dataset'):
+                client_alpha = calculate_class_weights(self.data.train_loader.dataset, num_classes)
+                self.criterion = ISICLoss(alpha=client_alpha)
+            else:
+                # Fallback if no dataset available (shouldn't happen)
+                default_alpha = torch.tensor([1.0] * num_classes)
+                self.criterion = ISICLoss(alpha=default_alpha)
+    
+        elif criterion_type == 'DiceLoss':
+            self.criterion = get_dice_loss
+        
+        else:
+            self.criterion = nn.CrossEntropyLoss()
 
     def _get_state(self, personal: bool) -> ModelState:
         """Helper to get the correct state object."""
@@ -86,23 +128,12 @@ class Client:
         return loss.item()
 
     def _process_epoch(self, 
-                      loader: DataLoader, 
-                      model: nn.Module, 
-                      criterion: Union[nn.Module, Callable],
-                      is_training: bool, 
-                      optimizer: Optional[optim.Optimizer] = None) -> Tuple[float, List, List]:
+                    loader: DataLoader, 
+                    model: nn.Module, 
+                    is_training: bool, 
+                    optimizer: Optional[optim.Optimizer] = None) -> Tuple[float, List, List]:
         """
         Unified function to process one epoch for either training or evaluation.
-        
-        Args:
-            loader: The data loader to use
-            model: The model to train/evaluate 
-            criterion: Loss function
-            is_training: Whether this is a training epoch
-            optimizer: Optimizer (required for training only)
-            
-        Returns:
-            Tuple of (avg_loss, predictions_list, labels_list)
         """
         # Set model to correct mode and device
         model = model.to(self.training_manager.compute_device)
@@ -119,14 +150,14 @@ class Client:
         with gpu_scope():
             with context:
                 for batch in loader:
-                    prepared_batch = self.training_manager.prepare_batch(batch, criterion)
+                    prepared_batch = self.training_manager.prepare_batch(batch, self.criterion)
                     batch_x_dev, batch_y_dev, batch_y_orig_cpu = prepared_batch
                     if is_training:
-                        batch_loss = self._train_batch(model, optimizer, criterion, batch_x_dev, batch_y_dev)
+                        batch_loss = self._train_batch(model, optimizer, self.criterion, batch_x_dev, batch_y_dev)
                         epoch_loss += batch_loss
                     else:  # Evaluation
                         outputs = model(batch_x_dev)
-                        loss = criterion(outputs, batch_y_dev)
+                        loss = self.criterion(outputs, batch_y_dev)
                         epoch_loss += loss.item()
                         epoch_predictions_cpu.append(outputs.detach().cpu())
                         epoch_labels_cpu.append(batch_y_orig_cpu)
@@ -135,8 +166,8 @@ class Client:
                     # Cleanup temporary tensors
                     del batch_x_dev, batch_y_dev
 
-            # Ensure model is back on CPU after processing
-            model.to(self.training_manager.cpu_device)
+                # Ensure model is back on CPU after processing
+                model.to(self.training_manager.cpu_device)
 
         avg_loss = epoch_loss / num_batches if num_batches > 0 else (0.0 if is_training else float('inf'))
         return avg_loss, epoch_predictions_cpu, epoch_labels_cpu

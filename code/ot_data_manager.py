@@ -405,7 +405,7 @@ class OTDataManager:
             cost_str = str(cost).replace('/', '_') # Basic sanitization
             
         # Use model_type in filename if needed, for now assuming 'round0' implicitly for cache path simplicity
-        filename = f"activations_{dataset_name}_nc{num_clients}_cost{cost_str}_seed{seed}_c{c1_str}v{c2_str}_{loader_type}.pt"
+        filename = f"activations_{dataset_name}_nc{num_clients}_cost_{cost_str}_seed{seed}_c{c1_str}v{c2_str}_{loader_type}.pt"
         return os.path.join(dataset_cache_dir, filename)
 
     def _load_activations_from_cache(self, path: str) -> Optional[Tuple]:

@@ -84,64 +84,6 @@ def load_credit_raw(source_args: dict,
     
     return features_np, labels_np
 
-
-def load_heart_raw(client_num: int,
-                   cost_key: Any,
-                   source_args: Dict,
-                   data_dir: str,
-                   base_seed: int) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Loads and internally scales Heart Disease data for a specific client.
-    """    
-    # Get assigned sites for this client from site mappings
-    site_map = source_args.get('site_mappings', {})
-    assigned_sites = site_map[cost_key][client_num - 1]
-    
-    # Extract configuration parameters
-    used_columns = source_args.get('used_columns', [])
-    feature_names = source_args.get('feature_names', [])
-    cols_to_scale = source_args.get('cols_to_scale', [])
-    scale_values = source_args.get('scale_values', {})
-    
-    features_list, labels_list = [], []
-    
-    # Process each assigned site
-    for site_name in assigned_sites:
-        fpath = os.path.join(data_dir, f'processed.{site_name}.data')
-        
-        # Load and process the data
-        site_df = pd.read_csv(
-            fpath, names=used_columns, na_values='?', 
-            header=None, usecols=used_columns
-        ).dropna()
-        
-        # Extract features
-        X_site = site_df[feature_names].copy().values.astype(np.float32)
-        
-        # Apply scaling to specified columns
-        for col_idx, col in enumerate(feature_names):
-            if col in cols_to_scale and col in scale_values:
-                mean, variance = scale_values[col]
-                std_dev = np.sqrt(variance)
-                if std_dev > 1e-9:
-                    X_site[:, col_idx] = (X_site[:, col_idx] - mean) / std_dev
-                else:
-                    X_site[:, col_idx] = X_site[:, col_idx] - mean 
-                    
-        # Extract labels
-        y_site = site_df['target'].astype(int).values
-        
-        # Add to collection
-        features_list.append(X_site)
-        labels_list.append(y_site)
-        
-    # Combine results from all sites
-    final_X = np.concatenate(features_list, axis=0) if features_list else np.array([])
-    final_y = np.concatenate(labels_list, axis=0) if labels_list else np.array([])
-    
-    return final_X, final_y
-
-
 def load_isic_paths_raw(client_num: int,
                        cost_key: Any,
                        source_args: dict,

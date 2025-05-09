@@ -70,6 +70,42 @@ def get_default_reg(dataset_name: str) -> Optional[float]:
 
 
 # --- Configuration & Data Structures ---
+def calculate_class_weights(dataset, num_classes):
+    """
+    Calculate class weights based on dataset label distribution.
+    
+    Args:
+        dataset: PyTorch Dataset containing the training data
+        num_classes: Total number of classes (fixed_classes in config)
+    
+    Returns:
+        torch.Tensor: Class weights tensor of shape (num_classes,)
+    """
+    class_counts = torch.zeros(num_classes)
+    
+    # Iterate through dataset to count class occurrences
+    for i in range(len(dataset)):
+        _, label = dataset[i]
+        if isinstance(label, torch.Tensor):
+            label_idx = label.item() if label.numel() == 1 else label.argmax().item()
+        else:
+            label_idx = int(label)
+            
+        if 0 <= label_idx < num_classes:
+            class_counts[label_idx] += 1
+    
+    # Handle classes with zero samples (avoid division by zero)
+    min_count = class_counts[class_counts > 0].min().item() if torch.any(class_counts > 0) else 1
+    # Replace zeros with a small fraction of the minimum count
+    class_counts = torch.where(class_counts > 0, class_counts, torch.tensor(min_count * 0.1))
+    
+    # Calculate inverse frequency weights
+    class_weights = 1.0 / class_counts
+    
+    # Normalize to make average weight = 1
+    class_weights = class_weights * (num_classes / class_weights.sum())
+    
+    return class_weights
 
 # --- Constants ---
 class MetricKey:
@@ -113,10 +149,9 @@ class SiteData:
 
 @dataclass
 class ModelState:
-    """Holds state for one model: current weights, optimizer, criterion, best state."""
+    """Holds state for one model: current weights, optimizer, best state."""
     model: nn.Module # Current model weights/arch (CPU)
     optimizer: Optional[optim.Optimizer] = None # Client creates and assigns
-    criterion: Union[nn.Module, Callable] = None # Loss function
     best_loss: float = field(init=False, default=float('inf'))
     best_model_state_dict: Optional[Dict] = field(init=False, default=None) # CPU state dict
 
