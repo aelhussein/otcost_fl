@@ -42,7 +42,6 @@ class Client:
         
         self.global_state = ModelState(
             model=global_model.cpu(),
-            criterion=self.criterion  # Use the client-specific criterion
         )
         self.global_state.optimizer = self._create_optimizer(self.global_state.model)
 
@@ -55,7 +54,6 @@ class Client:
             
             self.personal_state = ModelState(
                 model=personal_model.cpu(),
-                criterion=self.criterion  # Use the same client-specific criterion
             )
             self.personal_state.optimizer = self._create_optimizer(self.personal_state.model)
 
@@ -69,14 +67,15 @@ class Client:
         """Initialize criterion based on configuration."""
 
         
-        criterion_type = getattr(self.config, 'criterion_type', 'CrossEntropyLoss')
+
         dataset_params = get_parameters_for_dataset(self.config.dataset_name)
         
-        # Get fixed_classes consistently, with error if missing when needed
         num_classes = dataset_params.get('fixed_classes')
+        criterion_type = dataset_params.get('criterion_type', 'CrossEntropyLoss')
+        use_weighted_loss_flag = dataset_params.get('use_weighted_loss', False)
         
         if criterion_type == 'CrossEntropyLoss':
-            if getattr(self.config, 'use_weighted_loss', False) and hasattr(self.data.train_loader, 'dataset'):
+            if use_weighted_loss_flag and hasattr(self.data.train_loader, 'dataset'):
                 if num_classes is None:
                     raise ValueError(f"'fixed_classes' must be defined in config for {self.config.dataset_name} when using weighted loss")
                 # Calculate class weights
@@ -182,7 +181,6 @@ class Client:
             avg_loss, _, _ = self._process_epoch(
                 loader=self.data.train_loader,
                 model=state.model,
-                criterion=state.criterion,
                 is_training=True,
                 optimizer=state.optimizer
             )
@@ -214,7 +212,6 @@ class Client:
         avg_loss, predictions_cpu, labels_cpu = self._process_epoch(
             loader=loader,
             model=eval_model,
-            criterion=state.criterion,
             is_training=False
         )
         # Calculate score on CPU results
@@ -305,7 +302,7 @@ class PFedMeClient(Client):
         model = personal_state.model.to(self.training_manager.compute_device)
         global_model_cpu = global_state.model
         model.train()
-        criterion = personal_state.criterion
+        criterion = self.criterion
         optimizer = personal_state.optimizer
         epoch_task_loss = 0.0; num_batches_processed = 0
 

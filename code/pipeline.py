@@ -46,21 +46,10 @@ class SingleRunExecutor:
         self.device = device # Target device for client computation
 
     def _create_model(self) -> Tuple[nn.Module, Union[nn.Module, Callable]]:
-        """Creates model instance and criterion (on CPU initially)."""
+        """Creates model instance (on CPU initially)."""
         # Use the helper to get a fresh model instance
         model = get_model_instance(self.dataset_name)
-        
-        # This part remains the same - handling criterion is specific to this method
-        criterion: Union[nn.Module, Callable]
-        if self.dataset_name == 'IXITiny':
-            from losses import get_dice_loss; criterion = get_dice_loss
-        elif self.dataset_name == 'ISIC':
-            from losses import ISICLoss
-            criterion = ISICLoss()
-        else:
-            criterion = nn.CrossEntropyLoss()
-
-        return model, criterion
+        return model
 
     def _create_trainer_config(self, server_type: str, hyperparams: Dict, tuning: bool) -> TrainerConfig:
         """Creates the TrainerConfig."""
@@ -86,10 +75,10 @@ class SingleRunExecutor:
         )
 
     def _create_server_instance(self, server_type: str, config: TrainerConfig, tuning: bool) -> Server:
-        """Creates server instance with model/criterion on CPU."""
-        model, criterion = self._create_model()
+        """Creates server instance with model on CPU."""
+        model = self._create_model()
         # Initial global state for server (model is CPU)
-        globalmodelstate = ModelState(model=model.cpu(), criterion=criterion)
+        globalmodelstate = ModelState(model=model.cpu())
 
         server_mapping: Dict[str, type[Server]] = {
             'local': Server, # Assuming 'local' uses base Server or similar

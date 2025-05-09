@@ -5,7 +5,8 @@
 #DEFAULT_DATASETS=("Heart" "Synthetic_Label" "Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR")
 #DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept")
 #DEFAULT_DATASETS=("ISIC")
-DEFAULT_DATASETS=("CIFAR")
+DEFAULT_DATASETS=("IXITiny")
+#DEFAULT_DATASETS=("CIFAR")
 #DEFAULT_EXP_TYPES=("learning_rate")
 DEFAULT_EXP_TYPES=("evaluation")
 DEFAULT_DIR='/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'

@@ -20,7 +20,7 @@ from data_partitioning import get_partitioner
 from synthetic_data import apply_feature_shift, apply_concept_shift
 # Import all final Dataset classes
 from data_sets import (SyntheticDataset, CreditDataset, EMNISTDataset,
-                      CIFARDataset, ISICDataset, IXITinyDataset, HeartDataset)
+                      CIFARDataset, ISICDataset, IXITinyDataset)
 
 # =============================================================================
 # == Data Splitting Functions (Internal Helpers) ==
@@ -103,7 +103,6 @@ class DataPreprocessor:
             dataset_classes = {
                 'SyntheticDataset': SyntheticDataset,
                 'CreditDataset': CreditDataset,
-                'HeartDataset': HeartDataset,
                 'EMNISTDataset': EMNISTDataset,
                 'CIFARDataset': CIFARDataset,
                 'ISICDataset': ISICDataset,

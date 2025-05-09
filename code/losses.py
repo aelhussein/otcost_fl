@@ -59,6 +59,7 @@ def get_dice_score(output: torch.Tensor, target: torch.Tensor,
             f"3. (Batch, D, H, W) - class indices"
         )
     g0 = g0.float()
+    sum_dims = tuple(range(1, p0.dim()))
 
     tp = torch.sum(p0 * g0, dim=sum_dims)
     fp = torch.sum(p0 * (1.0 - g0), dim=sum_dims)

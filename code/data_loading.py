@@ -193,7 +193,6 @@ def get_loader(source_name: str) -> Callable:
         'synthetic': load_synthetic_raw,
         'torchvision': load_torchvision_raw,
         'credit_csv': load_credit_raw,
-        'heart_site_loader': load_heart_raw,
         'isic_paths': load_isic_paths_raw,
         'ixi_paths': load_ixi_paths_raw
     }

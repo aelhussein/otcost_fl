@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import copy
 from functools import partial
 import sklearn.metrics as metrics
-from losses import WeightedCELoss, get_dice_loss, get_dice_score # Custom loss function
+from losses import WeightedCELoss, ISICLoss, get_dice_loss, get_dice_score # Custom loss function
 
 # Import global config directly
 from configs import DEFAULT_PARAMS # Needed for config helpers
@@ -212,7 +212,7 @@ class TrainingManager:
         batch_y_orig_cpu = batch_y_orig.cpu() if isinstance(batch_y_orig, torch.Tensor) else batch_y_orig
 
         # Process labels on device based on criterion type
-        if isinstance(criterion, nn.CrossEntropyLoss) or isinstance(criterion, WeightedCELoss):
+        if isinstance(criterion, nn.CrossEntropyLoss) or isinstance(criterion, WeightedCELoss) or isinstance(criterion, ISICLoss):
              if batch_y_dev.ndim == 2 and batch_y_dev.shape[1] == 1: batch_y_dev = batch_y_dev.squeeze(1)
              batch_y_dev = batch_y_dev.long()
         elif callable(criterion) and criterion.__name__ == 'get_dice_loss':
@@ -249,16 +249,25 @@ class ModelDiversity:
     def __init__(self, client_1, client_2): self.client_1, self.client_2 = client_1, client_2
     def _get_weights(self, client) -> Optional[torch.Tensor]:
         # Simplified access assuming client has .model and potentially .personal_model
-        model_to_use = getattr(client, 'personal_model', None) or getattr(client, 'model', None)
-        if model_to_use:
-            weights = [p.data.detach().view(-1) for p in model_to_use.parameters() if p.data is not None]
-            if weights: return torch.cat(weights)
+        model = client.global_state.model
+        weights = [p.data.cpu().detach().view(-1) for p in model.parameters() if p.requires_grad]
+        if weights:
+            return torch.cat(weights)
         return None
+
     def calculate_weight_divergence(self) -> Tuple[float, float]:
-        w1, w2 = self._get_weights(self.client_1), self._get_wseights(self.client_2)
-        if w1 is None or w2 is None or w1.numel()==0 or w2.numel()==0: return np.nan, np.nan
+        """Calculate L2 distance and cosine similarity between normalized model weights."""
+        w1, w2 = self._get_weights(self.client_1), self._get_weights(self.client_2)
+        
+        # Handle missing weights cases
+        if w1 is None or w2 is None or w1.numel()==0 or w2.numel()==0:
+            return np.nan, np.nan
+            
+        # Normalize weights
         n1, n2 = torch.norm(w1), torch.norm(w2)
         w1n, w2n = w1 / (n1 + 1e-9), w2 / (n2 + 1e-9)
+        
+        # Calculate metrics
         l2 = torch.norm(w1n - w2n, p=2).item()
         cos = torch.dot(w1n, w2n).item()
         return l2, cos

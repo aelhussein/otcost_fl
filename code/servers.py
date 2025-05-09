@@ -259,26 +259,20 @@ class Server:
 # =============================================================================
 class FLServer(Server):
     """Implements standard FedAvg aggregation and distribution (CPU-based)."""
+
     def aggregate_models(self, client_states_info: List[Dict[str, Any]]):
         """
-        Performs FedAvg aggregation only on trainable parameters.
-        Leaves non-trainable parameters (like BN statistics) unchanged.
+        Performs FedAvg aggregation on ALL parameters, including BatchNorm statistics.
+        This ensures that both trainable parameters and running statistics like
+        mean and variance in batch normalization layers are properly aggregated.
         """
         global_model = self.serverstate.model  # Operate on server's model (CPU)
         global_state_dict = global_model.state_dict()
         
-        # Identify which parameters require gradients (trainable)
-        trainable_param_names = []
-        for name, param in global_model.named_parameters():
-            if param.requires_grad:
-                trainable_param_names.append(name)
-        
-        # Initialize accumulator state dict only for trainable parameters
+        # Initialize accumulator for all parameters in the state dict
         accumulated_state_dict = {}
         for key in global_state_dict:
-            # Only aggregate trainable parameters
-            if key in trainable_param_names:
-                accumulated_state_dict[key] = torch.zeros_like(global_state_dict[key], dtype=torch.float32)
+            accumulated_state_dict[key] = torch.zeros_like(global_state_dict[key], dtype=torch.float32)
         
         total_weight = 0.0
         with torch.no_grad():
@@ -287,7 +281,7 @@ class FLServer(Server):
                 weight = info.get('weight', 0.0)
                 total_weight += weight
                 
-                # Accumulate each trainable parameter by name
+                # Accumulate each parameter by name, including BN stats
                 for key in accumulated_state_dict.keys():
                     if key in state_dict:
                         client_param = state_dict[key]
@@ -296,10 +290,11 @@ class FLServer(Server):
                             accumulated_state_dict[key].add_(float_param, alpha=weight)
             
             # Process averaged parameters
-            for key in accumulated_state_dict.keys():
-                accumulated_state_dict[key].div_(total_weight)
-                # Update only the trainable parameters
-                global_state_dict[key].copy_(accumulated_state_dict[key].to(global_state_dict[key].dtype))
+            if total_weight > 0:
+                for key in accumulated_state_dict.keys():
+                    accumulated_state_dict[key].div_(total_weight)
+                    # Update all parameters, including BN statistics
+                    global_state_dict[key].copy_(accumulated_state_dict[key].to(global_state_dict[key].dtype))
 
     def distribute_global_model(self, test: bool = False):
         """Distributes the appropriate CPU global model state dictionary."""
@@ -307,7 +302,7 @@ class FLServer(Server):
         state_dict_to_dist = self.get_best_model_state_dict() if test else self.serverstate.model.state_dict()
         try:
             for client in self.clients.values():
-                 client.set_model_state(state_dict_to_dist, test) # Client loads CPU state dict
+                client.set_model_state(state_dict_to_dist, test) # Client loads CPU state dict
         except Exception as e: print(f"Error distributing state_dict: {e}")
 
 
