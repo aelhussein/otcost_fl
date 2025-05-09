@@ -114,6 +114,7 @@ for dataset in "${datasets[@]}"; do
     if [ "$use_gpu" = true ]; then
         partition="gpu"
         gres_line="#SBATCH --gres=gpu:1"
+        
     else
         partition="cpu"
         gres_line=""
@@ -136,6 +137,7 @@ ${gres_line}
 #SBATCH --time=30:00:00
 #SBATCH --output=logs/outputs/${job_name}.txt
 #SBATCH --error=logs/errors/${job_name}.txt
+#SBATCH --exclude=ne1dg6-004
 
 # Activate the environment
 source ${ENV_PATH} ${ENV_NAME}

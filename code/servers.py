@@ -98,7 +98,6 @@ class Server:
             List of (client_id, result) tuples in deterministic order
         """
         max_parallel = getattr(self.config, 'max_parallel_clients', None)
-        
         # If max_parallel is None or 1, run serially (original behavior)
         if max_parallel is None or max_parallel <= 1 or len(self.clients) <= 1:
             results = []
@@ -180,6 +179,8 @@ class Server:
         if 'client_metrics' not in self.history:
             self.history['client_metrics'] = []
         self.history['client_metrics'].append(client_round_metrics)
+        # Hooks
+        self.after_step_hook(client_outputs)
 
         # Server Model Updates (if applicable)
         if not use_personal and states_for_agg:
@@ -188,8 +189,6 @@ class Server:
         elif not use_personal:
             print(f"Warning: No client states for aggregation round {current_round + 1}.")
 
-        # Hooks
-        self.after_step_hook(client_outputs)
 
         # Capture Round 0 State (Based on current global model after potential aggregation)
         if current_round == 0 and self.round_0_state_dict is None:

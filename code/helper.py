@@ -18,6 +18,7 @@ import copy
 from functools import partial
 import sklearn.metrics as metrics
 from losses import WeightedCELoss, ISICLoss, get_dice_loss, get_dice_score # Custom loss function
+import torch.nn.functional as F
 
 # Import global config directly
 from configs import DEFAULT_PARAMS # Needed for config helpers
@@ -128,7 +129,7 @@ class TrainerConfig:
     rounds: int = 1
     requires_personal_model: bool = False
     algorithm_params: Dict[str, Any] = field(default_factory=dict)
-    max_parallel_clients: Optional[int] = None,
+    max_parallel_clients: Optional[int] = None
     use_weighted_loss: bool = False 
 
 
@@ -243,64 +244,114 @@ def get_model_instance(dataset_name: str, **model_params) -> nn.Module:
     else:
         return model_class().cpu()
 
-# --- Model Comparison (Simplified) ---
-class ModelDiversity:
-    """Calculates basic diversity metrics between model weights."""
-    def __init__(self, client_1, client_2): self.client_1, self.client_2 = client_1, client_2
-    def _get_weights(self, client) -> Optional[torch.Tensor]:
-        # Simplified access assuming client has .model and potentially .personal_model
-        model = client.global_state.model
-        weights = [p.data.cpu().detach().view(-1) for p in model.parameters() if p.requires_grad]
-        if weights:
-            return torch.cat(weights)
-        return None
-
-    def calculate_weight_divergence(self) -> Tuple[float, float]:
-        """Calculate L2 distance and cosine similarity between normalized model weights."""
-        w1, w2 = self._get_weights(self.client_1), self._get_weights(self.client_2)
-        
-        # Handle missing weights cases
-        if w1 is None or w2 is None or w1.numel()==0 or w2.numel()==0:
-            return np.nan, np.nan
-            
-        # Normalize weights
-        n1, n2 = torch.norm(w1), torch.norm(w2)
-        w1n, w2n = w1 / (n1 + 1e-9), w2 / (n2 + 1e-9)
-        
-        # Calculate metrics
-        l2 = torch.norm(w1n - w2n, p=2).item()
-        cos = torch.dot(w1n, w2n).item()
-        return l2, cos
-    
 # =============================================================================
 # == Mixin for Diversity Calculation ==
 # =============================================================================
 class DiversityMixin:
-    """Mixin class to add diversity calculation."""
+    """Mixin class to calculate weight update divergence using Zhao et al. metric."""
     def __init__(self, *args, **kwargs):
-        # Ensure history exists
+        # Initialize history metrics for tracking
         getattr(self, 'history', {}).setdefault('weight_div', [])
         getattr(self, 'history', {}).setdefault('weight_orient', [])
-        self.diversity_calculator: Optional[ModelDiversity] = None
-
-    def _setup_diversity_calculator(self):
-        if self.diversity_calculator is None and hasattr(self, 'clients') and len(self.clients) >= 2:
-             client_ids = list(self.clients.keys())
-             self.diversity_calculator = ModelDiversity(self.clients[client_ids[0]], self.clients[client_ids[1]])
-
+        
+        # Store global weights before training
+        self.global_weights_before_training = None
+        
+        # Store original train_round method to patch it
+        if hasattr(self, 'train_round'):
+            self._original_train_round = self.train_round
+            self.train_round = self._patched_train_round
+    
+    def _extract_weights(self, model) -> torch.Tensor:
+        """Extract weights from a model as a flat tensor."""
+        weights = [p.data.cpu().detach().clone().view(-1) for p in model.parameters() if p.requires_grad]
+        if weights:
+            return torch.cat(weights).float()
+        return None
+    
+    def _patched_train_round(self) -> None:
+        """Patched version of train_round that captures weights before training."""
+        # Capture global weights before training
+        if hasattr(self, 'serverstate') and hasattr(self.serverstate, 'model'):
+            self.global_weights_before_training = self._extract_weights(self.serverstate.model)
+        
+        # Call original train_round
+        return self._original_train_round()
+    
+    def _calculate_update_divergence(self, client_states):
+        """Calculate weight update divergence between clients."""
+        if self.global_weights_before_training is None or len(client_states) < 2:
+            return np.nan, np.nan
+        
+        # Extract client updates
+        client_updates = []
+        for state_info in client_states:
+            if 'state_dict' in state_info:
+                from helper import get_model_instance
+                # Create a temporary model with this state
+                temp_model = get_model_instance(self.config.dataset_name)
+                temp_model.load_state_dict(state_info['state_dict'])
+                
+                # Calculate update from global model
+                client_weights = self._extract_weights(temp_model)
+                client_update = client_weights - self.global_weights_before_training
+                client_updates.append(client_update)
+                
+                # Clean up
+                del temp_model
+        
+        # Calculate metrics between first two clients
+        if len(client_updates) >= 2:
+            # L2 norm of difference divided by norm of second client's update (Zhao metric)
+            update_diff = client_updates[0] - client_updates[1]
+            norm_diff = torch.norm(update_diff, p=2)
+            norm_second = torch.norm(client_updates[1], p=2)
+            
+            # Calculate L2 divergence
+            if norm_second > 1e-10:
+                l2_div = (norm_diff / norm_second).item()
+            else:
+                l2_div = np.nan
+                
+            # Calculate cosine similarity
+            norm_first = torch.norm(client_updates[0], p=2)
+            if norm_first > 1e-10 and norm_second > 1e-10:
+                cos_sim = torch.dot(client_updates[0], client_updates[1]) / (norm_first * norm_second)
+                cos_sim = cos_sim.item()
+                # Clamp to valid range
+                cos_sim = max(min(cos_sim, 1.0), -1.0)
+            else:
+                cos_sim = np.nan
+                
+            return l2_div, cos_sim
+        
+        return np.nan, np.nan
+    
     def after_step_hook(self, step_results: List[Tuple[str, Any]]):
-        # Check if it was a training step returning state dicts
+        """Calculate divergence after client training."""
+        # Check if this is a training step with state dicts
         is_training_step = any(isinstance(res, dict) and 'state_dict' in res for _, res in step_results)
-        if is_training_step:
-            self._setup_diversity_calculator()
-            if self.diversity_calculator:
-                try:
-                    div, orient = self.diversity_calculator.calculate_weight_divergence()
-                    self.history['weight_div'].append(div)
-                    self.history['weight_orient'].append(orient)
-                except Exception:
-                    self.history['weight_div'].append(np.nan); self.history['weight_orient'].append(np.nan)
-        # super().after_step_hook(step_results) # Call next hook if needed
+        if not is_training_step:
+            return
+            
+        # Extract client states from step_results
+        client_states = []
+        for client_id, output_dict in step_results:
+            if isinstance(output_dict, dict) and 'state_dict' in output_dict:
+                client_states.append({
+                    'client_id': client_id,
+                    'state_dict': output_dict['state_dict'],
+                    'weight': getattr(self.clients[client_id].data, 'weight', 0.0) 
+                })
+        
+        # Calculate divergence metrics
+        if len(client_states) >= 2:
+            l2_div, cos_sim = self._calculate_update_divergence(client_states)
+            
+            # Store metrics in history
+            self.history['weight_div'].append(l2_div)
+            self.history['weight_orient'].append(cos_sim)
+            
 
 class MetricsCalculator:
     def __init__(self, dataset_name):
