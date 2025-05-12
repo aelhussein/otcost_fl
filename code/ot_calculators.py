@@ -1077,7 +1077,7 @@ class DirectOTCalculator(BaseOTCalculator):
                             mu_2, sigma_2 = self._get_normal_params(h2_label)
                             # Calculate Hellinger distance
                             if label1 != label2:
-                                hellinger_dist = 1 + self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
+                                hellinger_dist = 4 /(len(unique_labels1) +len(unique_labels1)) + self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
                             else:
                                 hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
                             #hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
@@ -1091,8 +1091,8 @@ class DirectOTCalculator(BaseOTCalculator):
                                     label_pair_distances[(label1, label2)] = 2
                                     self.results['label_costs'].append(((label1, label2), 2))
                                 else:
-                                    label_pair_distances[(label1, label2)] = 1
-                                    self.results['label_costs'].append(((label1, label2), 1))
+                                    label_pair_distances[(label1, label2)] = 0.5
+                                    self.results['label_costs'].append(((label1, label2), 0.5))
                                 if verbose:
                                     logger.warning(f"Hellinger distance calculation failed for labels {label1},{label2}")
                         else:
@@ -1102,8 +1102,8 @@ class DirectOTCalculator(BaseOTCalculator):
                                 label_pair_distances[(label1, label2)] = 2
                                 self.results['label_costs'].append(((label1, label2), 2))
                             else:
-                                label_pair_distances[(label1, label2)] = 1
-                                self.results['label_costs'].append(((label1, label2), 1))
+                                label_pair_distances[(label1, label2)] = 0.5
+                                self.results['label_costs'].append(((label1, label2), 0.5))
                             if verbose:
                                 logger.info(f"Not enough samples for labels {label1},{label2}.")
                 

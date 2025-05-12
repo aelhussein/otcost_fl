@@ -260,8 +260,8 @@ class IXITiny(nn.Module):
     def __init__(self):
         super(IXITiny, self).__init__()
         self.CHANNELS_DIMENSION = 1
-        self.SPATIAL_DIMENSIONS = (2, 3, 4) # Not directly used in this class, but good for reference
-
+        self.SPATIAL_DIMENSIONS = (2, 3, 4)
+        self.load = False # pretrained
         self.model = UNet(
             in_channels=1,
             out_classes=2,
@@ -275,34 +275,27 @@ class IXITiny(nn.Module):
         )
         
         # --- Determine bottleneck channels ---
-        self.bottleneck_channels = 64 # Hardcoding based on your printout
-        # A more robust way if the UNet structure is always the same:
         try:
-            # This assumes EncodingBlock -> ConvolutionalBlock -> Conv3d
             self.bottleneck_channels = self.model.bottom_block.conv2.conv_layer.out_channels
-            #print(f"Dynamically determined bottleneck channels: {self.bottleneck_channels}")
         except AttributeError:
+            self.bottleneck_channels = 64 # fallback value
             print(f"Could not dynamically determine bottleneck channels, using hardcoded {self.bottleneck_channels}")
-            # Fallback if the structure is different or not yet fully initialized for introspection
 
 
         # --- Add layers for representation extraction ---
         # Global Average Pooling for 3D feature maps
         self.global_avg_pool = nn.AdaptiveAvgPool3d((1, 1, 1))
-        # LayerNorm for the resulting vector -no gradient for training
+        # LayerNorm
         self.representation_layernorm = nn.LayerNorm(self.bottleneck_channels, elementwise_affine=False)
 
         # --- Load pretrained weights ---
-        # Load weights *after* defining the UNet model structure fully
-        # but *before* potentially modifying requires_grad if you only want to fine-tune parts
         try:
-            pass
-            # checkpoint = torch.load(
-            #     f'{ROOT_DIR}/data/IXITiny/whole_images_epoch_5.pth',
-            #     map_location=torch.device('cpu')
-            # )
-            # self.model.load_state_dict(checkpoint['weights'])
-            #print("Successfully loaded pre-trained weights for self.model.")
+            if self.load:
+                checkpoint = torch.load(
+                    f'{ROOT_DIR}/data/IXITiny/whole_images_epoch_5.pth',
+                    map_location=torch.device('cpu')
+                )
+                self.model.load_state_dict(checkpoint['weights'])
         except Exception as e:
             print(f"Could not load pre-trained weights: {e}. Model will use initial weights.")
 
@@ -314,16 +307,14 @@ class IXITiny(nn.Module):
     def forward(self, x, rep_vector = False):
         # Manually pass data through UNet components to extract bottleneck features
         skip_connections, features_for_bottom = self.model.encoder(x)
+        skip_connections = [torch.zeros_like(s) for s in skip_connections]
         # 2. Bottom block (Bottleneck)
         bottleneck_output_3d = self.model.bottom_block(features_for_bottom)
-        # Shape: (batch_size, self.bottleneck_channels, D, H, W)
         # --- Representation Extraction ---
-        # Apply Global Average Pooling: (B, C, D, H, W) -> (B, C, 1, 1, 1)
         pooled_representation = self.global_avg_pool(bottleneck_output_3d)
 
-        # Flatten: (B, C, 1, 1, 1) -> (B, C)
         flattened_representation = pooled_representation.view(pooled_representation.size(0), -1)
-        # Apply LayerNorm
+
         self.representation_vector = self.representation_layernorm(flattened_representation)
         # --- End Representation Extraction ---
         if rep_vector:
@@ -339,28 +330,6 @@ class IXITiny(nn.Module):
         probabilities = F.softmax(logits, dim=self.CHANNELS_DIMENSION)
 
         return probabilities
-
-    def count_trainable_params(self):
-        """Count and print the number of trainable parameters"""
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.parameters())
-        print(f"Total parameters: {total_params:,}")
-        print(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params:.2%} of total)")
-
-        for name, module in self.named_children():
-            module_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
-            if module_params > 0:
-                print(f"  - {name}: {sum(p.numel() for p in module.parameters()):,} parameters, {module_params:,} trainable")
-            # For self.model (UNet), let's also see its main components
-            if name == "model" and isinstance(module, UNet):
-                unet_total_params = sum(p.numel() for p in module.parameters())
-                unet_trainable_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
-                print(f"    UNet breakdown (Total: {unet_total_params:,}, Trainable: {unet_trainable_params:,}):")
-                for sub_name, sub_module in module.named_children():
-                    sub_module_total_params = sum(p.numel() for p in sub_module.parameters())
-                    sub_module_trainable_params = sum(p.numel() for p in sub_module.parameters() if p.requires_grad)
-                    if sub_module_total_params > 0:
-                        print(f"      - {sub_name}: {sub_module_total_params:,} parameters, {sub_module_trainable_params:,} trainable")
 
 class ISIC(nn.Module):
     def __init__(self, dropout_rate=0.25):

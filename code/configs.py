@@ -13,8 +13,8 @@ _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT  = os.path.dirname(_CURRENT_DIR)
 ROOT_DIR = _PROJECT_ROOT
 DATA_DIR = os.path.join(ROOT_DIR, 'data')
-RESULTS_DIR = os.path.join(ROOT_DIR, 'results')
-MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models')
+RESULTS_DIR = os.path.join(ROOT_DIR, 'results_2')
+MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models_2')
 ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
 
 # --- Global Settings ---
@@ -244,7 +244,7 @@ DEFAULT_PARAMS = {
         'reg_params_try':[1, 0.1, 1e-2], # Kept for potential future algo use
         'batch_size': 4,
         'epochs_per_round': 3,
-        'rounds': 50,
+        'rounds': 30,
         'rounds_tune_inner': 10,
         'runs': 10,
         'runs_tune': 3,

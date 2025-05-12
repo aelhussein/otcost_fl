@@ -10,8 +10,11 @@ code/evaluation/logs/
 *.txt
 *json
 results/
+results_2/
 activations/
+activations_2/
 saved_models/
+saved_models_2/
 __pycache__/
 */__pycache__/
 *.pyc

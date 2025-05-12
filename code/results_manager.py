@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, Tuple, Optional, List, Union
 import numpy as np
 import torch
-
+from configs import ROOT_DIR, MODEL_SAVE_DIR, RESULTS_DIR
 # Import from helper.py
 from helper import MetricKey, ExperimentType
 # =============================================================================
@@ -80,8 +80,8 @@ class PathBuilder:
         self.root_dir = root_dir
         self.dataset = dataset
         self.num_target_clients = num_target_clients
-        self.results_base = os.path.join(root_dir, 'results')
-        self.models_base = os.path.join(root_dir, 'saved_models')
+        self.results_base = RESULTS_DIR
+        self.models_base = MODEL_SAVE_DIR
 
         # Ensure base directories exist
         os.makedirs(self.results_base, exist_ok=True)
@@ -117,7 +117,7 @@ class PathBuilder:
         if isinstance(cost, (int, float)): 
             cost_str = f"{float(cost):.4f}"
 
-        model_dir = os.path.join(self.models_base, self.dataset, 'evaluation')  # Models only for eval
+        model_dir = os.path.join(self.models_base, self.dataset, 'evaluation')  
         os.makedirs(model_dir, exist_ok=True)
 
         filename = (f"{self.dataset}_{num_clients_run}clients_"
