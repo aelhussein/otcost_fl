@@ -14,7 +14,7 @@ class OTConfig:
     Stores method type, name, and parameters.
     """
     # Define known method types to prevent typos
-    KNOWN_METHOD_TYPES = {'feature_error', 'decomposed', 'direct_ot'}
+    KNOWN_METHOD_TYPES = {'feature_error', 'direct_ot'}
 
     def __init__(self, method_type: str, name: str, params: Optional[Dict[str, Any]] = None):
         """
@@ -102,54 +102,6 @@ feature_error_configs = [
     # ),
 ]
 
-# Decomposed OT Configurations
-decomposed_configs = [
-    # OTConfig(
-    #     method_type='decomposed',
-    #     name='Decomp_Mean',
-    #     params={
-    #         'use_loss_weighting': False,
-    #         'normalize_emd': True,
-    #         'normalize_cost': True,
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'alpha_within': 1.0,
-    #         'beta_within': 0.0,
-    #         'aggregate_conditional_method': 'mean',
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
-    # OTConfig(
-    #     method_type='decomposed',
-    #     name='Decomp_ClassShare',
-    #     params={
-    #         'use_loss_weighting': False,
-    #         'normalize_emd': True,
-    #         'normalize_cost': True,
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'alpha_within': 1.0,
-    #         'beta_within': 0.0,
-    #         'aggregate_conditional_method': 'class_share',
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
-    # OTConfig(
-    #     method_type='decomposed',
-    #     name='Decomp_LossWeighted_AvgLoss',
-    #     params={
-    #         'use_loss_weighting': True,
-    #         'normalize_emd': True,
-    #         'normalize_cost': True,
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'alpha_within': 1.0,
-    #         'beta_within': 0.0,
-    #         'aggregate_conditional_method': 'avg_loss',
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
-]
 
 # Direct OT Configurations
 direct_ot_configs = [
@@ -214,4 +166,4 @@ direct_ot_configs = [
 ]
 
 # Combined configuration list for convenience
-all_configs = feature_error_configs + decomposed_configs + direct_ot_configs
+all_configs = feature_error_configs + direct_ot_configs

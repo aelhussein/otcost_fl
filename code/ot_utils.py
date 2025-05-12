@@ -307,68 +307,6 @@ def validate_samples_for_ot(
     return all_sufficient, indices_to_use
 
 
-def validate_samples_for_decomposed_ot(
-    features_by_label: Dict[str, Dict[int, np.ndarray]],
-    min_samples: int = 20,
-    max_samples: int = 900
-) -> Tuple[Dict[int, bool], Dict[str, Dict[int, np.ndarray]]]:
-    """
-    Validates which labels have sufficient samples and samples down if exceeding maximum.
-    
-    Args:
-        features_by_label: Dictionary with structure {client_id: {label: features}}
-        min_samples: Minimum number of samples required per label per client
-        max_samples: Maximum number of samples to use per label per client
-        
-    Returns:
-        Tuple containing:
-            - Dict: Mapping labels to whether they have sufficient samples in all clients
-            - Dict: Nested dictionary mapping {client_id: {label: indices_to_use}}
-    """
-    # Collect all unique labels across clients
-    all_labels = set()
-    for client_labels in features_by_label.values():
-        all_labels.update(client_labels.keys())
-    
-    # Check each label
-    label_validity = {}
-    indices_by_client_label = {client_id: {} for client_id in features_by_label.keys()}
-    
-    for label in all_labels:
-        valid = True
-        for client_id, label_dict in features_by_label.items():
-            # Check if this client has this label
-            if label not in label_dict:
-                valid = False
-                logger.info(f"Client {client_id} is missing label {label}")
-                break
-            
-            # Check sample count
-            n_samples = len(label_dict[label])
-            if n_samples < min_samples:
-                valid = False
-                logger.info(f"Client {client_id} has insufficient samples for label {label}: "
-                          f"{n_samples} < {min_samples}")
-            
-            # Store indices for this label (sampling if needed)
-            # Only sample if strictly greater than max_samples
-            if n_samples > max_samples:
-                # Sample down to max_samples
-                rng = np.random.RandomState(42 + label)  # Seed varies by label for diversity
-                indices = rng.choice(n_samples, max_samples, replace=False)
-                indices.sort()  # Keep original order
-                logger.info(f"Label {label}, client {client_id} samples reduced: {n_samples} → {max_samples}")
-            else:
-                # Use all samples
-                indices = np.arange(n_samples)
-                
-            indices_by_client_label[client_id][label] = indices
-        
-        label_validity[label] = valid
-    
-    return label_validity, indices_by_client_label
-
-
 def apply_sampling_to_data(
     tensors_dict: Dict[str, Optional[torch.Tensor]], 
     indices_dict: Dict[str, np.ndarray]

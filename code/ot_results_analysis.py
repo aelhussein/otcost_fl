@@ -28,8 +28,6 @@ def pivot_results_comparison(results_df: pd.DataFrame) -> pd.DataFrame:
     def get_primary_metric(row):
         if row['OT_Method'] == 'feature_error':
             return row['FeatureErrorOT_Cost'] # Lower is better
-        elif row['OT_Method'] == 'decomposed':
-            return row['Decomposed_CombinedScore'] # Lower is better
         elif row['OT_Method'] == 'fixed_anchor':
             return row['FixedAnchor_TotalCost']
         elif row['OT_Method'] == 'direct_ot':
@@ -100,14 +98,10 @@ def plot_ot_metrics_vs_perf_delta(
     # --- Define Primary Metric per Method ---
     primary_metric_map = {
         'feature_error': 'FeatureErrorOT_Cost',
-        'decomposed': 'Decomposed_CombinedScore',
-        'fixed_anchor': 'FixedAnchor_TotalCost',
         'direct_ot': 'DirectOT_Cost'
     }
     metric_labels = {
         'feature_error': 'Feature-Error OT Cost',
-        'decomposed': 'Decomposed Combined Score',
-        'fixed_anchor': 'Fixed Anchor Total Cost',
         'direct_ot': 'Direct OT Cost'
     }
 

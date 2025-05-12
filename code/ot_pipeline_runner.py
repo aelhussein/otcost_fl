@@ -172,9 +172,6 @@ class PipelineRunner:
                         # Initialize OT result columns
                         'FeatureErrorOT_Cost': np.nan,
                         'FeatureErrorOT_Weighting': None,
-                        'Decomposed_LabelEMD': np.nan,
-                        'Decomposed_ConditionalOT': np.nan,
-                        'Decomposed_CombinedScore': np.nan,
                         'DirectOT_Cost': np.nan,
                         'DirectOT_DistMethod': None,
                         'DirectOT_Weighting': None,
@@ -250,9 +247,6 @@ class PipelineRunner:
             'Delta': delta,
             'FeatureErrorOT_Cost': np.nan,
             'FeatureErrorOT_Weighting': None,
-            'Decomposed_LabelEMD': np.nan,
-            'Decomposed_ConditionalOT': np.nan,
-            'Decomposed_CombinedScore': np.nan,
             'DirectOT_Cost': np.nan,
             'DirectOT_DistMethod': None,
             'DirectOT_Weighting': None,
@@ -266,10 +260,6 @@ class PipelineRunner:
         if method_type == 'feature_error':
             row_data['FeatureErrorOT_Cost'] = ot_results.get('ot_cost', np.nan)
             row_data['FeatureErrorOT_Weighting'] = ot_results.get('weighting_used', None)
-        elif method_type == 'decomposed':
-            row_data['Decomposed_LabelEMD'] = ot_results.get('label_emd', np.nan)
-            row_data['Decomposed_ConditionalOT'] = ot_results.get('conditional_ot_agg', np.nan)
-            row_data['Decomposed_CombinedScore'] = ot_results.get('combined_score', np.nan)
         elif method_type == 'direct_ot':
             row_data['DirectOT_Cost'] = ot_results.get('direct_ot_cost', np.nan)
             row_data['DirectOT_DistMethod'] = ot_results.get('feature_distance_method', None)
@@ -282,7 +272,6 @@ class PipelineRunner:
             'Param_Set_Name', 'OT_Method', 'Run_Status',
             'Local_Final', 'FedAvg_Final', 'Delta',
             'FeatureErrorOT_Cost', 'FeatureErrorOT_Weighting',
-            'Decomposed_CombinedScore', 'Decomposed_LabelEMD', 'Decomposed_ConditionalOT',
             'DirectOT_Cost', 'DirectOT_DistMethod', 'DirectOT_Weighting'
         ]
         
