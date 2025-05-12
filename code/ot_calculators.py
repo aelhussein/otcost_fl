@@ -10,7 +10,7 @@ from ot_configs import OTConfig
 
 # Import utilities from ot_utils.py
 from ot_utils import (
-    compute_ot_cost, pairwise_euclidean_sq, calculate_label_emd, compute_anchors,
+    compute_ot_cost, pairwise_euclidean_sq, calculate_label_emd,
     validate_samples_for_ot, validate_samples_for_decomposed_ot,
     DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER, DEFAULT_EPS, calculate_sample_loss, 
     prepare_ot_marginals, normalize_cost_matrix
@@ -907,8 +907,8 @@ class DirectOTCalculator(BaseOTCalculator):
         feature_weight = params.get('feature_weight', 2.0)
         label_weight = params.get('label_weight', 1.0)
         compress_vectors = params.get('compress_vectors', True)
-        compression_threshold = params.get('compression_threshold', 20)
-        compression_ratio = params.get('compression_ratio', 0.8)  # Used for PCA variance ratio
+        compression_threshold = params.get('compression_threshold', 10)
+        compression_ratio = params.get('compression_ratio', 5)  # Used for PCA variance ratio
         reg = params.get('reg', DEFAULT_OT_REG)
         max_iter = params.get('max_iter', DEFAULT_OT_MAX_ITER)
         min_samples_threshold = params.get('min_samples', 20)
@@ -946,6 +946,7 @@ class DirectOTCalculator(BaseOTCalculator):
         p1_prob = proc_data1.get('p_prob')  # Initialize explicitly, might be None
         p2_prob = proc_data2.get('p_prob')  # Initialize explicitly, might be None
         N, M = h1.shape[0], h2.shape[0]
+        
         
         # Validate sample counts
         features_dict = {
@@ -1066,7 +1067,6 @@ class DirectOTCalculator(BaseOTCalculator):
                         # Get indices for each label
                         indices1 = np.where(y1_np == label1)[0]
                         indices2 = np.where(y2_np == label2)[0]
-                        
                         if len(indices1) >= 2 and len(indices2) >= 2:  # Need at least 2 samples to estimate distribution
                             # Get features for each label
                             h1_label = h1_comp[indices1]
@@ -1076,25 +1076,34 @@ class DirectOTCalculator(BaseOTCalculator):
                             mu_1, sigma_1 = self._get_normal_params(h1_label)
                             mu_2, sigma_2 = self._get_normal_params(h2_label)
                             # Calculate Hellinger distance
-                            # if (label1 == label2) and (len(unique_labels1) > 1) and (len(unique_labels2 ) >  1):
-                            #     hellinger_dist = 0.5 #Avg ie no effect
-                            # else:
-                            #     hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
-                            hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
+                            if label1 != label2:
+                                hellinger_dist = 1 + self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
+                            else:
+                                hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
+                            #hellinger_dist = self._hellinger_distance(mu_1, sigma_1, mu_2, sigma_2)
                             if hellinger_dist is not None:
                                 label_pair_distances[(label1, label2)] = hellinger_dist
                                 # Store for reporting
                                 self.results['label_costs'].append(((label1, label2), hellinger_dist))
                             else:
+                                if label1 != label2:
                                 # Fallback to a neutral midpoint if calculation fails
-                                label_pair_distances[(label1, label2)] = 1
-                                self.results['label_costs'].append(((label1, label2), 1))
+                                    label_pair_distances[(label1, label2)] = 2
+                                    self.results['label_costs'].append(((label1, label2), 2))
+                                else:
+                                    label_pair_distances[(label1, label2)] = 1
+                                    self.results['label_costs'].append(((label1, label2), 1))
                                 if verbose:
                                     logger.warning(f"Hellinger distance calculation failed for labels {label1},{label2}")
                         else:
                             # Not enough samples for distribution, use midpoint
-                            label_pair_distances[(label1, label2)] = 1
-                            self.results['label_costs'].append(((label1, label2), 1))
+                            if label1 != label2:
+                            # Fallback to a neutral midpoint if calculation fails
+                                label_pair_distances[(label1, label2)] = 2
+                                self.results['label_costs'].append(((label1, label2), 2))
+                            else:
+                                label_pair_distances[(label1, label2)] = 1
+                                self.results['label_costs'].append(((label1, label2), 1))
                             if verbose:
                                 logger.info(f"Not enough samples for labels {label1},{label2}.")
                 
@@ -1106,10 +1115,7 @@ class DirectOTCalculator(BaseOTCalculator):
                         pair_key = (label_i, label_j)
                         if pair_key in label_pair_distances:
                             label_cost_matrix[i, j] = label_pair_distances[pair_key]
-                        else:
-                            # Default if pair wasn't calculated (should be rare)
-                            label_cost_matrix[i, j] = 0.5
-                
+
                 # Store the label cost matrix
                 self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
                 
@@ -1246,8 +1252,8 @@ class DirectOTCalculator(BaseOTCalculator):
             s2_vals, s2_vecs = np.linalg.eigh(sigma_2)
             
             # Reconstruct with only positive eigenvalues
-            s1_vals = np.maximum(s1_vals, 1e-6)
-            s2_vals = np.maximum(s2_vals, 1e-6)
+            s1_vals = np.maximum(s1_vals, 1e-2)
+            s2_vals = np.maximum(s2_vals, 1e-2)
             
             s1_recon = s1_vecs @ np.diag(s1_vals) @ s1_vecs.T
             s2_recon = s2_vecs @ np.diag(s2_vals) @ s2_vecs.T
