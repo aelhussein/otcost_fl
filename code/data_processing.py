@@ -203,16 +203,18 @@ class DataPreprocessor:
         
         train_loader = DataLoader(
             train_dataset, batch_size=self.batch_size, shuffle=True, 
-            num_workers=N_WORKERS, generator=g_train, drop_last=False, 
+            num_workers=N_WORKERS, generator=g_train, drop_last=False, pin_memory=True,
             persistent_workers=(N_WORKERS>0)) if train_dataset else DataLoader([])
             
         val_loader = DataLoader(
             val_dataset, batch_size=self.batch_size, shuffle=False, 
-            num_workers=N_WORKERS, persistent_workers=(N_WORKERS>0)) if val_dataset else DataLoader([])
+            num_workers=N_WORKERS, pin_memory=True,
+            persistent_workers=(N_WORKERS>0)) if val_dataset else DataLoader([])
             
         test_loader = DataLoader(
             test_dataset, batch_size=self.batch_size, shuffle=False, 
-            num_workers=N_WORKERS, persistent_workers=(N_WORKERS>0)) if test_dataset else DataLoader([])
+            num_workers=N_WORKERS, pin_memory=True,
+            persistent_workers=(N_WORKERS>0)) if test_dataset else DataLoader([])
 
         return train_loader, val_loader, test_loader
 

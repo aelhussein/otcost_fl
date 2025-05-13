@@ -100,6 +100,20 @@ feature_error_configs = [
     #         'verbose':VERBOSE,
     #     }
     # ),
+#     OTConfig(
+#     method_type='feature_error',
+#     name='FE_WithinClass',
+#     params={
+#         'use_loss_weighting': False,
+#         'normalize_cost': True,
+#         'min_samples': 20,
+#         'max_samples': 900,
+#         'alpha': 1.0, 
+#         'beta': 1.0,
+#         'within_class_only': True,
+#         'verbose': VERBOSE,
+#     }
+# ),
 ]
 
 
@@ -149,6 +163,21 @@ direct_ot_configs = [
             'verbose':VERBOSE,
         }
     ),
+    OTConfig(
+    method_type='direct_ot',
+    name='Direct_WithinClass',
+    params={
+        'use_loss_weighting': False,
+        'normalize_activations': True,
+        'normalize_cost': True,
+        'distance_method': 'cosine',
+        'min_samples': 20,
+        'max_samples': 900,
+        'use_label_hellinger': False,  # No need for Hellinger in within-class mode
+        'within_class_only': True,
+        'verbose': VERBOSE,
+    }
+),
     # OTConfig(
     #     method_type='direct_ot',
     #     name='Direct_LossWeighted',

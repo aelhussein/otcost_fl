@@ -19,7 +19,7 @@ ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
 
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-N_WORKERS = 0 # Use 0 for simplicity/debugging
+N_WORKERS = 4 # Use 0 for simplicity/debugging
 
 # --- Supported Algorithms ---
 ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
@@ -181,7 +181,7 @@ DEFAULT_PARAMS = {
         },
         'samples_per_client': 5000,
         'batch_size': 512,
-        'fixed_classes': 10, # Already in COMMON_IMAGE_PARAMS, explicit here for clarity
+        'fixed_classes': 10, 
         # criterion_type defaults to "CrossEntropyLoss"
     },
     'EMNIST': {

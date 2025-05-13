@@ -45,35 +45,6 @@ class Synthetic(torch.nn.Module):
         x = x.squeeze(1)
         return self.fc(x)
 
-
-class Heart(torch.nn.Module):
-    def __init__(self, dropout_rate=0.3):
-        super(Heart, self).__init__()
-        self.input_size = 10
-        self.hidden_size = 10
-        
-        self.fc = torch.nn.Sequential(
-            nn.Linear(self.input_size, self.hidden_size),
-            nn.LayerNorm(self.hidden_size),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(self.hidden_size, 5)
-        )
-        
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        for layer in self.fc:
-            if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
-                nn.init.constant_(layer.bias, 0)
-    
-    def forward(self, x):
-        x = x.squeeze(1)
-        if x.dtype != torch.float32:
-            x = x.float()
-        return self.fc(x)
-
 class Credit(torch.nn.Module):
     def __init__(self, dropout_rate=0.3):
         super(Credit, self).__init__()
@@ -255,7 +226,124 @@ class CIFAR(nn.Module):
         out = self.fc3(out)
         return out
     
+class CIFAR(nn.Module):
+    def __init__(self, dropout_rate=0.25):
+        super(CIFAR, self).__init__()
+        
+        # Custom scaling layer
+        class Mul(nn.Module):
+            def __init__(self, scale):
+                super().__init__()
+                self.scale = scale
+            def forward(self, x):
+                return x * self.scale
+        
+        # Initial block with 2x2 kernel (no padding)
+        self.block1 = nn.Sequential(
+            nn.Conv2d(3, 24, kernel_size=2, padding=0, bias=True),
+            nn.GELU(),
+        )
+        
+        # Block 2
+        self.block2 = nn.Sequential(
+            nn.Conv2d(24, 64, kernel_size=3, padding='same', bias=False),
+            nn.MaxPool2d(2),
+            nn.BatchNorm2d(64), 
+            nn.GELU(),
+            nn.Conv2d(64, 64, kernel_size=3, padding='same', bias=False),
+            nn.BatchNorm2d(64), 
+            nn.GELU(),
+        )
+        
+        # Block 3
+        self.block3 = nn.Sequential(
+            nn.Conv2d(64, 256, kernel_size=3, padding='same', bias=False),
+            nn.MaxPool2d(2),
+            nn.BatchNorm2d(256), 
+            nn.GELU(),
+            nn.Conv2d(256, 256, kernel_size=3, padding='same', bias=False),
+            nn.BatchNorm2d(256), 
+            nn.GELU(),
+        )
+        
+        # Block 4
+        self.block4 = nn.Sequential(
+            nn.Conv2d(256, 256, kernel_size=3, padding='same', bias=False),
+            nn.MaxPool2d(2),
+            nn.BatchNorm2d(256), 
+            nn.GELU(),
+            nn.Conv2d(256, 256, kernel_size=3, padding='same', bias=False),
+            nn.BatchNorm2d(256), 
+            nn.GELU(),
+        )
+        
+        # Pooling and scaling
+        self.pool = nn.MaxPool2d(3)
+        self.scaling = Mul(1/9)
+        
+        # Calculate the flattened size after pooling - for 32x32 input
+        self.flattened_size = 256  # After multiple pooling layers and final MaxPool(3)
+        
+        # FC layers with LayerNorm from original implementation
+        self.ln1 = nn.LayerNorm(self.flattened_size)
+        self.fc1 = nn.Linear(self.flattened_size, 256)
+        self.relu4 = nn.ReLU()
+        self.dropout_fc1 = nn.Dropout(p=dropout_rate)
+
+        self.ln2 = nn.LayerNorm(256)
+        self.fc2 = nn.Linear(256, 20)
+        self.relu5 = nn.ReLU()
+        self.dropout_fc2 = nn.Dropout(p=dropout_rate)
+
+        self.ln3 = nn.LayerNorm(20)
+        self.fc3 = nn.Linear(20, 10)  # Output layer for 10 CIFAR-10 classes
+        
+        self._initialize_weights()
     
+    def forward(self, x):
+        # Convolutional blocks
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
+        x = self.block4(x)
+        
+        # Pooling
+        x = self.pool(x)
+        
+        # Flatten
+        x = x.view(x.size(0), -1)
+        
+        # Apply scaling to the flattened features
+        x = self.scaling(x)
+        
+        # FC layers with LayerNorm
+        x = self.ln1(x)
+        x = self.fc1(x)
+        x = self.relu4(x)
+        x = self.dropout_fc1(x)
+
+        x = self.ln2(x)
+        x = self.fc2(x)
+        x = self.relu5(x)
+        x = self.dropout_fc2(x)
+
+        x = self.ln3(x)
+        x = self.fc3(x)
+        
+        return x
+    
+    def _initialize_weights(self):
+        """Initialize weights using Kaiming normal initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
 class IXITiny(nn.Module):
     def __init__(self):
         super(IXITiny, self).__init__()
@@ -321,6 +409,7 @@ class IXITiny(nn.Module):
             return self.representation_vector
 
         # 3. Decoder
+
         decoder_output = self.model.decoder(skip_connections, bottleneck_output_3d)
 
         # 4. Classifier (final 1x1x1 conv in UNet)
