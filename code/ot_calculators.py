@@ -330,7 +330,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
                         logger.info(f"Class {class_label}: Sampled client2 cols: {M_k_eff} from {M_k}")
                 
                 self.cost_matrices['feature_error_ot'] = None
-                
+
                 # Prepare marginals for this class
                 a_k, b_k = prepare_ot_marginals(
                     sampled_w1_k, sampled_w2_k, N_k_eff, M_k_eff, self.eps_num
@@ -468,7 +468,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
             )
 
             self.results['ot_cost'] = ot_cost
-            self.results['transport_plan'] = Gs
+            self.results['transport_plan'] = None
             self.results['within_class_only'] = False
             
             if verbose: 
@@ -1060,7 +1060,7 @@ class DirectOTCalculator(BaseOTCalculator):
         )
         
         self.results['direct_ot_cost'] = ot_cost
-        self.results['transport_plan'] = transport_plan
+        self.results['transport_plan'] = None
         
         if verbose:
             if np.isfinite(ot_cost):
