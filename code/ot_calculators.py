@@ -12,10 +12,9 @@ from ot_configs import OTConfig
 from ot_utils import (
     compute_ot_cost, pairwise_euclidean_sq,
     validate_samples_for_ot,
-    DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER, DEFAULT_EPS, calculate_sample_loss, 
     prepare_ot_marginals, normalize_cost_matrix
 )
-
+from ot_configs import DEFAULT_EPS, DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER
 # Configure module logger
 logger = logging.getLogger(__name__)
 
@@ -957,7 +956,6 @@ class DirectOTCalculator(BaseOTCalculator):
                 # Combine costs - multiply by whole matrix to maintain tensor shape
                 cost_matrix_k = (norm_feature_weight * cost_matrix_k + 
                                 norm_label_weight * hellinger_dist_k)
-                
                 if verbose:
                     logger.info(f"Class {class_label}: Combined cost matrix using feature cost (weight {norm_feature_weight:.2f}) "
                             f"and Hellinger distance {hellinger_dist_k:.4f} (weight {norm_label_weight:.2f})")
@@ -980,7 +978,6 @@ class DirectOTCalculator(BaseOTCalculator):
         sampled_cost_matrix_k, a_k, b_k, N_k_eff, M_k_eff = self._apply_sampling_and_prepare_marginals(
             cost_matrix_k, full_w1_k, full_w2_k, sample_indices_k, N_k, M_k, verbose
         )
-        
         # Compute OT cost for this class
         ot_cost_k, _ = compute_ot_cost(
             sampled_cost_matrix_k, a=a_k, b=b_k, reg=params['reg'], 

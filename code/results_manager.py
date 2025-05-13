@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from configs import ROOT_DIR, MODEL_SAVE_DIR, RESULTS_DIR
 # Import from helper.py
-from helper import MetricKey, ExperimentType
+from helper import MetricKey, ExperimentType, infer_higher_is_better
 # =============================================================================
 # == Data Structures ==
 # =============================================================================
@@ -183,6 +183,20 @@ class ResultsManager:
         # Check for errors within the list of records
         contains_errors = any(record.error is not None for record in results_list)
 
+        # Ensure selection criteria info is included in metadata if provided
+        selection_info = {}
+        if 'selection_criterion_key' in run_metadata:
+            selection_info['selection_criterion_key'] = run_metadata['selection_criterion_key']
+            
+            # Also include if higher is better
+            if 'selection_criterion_direction_overrides' in run_metadata:
+                direction_overrides = run_metadata['selection_criterion_direction_overrides']
+                is_higher_better = infer_higher_is_better(
+                    run_metadata['selection_criterion_key'], 
+                    direction_overrides
+                )
+                selection_info['criterion_is_higher_better'] = is_higher_better
+
         metadata = {
             'timestamp': datetime.now().isoformat(),
             'dataset': self.path_builder.dataset,
@@ -190,6 +204,7 @@ class ResultsManager:
             'num_target_clients': self.path_builder.num_target_clients,
             'contains_errors': contains_errors,
             'num_records': len(results_list),
+            **selection_info,  # Include selection criteria info
             **run_metadata  # Merge run-specific info if provided
         }
 
@@ -261,18 +276,31 @@ class ResultsManager:
         return result
 
     # --- Results Analysis & Status ---
-    def get_best_parameters(self, param_type: str, server_type: str, cost: Any) -> Optional[Any]:
+    def get_best_parameters(self, param_type: str, server_type: str, cost: Any, 
+                        tuning_target_metric_key: Optional[str] = None,
+                        dataset_direction_overrides: Optional[Dict[str, str]] = None) -> Optional[Any]:
         """
-        Finds the best hyperparameter (LR or Reg) based on lowest average
-        validation loss across runs.
+        Finds the best hyperparameter (LR or Reg) based on the specified metric across runs.
+        
+        Args:
+            param_type: Type of parameter tuning ('learning_rate' or 'reg_param')
+            server_type: Server algorithm type
+            cost: Cost value to filter records
+            tuning_target_metric_key: Metric to optimize (if None, uses 'val_losses')
+            dataset_direction_overrides: Optional overrides for determining if higher is better
+            
+        Returns:
+            The best parameter value or None if not found
         """
         records, _ = self.load_results(param_type)
         if not records:
             return None
 
-        # Use validation loss as the metric to minimize
-        metric_key = MetricKey.VAL_LOSSES
-        higher_is_better = False
+        # Default to val_losses if not specified
+        metric_key = tuning_target_metric_key or MetricKey.VAL_LOSSES
+        
+        # Determine if higher is better for this metric
+        higher_is_better = infer_higher_is_better(metric_key, dataset_direction_overrides)
 
         # Filter records for the specific cost and server
         relevant_records = [
@@ -321,7 +349,7 @@ class ResultsManager:
         if not avg_metrics:
             return None
 
-        # Find the best parameter value
+        # Find the best parameter value based on higher_is_better
         best_param = max(avg_metrics, key=avg_metrics.get) if higher_is_better else min(avg_metrics, key=avg_metrics.get)
         return best_param
 

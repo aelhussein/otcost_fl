@@ -61,9 +61,14 @@ class SingleRunExecutor:
         rounds = self.default_params.get('rounds_tune_inner') if tuning else self.default_params['rounds']
         max_parallel = self.default_params.get('max_parallel_clients', None) 
         use_weighted_loss = self.default_params.get('use_weighted_loss', False)
+        
+        # Get selection criteria from default_params
+        selection_criterion_key = self.default_params.get('selection_criterion_key', 'val_losses')
+        selection_criterion_direction_overrides = self.default_params.get('selection_criterion_direction_overrides', {})
 
         return TrainerConfig(
-            dataset_name=self.dataset_name, device=str(self.device), 
+            dataset_name=self.dataset_name,
+            device=str(self.device), 
             learning_rate=lr,
             batch_size=self.default_params['batch_size'], 
             epochs=self.default_params.get('epochs_per_round', 1),
@@ -71,8 +76,11 @@ class SingleRunExecutor:
             requires_personal_model=requires_personal_model, 
             algorithm_params=algo_params,
             max_parallel_clients=max_parallel,
-            use_weighted_loss=use_weighted_loss
+            use_weighted_loss=use_weighted_loss,
+            selection_criterion_key=selection_criterion_key,
+            selection_criterion_direction_overrides=selection_criterion_direction_overrides
         )
+
 
     def _create_server_instance(self, server_type: str, config: TrainerConfig, tuning: bool) -> Server:
         """Creates server instance with model on CPU."""
@@ -221,7 +229,7 @@ class Experiment:
 
         remaining_runs_count = target_runs - completed_runs
         if remaining_runs_count <= 0 and remaining_costs:
-             remaining_runs_count, completed_runs = target_runs, 0
+            remaining_runs_count, completed_runs = target_runs, 0
 
         print(f"Orchestrator: Starting {remaining_runs_count} run(s) for '{experiment_type}' (Runs {completed_runs + 1} to {target_runs})...")
 
@@ -251,9 +259,9 @@ class Experiment:
                     cost_results = cost_execution_func(cost, current_run_idx, current_seed, client_dataloaders, num_actual_clients)
 
                 except Exception as e: # Catch errors in dataloading or cost execution
-                     print(f"  ERROR processing cost {cost} in run {current_run_idx + 1}: {e}")
-                     run_records.append(TrialRecord(cost=cost, run_idx=current_run_idx, server_type="N/A", error=f"Cost processing error: {e}"))
-                     if num_actual_clients > 0: run_cost_client_counts[cost] = num_actual_clients # Record client count if possible
+                    print(f"  ERROR processing cost {cost} in run {current_run_idx + 1}: {e}")
+                    run_records.append(TrialRecord(cost=cost, run_idx=current_run_idx, server_type="N/A", error=f"Cost processing error: {e}"))
+                    if num_actual_clients > 0: run_cost_client_counts[cost] = num_actual_clients # Record client count if possible
 
                 if cost_results and cost_results.trial_records:
                     run_records.extend(cost_results.trial_records)
@@ -261,13 +269,22 @@ class Experiment:
 
             self.all_trial_records.extend(run_records) # Add records from this run
 
-            # Save aggregated results after each full run
-            run_meta = RunMetadata(run_idx_total=current_run_idx + 1, seed_used=current_seed,
-                                   cost_client_counts=run_cost_client_counts, dataset_name=self.config.dataset,
-                                   num_target_clients=self.num_target_clients)
-            self.results_manager.save_results(self.all_trial_records, experiment_type, vars(run_meta))
+            # Save aggregated results after each full run with selection criteria in metadata
+            run_meta = RunMetadata(
+                run_idx_total=current_run_idx + 1, 
+                seed_used=current_seed,
+                cost_client_counts=run_cost_client_counts, 
+                dataset_name=self.config.dataset,
+                num_target_clients=self.num_target_clients
+            )
+            
+            # Add selection criteria info to metadata
+            metadata_dict = vars(run_meta)
+            metadata_dict['selection_criterion_key'] = self.default_params.get('selection_criterion_key', 'val_losses')
+            metadata_dict['selection_criterion_direction_overrides'] = self.default_params.get('selection_criterion_direction_overrides', {})
+            
+            self.results_manager.save_results(self.all_trial_records, experiment_type, metadata_dict)
         # --- End Run Loop ---
-
     # --- Cost Processing Helpers ---
 
     def _tune_cost_for_run(self, cost: Any, run_idx: int, seed: int,
@@ -307,15 +324,32 @@ class Experiment:
         return CostExecutionResult(cost=cost, trial_records=trial_records)
 
     def _evaluate_cost_for_run(self, cost: Any, run_idx: int, seed: int,
-                               client_dataloaders: Dict, num_actual_clients: int
-                              ) -> CostExecutionResult:
+                            client_dataloaders: Dict, num_actual_clients: int
+                            ) -> CostExecutionResult:
         """Executes all evaluation trials (servers) for a single cost and run.""" 
         trial_records: List[TrialRecord] = []
+        
+        # Get selection criteria from default params
+        selection_criterion_key = self.default_params.get('selection_criterion_key', 'val_losses')
+        selection_criterion_direction_overrides = self.default_params.get('selection_criterion_direction_overrides', {})
 
         for server_type in ALGORITHMS: # Use global ALGORITHMS list
-            # Fetch best HPs
-            best_lr = self.results_manager.get_best_parameters(ExperimentType.LEARNING_RATE, server_type, cost)
-            best_reg = self.results_manager.get_best_parameters(ExperimentType.REG_PARAM, server_type, cost)
+            # Fetch best HPs using configured selection criterion
+            best_lr = self.results_manager.get_best_parameters(
+                ExperimentType.LEARNING_RATE, 
+                server_type, 
+                cost, 
+                selection_criterion_key,
+                selection_criterion_direction_overrides
+            )
+            best_reg = self.results_manager.get_best_parameters(
+                ExperimentType.REG_PARAM, 
+                server_type, 
+                cost,
+                selection_criterion_key,
+                selection_criterion_direction_overrides
+            )
+            
             # Use defaults if not found
             if best_lr is None: best_lr = get_default_lr(self.config.dataset)
             if best_reg is None and server_type in ['fedprox', 'pfedme', 'ditto']: best_reg = get_default_reg(self.config.dataset)
@@ -330,16 +364,16 @@ class Experiment:
             )
             # Create record
             record = TrialRecord(cost=cost, run_idx=run_idx, server_type=server_type,
-                                 metrics=trial_metrics, error=trial_metrics.get('error') or model_states.get('error'))
+                                metrics=trial_metrics, error=trial_metrics.get('error') or model_states.get('error'))
             trial_records.append(record)
 
             # Save models immediately if successful (only FedAvg for now)
             if record.error is None and server_type == 'fedavg':
                 for model_type, state_dict in model_states.items():
                     if model_type != 'error' and state_dict is not None:
-                         self.results_manager.save_model_state(
-                             state_dict, num_actual_clients, cost, seed, 'fedavg', model_type)
-                         
+                        self.results_manager.save_model_state(
+                            state_dict, num_actual_clients, cost, seed, 'fedavg', model_type)
+                        
         print(f"\n")
         # Return records, no need to return state dicts from here
         return CostExecutionResult(cost=cost, trial_records=trial_records)

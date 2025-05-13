@@ -8,6 +8,12 @@ from typing import Dict, Optional, Any, List
 # Configure module logger
 logger = logging.getLogger(__name__)
 VERBOSE = True
+# --- Constants ---
+DEFAULT_OT_REG = 0.01
+DEFAULT_OT_MAX_ITER = 5000
+DEFAULT_EPS = 1e-10
+
+
 class OTConfig:
     """
     Configuration object for a single OT calculation run.

@@ -3,6 +3,7 @@ code/divergence_metrics
 code/logs
 *ipynb
 *pkl
+archive/
 data/
 code/archive/
 results/archive

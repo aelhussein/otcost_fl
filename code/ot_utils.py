@@ -10,13 +10,9 @@ from sklearn.cluster import KMeans
 # Configure module logger
 logger = logging.getLogger(__name__)
 
-# --- Constants ---
-DEFAULT_OT_REG = 0.001
-DEFAULT_OT_MAX_ITER = 2000
-DEFAULT_EPS = 1e-10
-
-
 # --- Utility Functions for Cost Matrices ---
+from ot_configs import DEFAULT_EPS, DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER
+
 
 def normalize_cost_matrix(
     cost_matrix: Union[torch.Tensor, np.ndarray], 

@@ -13,7 +13,7 @@ import concurrent.futures
 
 # Get core types from helper
 from helper import (MetricKey, TrainerConfig, SiteData, ModelState, # Import types
-                   DiversityMixin, MetricsCalculator) # gpu_scope not strictly needed server-side
+                   DiversityMixin, MetricsCalculator, infer_higher_is_better) # gpu_scope not strictly needed server-side
 
 # Import client classes for type hints and instantiation in _create_client overrides
 from clients import Client, FedProxClient, PFedMeClient, DittoClient
@@ -34,8 +34,17 @@ class Server:
         self.serverstate: ModelState = globalmodelstate
         # Ensure server's copy of the model is on CPU
         self.serverstate.model.cpu()
+        
+        # Initialize selection criterion values
+        self.selection_criterion_key = config.selection_criterion_key
+        self.selection_criterion_direction_overrides = config.selection_criterion_direction_overrides
+        self.criterion_is_higher_better = infer_higher_is_better(
+            self.selection_criterion_key, 
+            self.selection_criterion_direction_overrides
+        )
+        
         # Server's own tracking of the best GLOBAL state encountered
-        self.best_global_loss: float = float('inf')
+        self.best_global_value_for_selection = float('-inf') if self.criterion_is_higher_better else float('inf')
         self.best_global_model_state_dict: Optional[Dict] = copy.deepcopy(self.serverstate.model.state_dict())
 
         self.server_type: str = "BaseServer"
@@ -189,7 +198,6 @@ class Server:
         elif not use_personal:
             print(f"Warning: No client states for aggregation round {current_round + 1}.")
 
-
         # Capture Round 0 State (Based on current global model after potential aggregation)
         if current_round == 0 and self.round_0_state_dict is None:
             self.round_0_state_dict = self.serverstate.model.state_dict() # Already CPU
@@ -198,11 +206,28 @@ class Server:
         self.history[MetricKey.TRAIN_LOSSES].append(round_metrics[MetricKey.TRAIN_LOSSES])
         self.history[MetricKey.VAL_LOSSES].append(round_metrics[MetricKey.VAL_LOSSES])
         self.history[MetricKey.VAL_SCORES].append(round_metrics[MetricKey.VAL_SCORES])
-        # Update Server's Best Global Model State
-        current_val_loss = round_metrics[MetricKey.VAL_LOSSES]
-        if current_val_loss < self.best_global_loss:
-            self.best_global_loss = current_val_loss
-            self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
+        
+        # Update Server's Best Global Model State based on selection criterion
+        # Get the current value for the selection criterion
+        current_value = round_metrics.get(self.selection_criterion_key)
+        if current_value is not None:
+            # Check if current value is better than previous best
+            is_better = False
+            if self.criterion_is_higher_better:
+                # For metrics where higher is better (e.g., accuracy, F1 score)
+                is_better = current_value > self.best_global_value_for_selection
+            else:
+                # For metrics where lower is better (e.g., loss, error rate)
+                is_better = current_value < self.best_global_value_for_selection
+            
+            if is_better:
+                # Log the update for clarity
+                print(f"  Updating best global model: {self.selection_criterion_key} changed from "
+                    f"{self.best_global_value_for_selection:.6f} to {current_value:.6f}")
+                
+                # Update best value and model state
+                self.best_global_value_for_selection = current_value
+                self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
 
     def test_global(self) -> None:
         """Tests the appropriate model (best global) on all clients."""
@@ -365,19 +390,19 @@ class DittoServer(FLServer):
 
         # --- 1. Global Model Update Phase ---
         def global_train_step(client: Client) -> Dict:
-             return client.train_and_validate(personal=False)
+            return client.train_and_validate(personal=False)
         global_client_outputs = self.run_clients(global_train_step)
         global_states_for_agg = [{'state_dict': out.get('state_dict'), 'weight': getattr(self.clients[cid].data, 'weight', 0.0)}
-                                 for cid, out in global_client_outputs if isinstance(out, dict) and out.get('state_dict')]
+                                for cid, out in global_client_outputs if isinstance(out, dict) and out.get('state_dict')]
         if global_states_for_agg:
             self.aggregate_models(global_states_for_agg)
             self.distribute_global_model(test=False)
 
         # --- 2. Personal Model Update Step ---
         def personal_train_step(client: Client) -> Dict:
-             result = client.train_and_validate(personal=True)
-             result.pop('state_dict', None) # Don't need personal state dict on server
-             return result
+            result = client.train_and_validate(personal=True)
+            result.pop('state_dict', None) # Don't need personal state dict on server
+            return result
         personal_client_outputs = self.run_clients(personal_train_step)
 
         # --- Aggregate and Record *Personal* Metrics ---
@@ -402,12 +427,29 @@ class DittoServer(FLServer):
             except: pass
 
         # --- Update Best *Global* Model State ---
-        # Decision: Base on the personal validation loss, as it's the primary performance metric
-        current_personal_val_loss = personal_metrics[MetricKey.VAL_LOSSES]
-        if current_personal_val_loss < self.best_global_loss:
-            self.best_global_loss = current_personal_val_loss
-            # Save the *current global* model state when the personal validation improves
-            try: self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
-            except: pass
+        # Get the appropriate metric value from personal metrics
+        current_value = personal_metrics.get(self.selection_criterion_key)
+        if current_value is not None:
+            # Check if current value is better than previous best
+            is_better = False
+            if self.criterion_is_higher_better:
+                # For metrics where higher is better (e.g., accuracy, F1 score)
+                is_better = current_value > self.best_global_value_for_selection
+            else:
+                # For metrics where lower is better (e.g., loss, error rate)
+                is_better = current_value < self.best_global_value_for_selection
+            
+            if is_better:
+                # Log the update for clarity
+                print(f"  Updating Ditto best global model: {self.selection_criterion_key} changed from "
+                    f"{self.best_global_value_for_selection:.6f} to {current_value:.6f}")
+                
+                # Update best value and model state
+                self.best_global_value_for_selection = current_value
+                # Save the *current global* model state when the personal metrics improve
+                try: 
+                    self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
+                except Exception as e:
+                    print(f"Warning: Failed to update best global model state: {e}")
 
     # test_global inherited from base Server will test personal models

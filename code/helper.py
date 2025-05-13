@@ -70,6 +70,47 @@ def get_default_reg(dataset_name: str) -> Optional[float]:
     params = get_parameters_for_dataset(dataset_name)
     return params.get('default_reg_param')
 
+def infer_higher_is_better(metric_key: str, direction_overrides: Optional[Dict[str, str]] = None) -> bool:
+    """
+    Infers whether a higher value is better for a given metric key.
+    
+    Args:
+        metric_key: The metric key to check (e.g., 'val_losses', 'val_scores')
+        direction_overrides: Optional dictionary of metric_key to direction ('higher' or 'lower')
+        
+    Returns:
+        True if higher is better, False otherwise
+    """
+    # Check if we have an explicit override
+    if direction_overrides and metric_key in direction_overrides:
+        return direction_overrides[metric_key].lower() == 'higher'
+    
+    # Define known patterns for metric names
+    KNOWN_PATTERNS = {
+        'loss': 'lower', 
+        'error': 'lower', 
+        'mae': 'lower',
+        'mse': 'lower',
+        'rmse': 'lower',
+        'accuracy': 'higher', 
+        'score': 'higher', 
+        'f1': 'higher', 
+        'auc': 'higher', 
+        'dice': 'higher',
+        'precision': 'higher',
+        'recall': 'higher'
+    }
+    
+    # Check for known patterns in the metric key
+    metric_key_lower = metric_key.lower()
+    for pattern, direction in KNOWN_PATTERNS.items():
+        if pattern in metric_key_lower:
+            return direction.lower() == 'higher'
+    
+    # If no pattern matches, issue a warning and default to False (lower is better)
+    print(f"WARNING: Could not determine if higher is better for metric '{metric_key}'. " 
+          f"Defaulting to lower is better. Use direction_overrides for explicit control.")
+    return False
 
 # --- Configuration & Data Structures ---
 def calculate_class_weights(dataset, num_classes):
@@ -119,20 +160,6 @@ class ExperimentType:
     LEARNING_RATE = 'learning_rate'; REG_PARAM = 'reg_param'
     EVALUATION = 'evaluation'; DIVERSITY = 'diversity' # Keep diversity type if needed
 
-@dataclass
-class TrainerConfig:
-    """Training configuration."""
-    dataset_name: str
-    device: str # Target compute device string (e.g., 'cuda:0')
-    learning_rate: float
-    batch_size: int
-    epochs: int = 1
-    rounds: int = 1
-    requires_personal_model: bool = False
-    algorithm_params: Dict[str, Any] = field(default_factory=dict)
-    max_parallel_clients: Optional[int] = None
-    use_weighted_loss: bool = False 
-
 
 @dataclass
 class SiteData:
@@ -150,26 +177,76 @@ class SiteData:
             except: self.num_samples = 0
 
 @dataclass
+class TrainerConfig:
+    """Training configuration."""
+    dataset_name: str
+    device: str # Target compute device string (e.g., 'cuda:0')
+    learning_rate: float
+    batch_size: int
+    epochs: int = 1
+    rounds: int = 1
+    requires_personal_model: bool = False
+    algorithm_params: Dict[str, Any] = field(default_factory=dict)
+    max_parallel_clients: Optional[int] = None
+    use_weighted_loss: bool = False
+    selection_criterion_key: str = 'val_losses'  # Default to val_losses for backward compatibility
+    selection_criterion_direction_overrides: Optional[Dict[str, str]] = field(default_factory=dict)
+
+# Update the ModelState dataclass
+@dataclass
 class ModelState:
     """Holds state for one model: current weights, optimizer, best state."""
     model: nn.Module # Current model weights/arch (CPU)
     optimizer: Optional[optim.Optimizer] = None # Client creates and assigns
-    best_loss: float = field(init=False, default=float('inf'))
+    selection_criterion_key: str = 'val_losses'  # Default to val_losses for backward compatibility
+    selection_criterion_direction_overrides: Optional[Dict[str, str]] = field(default_factory=dict)
+    criterion_is_higher_better: bool = field(init=False)
+    best_value_for_selection: float = field(init=False)
     best_model_state_dict: Optional[Dict] = field(init=False, default=None) # CPU state dict
 
     def __post_init__(self):
         """Initialize best state based on the initial model."""
         self.model.cpu()
-        if self.best_model_state_dict is None:
-            self.best_model_state_dict = copy.deepcopy(self.model.state_dict())
+        # Determine if higher is better for the selection criterion
+        self.criterion_is_higher_better = infer_higher_is_better(
+            self.selection_criterion_key, 
+            self.selection_criterion_direction_overrides
+        )
+        
+        # Initialize best value based on whether higher is better
+        self.best_value_for_selection = float('-inf') if self.criterion_is_higher_better else float('inf')
+        
+        # Initialize best model state dict
+        self.best_model_state_dict = copy.deepcopy(self.model.state_dict())
 
-    def update_best_state(self, current_val_loss: float) -> bool:
-        """Updates best_loss and best_model_state_dict if loss improved."""
-        if current_val_loss < self.best_loss:
-            self.best_loss = current_val_loss
-            self.model.cpu() # Ensure model is on CPU before getting state_dict
+    def update_best_state(self, current_metrics: Dict[str, float]) -> bool:
+        """
+        Updates best state if current metric value is better than previous best.
+        
+        Args:
+            current_metrics: Dictionary of current metric values
+            
+        Returns:
+            True if state was updated, False otherwise
+        """
+        if self.selection_criterion_key not in current_metrics:
+            print(f"Warning: selection_criterion_key '{self.selection_criterion_key}' not found in metrics. "
+                  f"Available keys: {list(current_metrics.keys())}. Skipping update.")
+            return False
+            
+        current_value = current_metrics[self.selection_criterion_key]
+        
+        # Check if current value is better than previous best
+        is_better = (self.criterion_is_higher_better and current_value > self.best_value_for_selection) or \
+                    (not self.criterion_is_higher_better and current_value < self.best_value_for_selection)
+        
+        if is_better:
+            self.best_value_for_selection = current_value
+            # Ensure model is on CPU before getting state_dict
+            self.model.cpu()
             self.best_model_state_dict = copy.deepcopy(self.model.state_dict())
             return True
+        
         return False
 
     def get_best_model_state_dict(self) -> Optional[Dict]:
@@ -179,12 +256,14 @@ class ModelState:
     def get_current_model_state_dict(self) -> Optional[Dict]:
         """Returns the current model state dict (CPU)."""
         self.model.cpu()
+        # Simply return the CPU model's state dict which has unprefixed keys
         return self.model.state_dict()
 
     def load_current_model_state_dict(self, state_dict: Dict):
         """Loads state_dict into the current model (CPU)."""
         self.model.cpu()
-        self.model.load_state_dict(state_dict)
+        # No _orig_mod logic needed as self.model is the direct CPU instance
+        self.model.load_state_dict(state_dict, strict=False)
 
     def load_best_model_state_dict_into_current(self):
         """Loads the best state into the current model if available."""
