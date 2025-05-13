@@ -16,7 +16,7 @@ from typing import Dict, Tuple, Any, Optional, List, Union, Callable
 import nibabel as nib
 from monai.transforms import (LoadImaged, Resized, NormalizeIntensityd,
                               AsDiscreted, ToTensord, Compose)
-import albumentations
+import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from torchvision import transforms
 import torch.nn.functional as F
@@ -289,25 +289,37 @@ class ISICDataset(TorchDataset):
         self.transform = self._get_transform()
 
     def _get_transform(self) -> Callable:
+        """Creates appropriate transforms for training or validation/testing."""     
         mean, std = (0.585, 0.500, 0.486), (0.229, 0.224, 0.225)
+        # Transforms applied to both training and validation/test sets at the end
         common_end = [
-            albumentations.Normalize(mean=mean, std=std, max_pixel_value=255.0, always_apply=True),
+            A.Normalize(mean=mean, std=std, max_pixel_value=255.0, p=1.0),
             ToTensorV2()
         ]
+        
         if self.is_train:
+            # Training-specific augmentations
             aug_list = [
-                albumentations.RandomScale(scale_limit=0.07, p=0.5),
-                albumentations.Rotate(limit=50, p=0.5),
-                albumentations.RandomBrightnessContrast(0.15, 0.1, p=0.5),
-                albumentations.Flip(p=0.5),
-                albumentations.Affine(shear=0.1, p=0.3),
-                albumentations.RandomCrop(height=self.sz, width=self.sz, always_apply=True),
-                albumentations.CoarseDropout(max_holes=8, max_height=16, max_width=16, p=0.3),
+                A.RandomScale(scale_limit=0.07, p=0.5),
+                A.Rotate(limit=50, p=0.5),
+                A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.1, p=0.5),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.3),
+                A.Affine(shear={'x': (-10, 10), 'y': (-10, 10)}, p=0.3),
+                A.RandomCrop(height=self.sz, width=self.sz, p=1.0),
+                A.CoarseDropout(max_holes=4, max_height=8, max_width=8, p=0.3)
+            ]
+            # Add the common transforms
+            aug_list.extend(common_end)
+        else:
+            # Validation/test augmentations (simpler)
+            aug_list = [
+                A.CenterCrop(height=self.sz, width=self.sz, p=1.0),
                 *common_end
             ]
-        else:
-            aug_list = [albumentations.CenterCrop(height=self.sz, width=self.sz, always_apply=True), *common_end]
-        return albumentations.Compose(aug_list)
+        
+        return A.Compose(aug_list)
+
 
     def __len__(self) -> int: return len(self.labels)
 

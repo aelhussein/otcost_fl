@@ -52,7 +52,6 @@ class Client:  # only the two changed methods are shown
             selection_criterion_direction_overrides=config.selection_criterion_direction_overrides
         )
         self.global_state.optimizer = self._create_optimizer(self.global_state.model)
-
         # AMP scaler – enabled only when CUDA is present
         self.scaler = GradScaler(enabled=torch.cuda.is_available())
 
@@ -70,35 +69,32 @@ class Client:  # only the two changed methods are shown
             )
             self.personal_state.optimizer = self._create_optimizer(self.personal_state.model)
 
-
     def _create_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Creates optimizer for a given model instance."""
         wd = self.config.algorithm_params.get('weight_decay', 1e-4)
         lr = self.config.learning_rate
 
-        # Get the appropriate module for parameters (handles compiled models)
+        # Get the appropriate module for parameters
         target_module = model._orig_mod if hasattr(model, '_orig_mod') else model
+        
+        # Check if we're actually using GPU for training
+        device_check = lambda: (
+            torch.cuda.is_available() and
+            self.training_manager.compute_device.type == 'cuda' and 
+            hasattr(optim.AdamW, 'fused')
+        )
         
         # Cache optimizer class after first call
         if not hasattr(self, '_optim_cls'):
-            # Check if we can use fused implementation (requires CUDA and PyTorch 2.0+)
-            use_fused = (
-                hasattr(optim.AdamW, 'fused') and 
-                'cuda' in self.training_manager.compute_device.type  # Device check is sufficient
+            self._optim_cls = lambda params, **kwargs: optim.AdamW(
+                params, 
+                fused=device_check(), 
+                **kwargs
             )
-            
-            if use_fused:
-                try:
-                    self._optim_cls = partial(optim.AdamW, fused=True)
-                except Exception as e:
-                    print(f"Warning: Could not use fused optimizer, falling back to standard implementation: {e}")
-                    self._optim_cls = optim.AdamW
-            else:
-                self._optim_cls = optim.AdamW
         
-        # Use cached optimizer class
+        # Use cached optimizer factory with current parameters
         return self._optim_cls(target_module.parameters(), lr=lr, weight_decay=wd, eps=1e-8)
-
+        
     
     def _initialize_criterion(self):
         """Initialize criterion based on configuration."""

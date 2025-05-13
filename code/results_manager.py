@@ -69,6 +69,55 @@ class TrialRecord:
         if param_value is not None and self.tuning_param_value != param_value:
             return False
         return True
+    
+@dataclass
+class OTAnalysisRecord:
+    """Record of a single OT analysis result."""
+    
+    # Basic identification fields
+    dataset_name: str
+    fl_cost_param: Any
+    fl_run_idx: int
+    client_pair: str
+    ot_method_name: str
+    
+    # Analysis results
+    ot_cost_value: Optional[float] = None
+    fl_local_metric: Optional[float] = None
+    fl_fedavg_metric: Optional[float] = None
+    fl_performance_delta: Optional[float] = None
+    
+    # Status information
+    status: str = "Success"
+    error_message: Optional[str] = None
+    
+    # Additional method-specific details
+    ot_method_specific_results: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict:
+        """Converts the record to a dictionary suitable for JSON serialization."""
+        result = asdict(self)
+        
+        # Convert NumPy types to Python types for JSON serialization
+        for key in ['ot_cost_value', 'fl_local_metric', 'fl_fedavg_metric', 'fl_performance_delta']:
+            if isinstance(result[key], (np.float32, np.float64, np.int32, np.int64)):
+                result[key] = result[key].item()
+        
+        # Process method-specific results
+        if result['ot_method_specific_results']:
+            processed_results = {}
+            for k, v in result['ot_method_specific_results'].items():
+                if isinstance(v, (np.float32, np.float64, np.int32, np.int64)):
+                    processed_results[k] = v.item()
+                elif isinstance(v, np.ndarray):
+                    processed_results[k] = v.tolist()
+                elif isinstance(v, list) and v and isinstance(v[0], (np.float32, np.float64, np.int32, np.int64)):
+                    processed_results[k] = [x.item() if isinstance(x, (np.float32, np.float64, np.int32, np.int64)) else x for x in v]
+                else:
+                    processed_results[k] = v
+            result['ot_method_specific_results'] = processed_results
+            
+        return result
 
 # =============================================================================
 # == Path Management ==
@@ -92,7 +141,7 @@ class PathBuilder:
             ExperimentType.LEARNING_RATE: 'lr_tuning',
             ExperimentType.REG_PARAM: 'reg_param_tuning',
             ExperimentType.EVALUATION: 'evaluation',
-            ExperimentType.DIVERSITY: 'diversity',
+            ExperimentType.OT_ANALYSIS: 'ot_analysis',
         }
 
     def get_results_path(self, experiment_type: str) -> Tuple[str, str]:
@@ -170,7 +219,7 @@ class ResultsManager:
             return None
 
     # --- Results Saving/Loading ---
-    def save_results(self, results_list: List[TrialRecord], 
+    def save_results(self, results_list: List[Dict], 
                     experiment_type: str,
                     run_metadata: Optional[Dict] = None):
         """
@@ -181,7 +230,7 @@ class ResultsManager:
         run_metadata = run_metadata if run_metadata is not None else {}
 
         # Check for errors within the list of records
-        contains_errors = any(record.error is not None for record in results_list)
+        contains_errors = any('error' in record and record['error'] is not None for record in results_list)
 
         # Ensure selection criteria info is included in metadata if provided
         selection_info = {}
@@ -213,17 +262,17 @@ class ResultsManager:
             with open(meta_path, 'w') as f_meta:
                 json.dump(metadata, f_meta, indent=4)
 
-            # Save results list (convert each record to dict)
+            # Save results list (already dicts)
             with open(results_path, 'w') as f_results:
-                json.dump([record.to_dict() for record in results_list], f_results, indent=4)
+                json.dump(results_list, f_results, indent=4)
 
         except Exception as e:
             print(f"ERROR saving results/metadata for {experiment_type}: {e}")
 
-    def load_results(self, experiment_type: str) -> Tuple[List[TrialRecord], Optional[Dict]]:
+    def load_results(self, experiment_type: str) -> Tuple[List[Dict], Optional[Dict]]:
         """Loads results list and metadata from JSON files."""
         results_path, meta_path = self.path_builder.get_results_path(experiment_type)
-        results_list = []
+        loaded_dicts = []
         metadata = None
 
         if os.path.exists(meta_path):
@@ -238,42 +287,11 @@ class ResultsManager:
                 with open(results_path, 'r') as f_results:
                     # Load list of dictionaries from JSON
                     loaded_dicts = json.load(f_results)
-                    # Convert dictionaries back to TrialRecord objects
-                    results_list = [TrialRecord(**d) for d in loaded_dicts]
             except Exception as e:
                 print(f"ERROR: Failed to load or parse results from {results_path}: {e}")
-                results_list = []  # Return empty list on error
+                loaded_dicts = []  # Return empty list on error
 
-        return results_list, metadata
-
-    def merge_new_records(self, existing_records: List[TrialRecord], 
-                         new_records: List[TrialRecord]) -> List[TrialRecord]:
-        """
-        Merges new records into existing ones, replacing records with matching configurations.
-        This ensures errors are properly overwritten.
-        """
-        result = existing_records.copy()
-        
-        # Map configurations to indices for faster lookups
-        config_to_index = {}
-        for i, record in enumerate(result):
-            config_key = (record.cost, record.server_type, 
-                          record.tuning_param_name, record.tuning_param_value, record.run_idx)
-            config_to_index[config_key] = i
-            
-        # Replace or add new records
-        for new_record in new_records:
-            config_key = (new_record.cost, new_record.server_type, 
-                         new_record.tuning_param_name, new_record.tuning_param_value, new_record.run_idx)
-            
-            if config_key in config_to_index:
-                # Replace existing record with same configuration
-                result[config_to_index[config_key]] = new_record
-            else:
-                # Add new record
-                result.append(new_record)
-                
-        return result
+        return loaded_dicts, metadata
 
     # --- Results Analysis & Status ---
     def get_best_parameters(self, param_type: str, server_type: str, cost: Any, 

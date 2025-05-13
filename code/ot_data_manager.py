@@ -7,10 +7,11 @@ import traceback
 from typing import Dict, Optional, Tuple, List, Union, Any
 from abc import ABC, abstractmethod
 
-from configs import ROOT_DIR, ACTIVATION_DIR, DEFAULT_PARAMS # Added DEFAULT_PARAMS
+from configs import ROOT_DIR, ACTIVATION_DIR, DEFAULT_PARAMS, DATA_DIR # Added DEFAULT_PARAMS
 import models as ms
-from helper import set_seeds,  MetricKey
+from helper import set_seeds,  MetricKey, get_model_instance
 from ot_utils import calculate_sample_loss, DEFAULT_EPS
+from data_processing import DataManager as FLDataManager
 
 # Import the new ResultsManager and related classes
 from results_manager import ResultsManager, ExperimentType
@@ -345,30 +346,26 @@ class OTDataManager:
     Handles loading, caching, generation, and processing of activations
     and performance results using saved models.
     """
-    def __init__(self,
-                 num_clients: int,
-                 activation_dir: str = ACTIVATION_DIR,
-                 results_dir: str = None, # Retained for API, currently unused
-                 loss_eps: float = DEFAULT_EPS):
+    def __init__(self, num_target_fl_clients: int, activation_dir: str = ACTIVATION_DIR, results_dir: str = None, loss_eps: float = DEFAULT_EPS):
         """
         Initializes the DataManager.
         
         Args:
-            num_clients (int): The target number of clients for this experiment run
+            num_target_fl_clients (int): The target number of clients for FL experiment analysis
             activation_dir (str): Path to activation cache directory
             results_dir (str): Path to results directory (unused, retained for API compatibility)
             loss_eps (float): Epsilon for numerical stability in loss calculations
         """
-        self.num_clients = num_clients
+        self.num_target_fl_clients = num_target_fl_clients
         self.activation_dir = activation_dir
         self.loss_eps = loss_eps
         os.makedirs(self.activation_dir, exist_ok=True)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # ResultsManager is initialized per-dataset in methods that need it
+        # FL results manager will be initialized per-dataset
         self.results_manager = None
         
-        logger.info(f"DataManager initialized targeting results for {self.num_clients} clients on device {self.device}.")
+        logger.info(f"DataManager initialized targeting results for {self.num_target_fl_clients} FL clients on device {self.device}.")
         
         # Activation extractor instances map
         self._extractor_instances = {
@@ -377,36 +374,215 @@ class OTDataManager:
             # New extractor types can be added here
         }
         self._default_extractor_type = 'hook_based'
-    
+
     def _initialize_results_manager(self, dataset_name: str):
         """Initialize ResultsManager for a specific dataset."""
         if self.results_manager is None or self.results_manager.path_builder.dataset != dataset_name:
             self.results_manager = ResultsManager(
                 root_dir=ROOT_DIR,
                 dataset=dataset_name, 
-                num_target_clients=self.num_clients
+                num_target_clients=self.num_target_fl_clients
             )
-    
-    def _get_activation_cache_path(
-        self, dataset_name: str, cost: Any, seed: int,
-        client_id_1: Union[str, int], client_id_2: Union[str, int],
-        loader_type: str, num_clients: int
-    ) -> str:
+
+    def _get_model_path(self, dataset_name: str, fl_cost: Any, fl_seed: int, model_type: str = 'round0') -> str:
+        """Gets path to saved model state dict for FL experiment."""
+        self._initialize_results_manager(dataset_name)
+        _, metadata = self.results_manager.load_results(ExperimentType.EVALUATION)
+        num_clients_in_fl_run = self.num_target_fl_clients 
+        
+        if metadata and 'cost_client_counts' in metadata:
+            cost_counts = metadata.get('cost_client_counts', {})
+            if fl_cost in cost_counts:
+                num_clients_in_fl_run = cost_counts[fl_cost]
+        
+        return self.results_manager.path_builder.get_model_save_path(
+            num_clients_run=num_clients_in_fl_run,
+            cost=fl_cost,
+            seed=fl_seed,
+            server_type='fedavg', # Assuming FedAvg server for model to be analyzed
+            model_type=model_type 
+        )
+
+    def _load_model_for_activation_generation(self, dataset_name: str, fl_cost: Any, fl_seed: int, num_clients: int, model_type: str) -> Tuple[Optional[torch.nn.Module], Optional[Dict], int]:
+        """
+        Loads a saved model from FL experiment for activation generation.
+        """
+        logger.info(f"Loading model for activation generation: Dataset={dataset_name}, FL Cost={fl_cost}, FL Seed={fl_seed}, ModelType={model_type}")
+        
+        model_path = self._get_model_path(dataset_name, fl_cost, fl_seed, model_type)
+        
+        if not os.path.exists(model_path):
+            logger.warning(f"Model not found: {model_path}")
+            return None, None, num_clients # Return target num_clients
+            
+        try:
+            model_state_dict = torch.load(model_path, map_location=self.device)
+            logger.info(f"Loaded {model_type} model state from: {os.path.basename(model_path)}")
+            
+            
+            model = get_model_instance(dataset_name)
+            model.load_state_dict(model_state_dict)
+            model.to(self.device)
+            model.eval()
+            
+            
+            fl_data_mgr = FLDataManager(dataset_name, DEFAULT_PARAMS[dataset_name]['base_seed'], DATA_DIR)
+            dataloaders = fl_data_mgr.get_dataloaders(cost=fl_cost, run_seed=fl_seed, num_clients_override=num_clients)
+            
+            # Determine actual number of clients
+            actual_num_dataloaders = len(dataloaders) if dataloaders else 0
+            if actual_num_dataloaders != num_clients and actual_num_dataloaders > 0:
+                logger.info(f"Dataloaders created for {actual_num_dataloaders} clients, differs from target {num_clients}.")
+            
+            return model, dataloaders, num_clients # Return target num_clients
+            
+        except Exception as e:
+            logger.exception(f"Error loading model/dataloaders for {dataset_name}, {fl_cost}, {fl_seed}: {e}")
+            return None, None, num_clients
+
+    def get_performance(self, dataset_name: str, fl_cost: Any, fl_seed: int, aggregation_method: str = 'mean', metric: str = 'loss') -> Tuple[float, float]:
+        """
+        Loads final performance metrics from FL TrialRecords.
+        """
+        self._initialize_fl_results_manager(dataset_name)
+        all_records, _ = self.results_manager.load_results(ExperimentType.EVALUATION)
+        
+        if not all_records:
+            logger.warning(f"No performance results found for {dataset_name}")
+            return np.nan, np.nan
+        
+        base_seed = DEFAULT_PARAMS[dataset_name]['base_seed']
+        fl_run_idx = fl_seed - base_seed
+        
+        # Filter records for the specific cost and run index
+        cost_run_records = [r for r in all_records if r.cost == fl_cost and r.run_idx == fl_run_idx]
+        
+        if not cost_run_records:
+            logger.warning(f"Cost {fl_cost} and run_idx {fl_run_idx} not found in results for {dataset_name}")
+            return np.nan, np.nan
+        
+        local_score, fedavg_score = [], []
+        if metric == 'loss':
+            metric_key = MetricKey.TEST_LOSSES
+        elif metric == 'score':
+            metric_key = MetricKey.TEST_SCORES
+        else:
+            logger.warning(f"Unknown metric {metric}. Using 'loss'.")
+            metric_key = MetricKey.TEST_LOSSES
+            
+        for record in cost_run_records:
+            if not record.error and record.metrics.get(metric_key):
+                final_metric = record.metrics[metric_key][-1]
+                if record.server_type == 'local':
+                    local_score.append(final_metric)
+                elif record.server_type == 'fedavg':
+                    fedavg_score.append(final_metric)
+        
+        agg_func = np.median if aggregation_method.lower() == 'median' else np.mean
+        local_scores = float(agg_func(local_score)) if local_score else np.nan
+        fedavg_scores = float(agg_func(fedavg_score)) if fedavg_score else np.nan
+                
+        logger.info(f"Performance for {dataset_name}, cost {fl_cost}, run_idx {fl_run_idx}: Local={local_scores if not np.isnan(local_scores) else 'NaN'}, FedAvg={fedavg_scores if not np.isnan(fedavg_scores) else 'NaN'}")
+        return local_scores, fedavg_scores
+
+    def _get_activation_cache_path(self, dataset_name: str, fl_cost: Any, fl_seed: int, client_id_1: Union[str, int], client_id_2: Union[str, int], loader_type: str, num_clients: int, model_type: str) -> str:
         """Constructs standardized path for activation cache files."""
         c1_str = str(client_id_1)
         c2_str = str(client_id_2)
-        dataset_cache_dir = os.path.join(self.activation_dir, dataset_name)
+        dataset_cache_dir = os.path.join(self.activation_dir, dataset_name, model_type)
         os.makedirs(dataset_cache_dir, exist_ok=True)
         
         # Format cost string consistently
-        if isinstance(cost, (int, float)):
-            cost_str = f"{float(cost):.4f}"
+        if isinstance(fl_cost, (int, float)):
+            cost_str = f"{float(fl_cost):.4f}"
         else:
-            cost_str = str(cost).replace('/', '_') # Basic sanitization
+            cost_str = str(fl_cost).replace('/', '_') # Basic sanitization
             
-        # Use model_type in filename if needed, for now assuming 'round0' implicitly for cache path simplicity
-        filename = f"activations_{dataset_name}_nc{num_clients}_cost_{cost_str}_seed{seed}_c{c1_str}v{c2_str}_{loader_type}.pt"
+        filename = f"activations_{dataset_name}_nc{num_clients}_cost_{cost_str}_seed{fl_seed}_c{c1_str}v{c2_str}_{loader_type}.pt"
         return os.path.join(dataset_cache_dir, filename)
+
+    def _generate_activations(self, dataset_name: str, fl_cost: Any, fl_seed: int, client_id_1: Union[str, int], client_id_2: Union[str, int], num_clients: int, num_classes: Optional[int], loader_type: str, model_type: str) -> Optional[Tuple]:
+        """
+        Generates raw activations (h, p, y) for two clients from an FL model.
+        """
+        logger.debug(f"Attempting to generate raw activations for {dataset_name}, clients ({client_id_1}, {client_id_2}).")
+        
+        try:
+            model, dataloaders_all, _ = self._load_model_for_activation_generation(
+                dataset_name, fl_cost, fl_seed, num_clients, model_type
+            )
+            
+            if model is None or dataloaders_all is None:
+                logger.warning(f"Failed to load model or dataloaders for {dataset_name}, FL cost {fl_cost}, FL seed {fl_seed}.")
+                return None
+                
+            h1_raw, p1_raw, y1_raw = self._extract_raw_activations_for_client(
+                model, client_id_1, dataloaders_all, loader_type, num_classes, dataset_name
+            )
+            h2_raw, p2_raw, y2_raw = self._extract_raw_activations_for_client(
+                model, client_id_2, dataloaders_all, loader_type, num_classes, dataset_name
+            )
+            
+            # Check if essential data (h, y) was extracted for both clients
+            if h1_raw is None or y1_raw is None or h2_raw is None or y2_raw is None:
+                logger.warning(f"Essential raw activations (h or y) missing for one or both clients ({client_id_1}, {client_id_2}).")
+                return None # Return None if critical data is missing
+                
+            return (h1_raw, p1_raw, y1_raw, h2_raw, p2_raw, y2_raw)
+            
+        except Exception as e:
+            logger.exception(f"Error during raw activation generation for {dataset_name}: {e}")
+            return None
+
+    def get_activations(self, dataset_name: str, fl_cost: Any, fl_seed: int, client_id_1: Union[str, int], client_id_2: Union[str, int], num_classes: Optional[int], loader_type: str = 'val', force_regenerate: bool = False, model_type: str = 'round0', use_loss_weighting_hint: bool = False) -> Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]]:
+        """
+        Gets processed activations for a specific client pair from an FL model.
+        """
+        self._initialize_results_manager(dataset_name)
+        
+        cid1_str = str(client_id_1)
+        cid2_str = str(client_id_2)
+        
+        cache_path = self._get_activation_cache_path(
+            dataset_name, fl_cost, fl_seed, 
+            cid1_str, cid2_str, loader_type, self.num_target_fl_clients, model_type
+        )
+        
+        raw_activations_tuple = None
+        if not force_regenerate:
+            raw_activations_tuple = self._load_activations_from_cache(cache_path)
+            
+        if raw_activations_tuple is None:
+            logger.info(f"Cache {'miss' if not force_regenerate else 'bypass'} for {os.path.basename(cache_path)}. Generating raw activations.")
+            raw_activations_tuple = self._generate_activations(
+                dataset_name=dataset_name, fl_cost=fl_cost, fl_seed=fl_seed,
+                client_id_1=cid1_str, client_id_2=cid2_str,
+                num_clients=self.num_target_fl_clients, num_classes=num_classes,
+                loader_type=loader_type, model_type=model_type
+            )
+            
+            if raw_activations_tuple is not None:
+                self._save_activations_to_cache(raw_activations_tuple, cache_path)
+            else:
+                logger.warning(f"Failed to generate raw activations for {dataset_name}, pair ({cid1_str}, {cid2_str}).")
+                return None
+                
+        h1_r, p1_r, y1_r, h2_r, p2_r, y2_r = raw_activations_tuple
+        
+        logger.debug(f"Processing client data for pair ({cid1_str}, {cid2_str}) with use_loss_weighting_hint={use_loss_weighting_hint}")
+        processed_data1 = self._process_client_data(
+            h1_r, p1_r, y1_r, cid1_str, num_classes, use_loss_weighting_hint
+        )
+        processed_data2 = self._process_client_data(
+            h2_r, p2_r, y2_r, cid2_str, num_classes, use_loss_weighting_hint
+        )
+        
+        if processed_data1 is None or processed_data2 is None:
+            logger.warning(f"Failed to process data for one or both clients ({cid1_str}, {cid2_str}).")
+            return None
+            
+        return {cid1_str: processed_data1, cid2_str: processed_data2}
+        
 
     def _load_activations_from_cache(self, path: str) -> Optional[Tuple]:
         """Loads activation data from cache with validation."""
@@ -448,73 +624,6 @@ class OTDataManager:
         except Exception as e:
             logger.warning(f"Failed saving activation cache {path}: {e}")
 
-    def _get_model_path(self, dataset: str, cost: Any, seed: int, model_type: str = 'round0') -> str:
-        """
-        Gets path to saved model state dict.
-        """
-        self._initialize_results_manager(dataset)
-        _, metadata = self.results_manager.load_results(ExperimentType.EVALUATION)
-        actual_clients = self.num_clients 
-        
-        if metadata and 'cost_client_counts' in metadata:
-            cost_counts = metadata.get('cost_client_counts', {})
-            if cost in cost_counts:
-                actual_clients = cost_counts[cost]
-        
-        return self.results_manager.path_builder.get_model_save_path(
-            num_clients_run=actual_clients,
-            cost=cost,
-            seed=seed,
-            server_type='fedavg', # Assuming FedAvg server for Round0 model
-            model_type=model_type 
-        )
-
-    def _load_model_for_activation_generation(
-        self, dataset: str, cost: Any, seed: int, num_clients: int, model_type: str
-    ) -> Tuple[Optional[torch.nn.Module], Optional[Dict], int]:
-        """
-        Loads a saved model for activation generation.
-        """
-        logger.info(f"Loading model for activation generation: Dataset={dataset}, Cost={cost}, Seed={seed}, ModelType={model_type}")
-        
-        model_path = self._get_model_path(dataset, cost, seed, model_type)
-                    
-        if not os.path.exists(model_path):
-            logger.warning(f"Model not found: {model_path}")
-            return None, None, num_clients # Return target num_clients
-            
-        try:
-            model_state_dict = torch.load(model_path, map_location=self.device)
-            logger.info(f"Loaded {model_type} model state from: {os.path.basename(model_path)}")
-            
-            model_name_key = dataset
-            if 'Synthetic_' in dataset: model_name_key = 'Synthetic'
-            
-            model_class = getattr(ms, model_name_key)
-            model = model_class()
-            model.load_state_dict(model_state_dict)
-            model.to(self.device)
-            model.eval()
-            
-            from pipeline import ExperimentConfig, Experiment # Local import to avoid circularity if any
-            temp_config = ExperimentConfig(dataset=dataset, experiment_type=ExperimentType.EVALUATION, num_clients=num_clients)
-            temp_exp = Experiment(temp_config)
-            set_seeds(seed) # For dataloader reproducibility
-            
-            # Get dataloaders, ensuring num_clients_override is correctly used
-            dataloaders = temp_exp.data_manager.get_dataloaders(cost=cost, run_seed=seed, num_clients_override=num_clients)
-            
-            # Determine actual number of clients for whom dataloaders were created
-            actual_num_dataloaders = len(dataloaders) if dataloaders else 0
-            if actual_num_dataloaders != num_clients and actual_num_dataloaders > 0 :
-                 logger.info(f"Dataloaders created for {actual_num_dataloaders} clients, differs from target {num_clients}.")
-                 # This could be num_clients_run from metadata or num_clients if override was effective
-            
-            return model, dataloaders, num_clients # Return target num_clients used for loader generation
-            
-        except Exception as e:
-            logger.exception(f"Error loading model/dataloaders for {dataset}, {cost}, {seed}: {e}")
-            return None, None, num_clients
 
     def _get_activation_extractor(self, dataset_name: str) -> ActivationExtractor:
         """
@@ -642,135 +751,3 @@ class OTDataManager:
             'weights': weights_tensor
         }
 
-    def _generate_activations(
-        self, dataset_name: str, cost: Any, seed: int,
-        client_id_1: Union[str, int], client_id_2: Union[str, int],
-        num_clients: int, num_classes: int, loader_type: str, model_type: str
-    ) -> Optional[Tuple]:
-        """
-        Generates raw activations (h, p, y) for two clients.
-        """
-        logger.debug(f"Attempting to generate raw activations for {dataset_name}, clients ({client_id_1}, {client_id_2}).")
-        
-        try:
-            model, dataloaders_all, _ = self._load_model_for_activation_generation(
-                dataset_name, cost, seed, num_clients, model_type
-            )
-            
-            if model is None or dataloaders_all is None:
-                logger.warning(f"Failed to load model or dataloaders for {dataset_name}, cost {cost}, seed {seed}.")
-                return None
-                
-            h1_raw, p1_raw, y1_raw = self._extract_raw_activations_for_client(
-                model, client_id_1, dataloaders_all, loader_type, num_classes, dataset_name
-            )
-            h2_raw, p2_raw, y2_raw = self._extract_raw_activations_for_client(
-                model, client_id_2, dataloaders_all, loader_type, num_classes, dataset_name
-            )
-            
-            # Check if essential data (h, y) was extracted for both clients
-            if h1_raw is None or y1_raw is None or h2_raw is None or y2_raw is None:
-                logger.warning(f"Essential raw activations (h or y) missing for one or both clients ({client_id_1}, {client_id_2}).")
-                return None # Return None if critical data is missing
-                
-            return (h1_raw, p1_raw, y1_raw, h2_raw, p2_raw, y2_raw)
-            
-        except Exception as e:
-            logger.exception(f"Error during raw activation generation for {dataset_name}: {e}")
-            return None
-    
-    def get_activations(
-        self, dataset_name: str, cost: Any, seed: int,
-        client_id_1: Union[str, int], client_id_2: Union[str, int],
-        num_clients: int, num_classes: int,
-        loader_type: str = 'val',
-        force_regenerate: bool = False,
-        model_type: str = 'round0',
-        use_loss_weighting_hint: bool = False
-    ) -> Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]]:
-        """
-        Gets processed activations for a specific client pair.
-        """
-        self._initialize_results_manager(dataset_name)
-        
-        cid1_str = str(client_id_1)
-        cid2_str = str(client_id_2)
-        
-        cache_path = self._get_activation_cache_path(
-            dataset_name, cost, seed, 
-            cid1_str, cid2_str, loader_type, num_clients
-        )
-        
-        raw_activations_tuple = None
-        if not force_regenerate:
-            raw_activations_tuple = self._load_activations_from_cache(cache_path)
-            
-        if raw_activations_tuple is None:
-            logger.info(f"Cache {'miss' if not force_regenerate else 'bypass'} for {os.path.basename(cache_path)}. Generating raw activations.")
-            raw_activations_tuple = self._generate_activations(
-                dataset_name=dataset_name, cost=cost, seed=seed,
-                client_id_1=cid1_str, client_id_2=cid2_str,
-                num_clients=num_clients, num_classes=num_classes,
-                loader_type=loader_type, model_type=model_type
-            )
-            
-            if raw_activations_tuple is not None:
-                self._save_activations_to_cache(raw_activations_tuple, cache_path)
-            else:
-                logger.warning(f"Failed to generate raw activations for {dataset_name}, pair ({cid1_str}, {cid2_str}).")
-                return None # Generation failed
-                
-        h1_r, p1_r, y1_r, h2_r, p2_r, y2_r = raw_activations_tuple
-        
-        logger.debug(f"Processing client data for pair ({cid1_str}, {cid2_str}) with use_loss_weighting_hint={use_loss_weighting_hint}")
-        processed_data1 = self._process_client_data(
-            h1_r, p1_r, y1_r, cid1_str, num_classes, use_loss_weighting_hint
-        )
-        processed_data2 = self._process_client_data(
-            h2_r, p2_r, y2_r, cid2_str, num_classes, use_loss_weighting_hint
-        )
-        
-        if processed_data1 is None or processed_data2 is None:
-            logger.warning(f"Failed to process data for one or both clients ({cid1_str}, {cid2_str}).")
-            return None
-            
-        return {cid1_str: processed_data1, cid2_str: processed_data2}
-
-    def get_performance(
-        self, dataset_name: str, cost: Any, aggregation_method: str = 'mean', metric: str = 'loss',
-    ) -> Tuple[float, float]:
-        """
-        Loads final performance metrics from TrialRecords.
-        """
-        self._initialize_results_manager(dataset_name)
-        all_records, _ = self.results_manager.load_results(ExperimentType.EVALUATION)
-        
-        if not all_records:
-            logger.warning(f"No performance results found for {dataset_name}")
-            return np.nan, np.nan
-        
-        cost_records = [r for r in all_records if r.cost == cost]
-        
-        if not cost_records:
-            logger.warning(f"Cost {cost} not found in results for {dataset_name}")
-            return np.nan, np.nan
-        
-        local_score, fedavg_score = [], []
-        if metric == 'loss':
-            metric_key = MetricKey.TEST_LOSSES
-        elif metric == 'score':
-            metric_key = MetricKey.TEST_SCORES
-        for record in cost_records:
-            if not record.error and record.metrics.get(metric_key):
-                final_loss = record.metrics[metric_key][-1]
-                if record.server_type == 'local':
-                    local_score.append(final_loss)
-                elif record.server_type == 'fedavg':
-                    fedavg_score.append(final_loss)
-        
-        agg_func = np.median if aggregation_method.lower() == 'median' else np.mean
-        local_scores = float(agg_func(local_score)) if local_score else np.nan
-        fedavg_scores = float(agg_func(fedavg_score)) if fedavg_score else np.nan
-                
-        logger.info(f"Performance for {dataset_name}, cost {cost}: Local={local_scores if not np.isnan(local_scores) else 'NaN'}, FedAvg={fedavg_scores if not np.isnan(fedavg_scores) else 'NaN'}")
-        return local_scores, fedavg_scores

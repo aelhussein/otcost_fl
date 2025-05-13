@@ -1,284 +1,261 @@
-# ot_pipeline_runner.py
-from configs import ACTIVATION_DIR
+"""
+OT Pipeline Runner - Orchestrates OT analysis over FL runs, costs, client pairs, and OT configurations.
+"""
+import os
 import pandas as pd
 import numpy as np
 import logging
 import traceback
+from dataclasses import replace
 from itertools import combinations
-from typing import List, Tuple, Dict, Any, Union, Optional
+from typing import List, Dict, Any, Optional, Union
 
 # Import OT-related components
-from ot_configs import OTConfig
+from ot_configs import OTConfig, all_configs
 from ot_data_manager import OTDataManager
 from ot_calculators import OTCalculatorFactory
+from results_manager import OTAnalysisRecord, ResultsManager
+from results_manager import ResultsManager
+from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS
 
 # Configure module logger
 logger = logging.getLogger(__name__)
 
-class PipelineRunner:
-    """ Orchestrates the OT similarity analysis pipeline for multiple client pairs. """
+class OTPipelineRunner:
+    """Orchestrates OT similarity analysis pipeline across runs, costs, and client pairs."""
 
-    def __init__(self,
-                 num_clients: int,
-                 activation_dir: Optional[str] = None):
+    def __init__(self, num_target_fl_clients: int, activation_dir: Optional[str] = None):
         """
-        Initializes the pipeline runner.
+        Initializes the OT pipeline runner.
 
         Args:
-            num_clients (int): The total number of clients in the FL run to analyze pairs from
-            activation_dir (str, optional): Path to activation cache. Defaults to config path.
+            num_target_fl_clients: Number of FL clients in the run to analyze
+            activation_dir: Path to activation cache (optional, defaults to config path)
         """
-        self.num_clients = num_clients
-        act_dir = activation_dir if activation_dir else ACTIVATION_DIR
+        self.num_target_fl_clients = num_target_fl_clients
         
-        # Initialize DataManager with target client count
+        # Initialize DataManager with target FL client count
         self.data_manager = OTDataManager(
-            num_clients=num_clients,
-            activation_dir=act_dir
+            num_target_fl_clients=num_target_fl_clients,
+            activation_dir=activation_dir
         )
-        logger.info(f"Pipeline runner initialized for {num_clients} clients")
+        logger.info(f"OT Pipeline runner initialized for {num_target_fl_clients} FL clients")
 
     def run_pipeline(
         self,
         dataset_name: str,
-        costs_list: List[Any],
-        num_classes: int,
-        ot_configurations: List[OTConfig],
-        client_pairs_to_analyze: Optional[List[Tuple[Union[str, int], Union[str, int]]]] = None,
+        model_type_to_analyze: str = 'round0',
         activation_loader_type: str = 'val',
+        performance_metric_key: str = 'score',
         performance_aggregation: str = 'mean',
-        metric_key: str = 'loss',
-        base_seed: int = 42,
         force_activation_regen: bool = False,
-        model_type: str = 'round0'
+        custom_ot_configurations: Optional[List[OTConfig]] = None
     ) -> pd.DataFrame:
         """
         Runs the full OT analysis pipeline.
 
         Args:
-            dataset_name (str): Name of the dataset.
-            costs_list (List[Any]): List of cost parameters (e.g., alpha values).
-            num_classes (int): Number of classes in the dataset.
-            ot_configurations (List[OTConfig]): List of OTConfig objects.
-            client_pairs_to_analyze (List[Tuple], optional): Specific client pairs.
-            activation_loader_type (str): Dataloader type ('train', 'val', 'test').
-            performance_aggregation (str): Aggregation method ('mean', 'median').
-            base_seed (int): Base random seed for the FL run.
-            force_activation_regen (bool): Force regeneration of activations.
-            model_type (str): Type of model to use ('round0', 'best', 'final').
+            dataset_name: Name of the dataset to analyze
+            model_type_to_analyze: Type of FL model to extract activations from ('round0', 'best', 'final')
+            activation_loader_type: Dataloader type ('train', 'val', 'test')
+            performance_metric_key: Key for evaluating performance ('score', 'loss')
+            performance_aggregation: How to aggregate performance metrics ('mean', 'median')
+            force_activation_regen: Whether to force regeneration of activations
+            custom_ot_configurations: Custom list of OT configurations to use (defaults to all configs)
 
         Returns:
-            pd.DataFrame: DataFrame with OT results for each pair, cost, and config.
+            DataFrame with OT analysis results
         """
-        results_list = []
+        # Import ExperimentType for proper enum usage
+        from helper import ExperimentType
 
-        # Generate client pairs
-        client_ids = [f'client_{i+1}' for i in range(self.num_clients)]
+        # Initialize results manager and parameters
+        ot_results_saver = ResultsManager(ROOT_DIR, dataset_name, self.num_target_fl_clients)
+        fl_costs_list = DATASET_COSTS.get(dataset_name, [])
+        if not fl_costs_list:
+            logger.warning(f"No costs defined in DATASET_COSTS for dataset '{dataset_name}'. Aborting.")
+            return pd.DataFrame()
+            
+        dataset_fl_params = DEFAULT_PARAMS.get(dataset_name, {})
+        num_fl_runs = dataset_fl_params.get('runs', 1)
+        base_fl_seed = dataset_fl_params.get('base_seed', 42)
+        num_classes = dataset_fl_params.get('fixed_classes')  # Can be None for segmentation
+        ot_configs_to_run = custom_ot_configurations or all_configs
+
+        # Storage for results
+        all_ot_analysis_records = [] # Store actual OTAnalysisRecord objects, not dicts
+
+        # Process all FL runs
+        logger.info(f"Starting OT Analysis for dataset '{dataset_name}', {self.num_target_fl_clients} clients")
         
-        if client_pairs_to_analyze:
-            # Validate provided pairs
-            valid_pairs = []
-            for p in client_pairs_to_analyze:
-                if isinstance(p, tuple) and len(p) == 2 and \
-                   str(p[0]) in client_ids and str(p[1]) in client_ids and p[0] != p[1]:
-                    valid_pairs.append((str(p[0]), str(p[1])))
+        # Iterate through FL runs
+        for fl_run_idx in range(num_fl_runs):
+            current_fl_seed = base_fl_seed + fl_run_idx
+            logger.info(f"Processing FL run {fl_run_idx + 1}/{num_fl_runs} (seed: {current_fl_seed})")
+            
+            # Iterate through FL heterogeneity costs
+            for fl_cost_param in fl_costs_list:
+                logger.info(f"  Processing FL cost parameter: {fl_cost_param}")
+                
+                # Get FL performance (Local vs FedAvg)
+                local_perf, fedavg_perf = self.data_manager.get_performance(
+                    dataset_name, 
+                    fl_cost_param, 
+                    current_fl_seed,
+                    performance_aggregation, 
+                    performance_metric_key
+                )
+                
+                # Calculate performance delta (direction depends on metric type)
+                if performance_metric_key == 'loss':
+                    # For loss, lower is better: Local - FedAvg (positive means FedAvg is better)
+                    perf_delta = local_perf - fedavg_perf if np.isfinite(local_perf) and np.isfinite(fedavg_perf) else np.nan
                 else:
-                    logger.warning(f"Invalid client pair provided: {p}. Skipping.")
-            pairs_to_run = valid_pairs
-            
-            if not pairs_to_run:
-                logger.warning("No valid client pairs specified to analyze.")
-                return pd.DataFrame()
-        else:
-            # Generate all unique pairs
-            pairs_to_run = list(combinations(client_ids, 2))
+                    # For score, higher is better: FedAvg - Local (positive means FedAvg is better)
+                    perf_delta = fedavg_perf - local_perf if np.isfinite(local_perf) and np.isfinite(fedavg_perf) else np.nan
 
-        logger.info(f"--- Starting OT Pipeline ---")
-        logger.info(f"Dataset: {dataset_name}, Total Clients: {self.num_clients}")
-        logger.info(f"Analyzing {len(pairs_to_run)} client pairs")
-        logger.info(f"Costs/Alphas: {costs_list}")
-        logger.info(f"OT Configurations: {len(ot_configurations)}")
-        logger.info("-" * 60)
+                if not np.isfinite(perf_delta):
+                    logger.warning(f"  Skipping FL cost {fl_cost_param} for run {fl_run_idx + 1}: invalid performance delta")
+                    continue
 
-        # Main loop: Iterate through costs first, then pairs
-        for i, cost in enumerate(costs_list):
-            logger.info(f"\nProcessing Cost/Alpha: {cost} ({i+1}/{len(costs_list)})...")
-            
-            # Load performance metrics for this cost
-            final_local_score, final_fedavg_score = self.data_manager.get_performance(
-                dataset_name, cost, performance_aggregation, metric_key
-            )
-            if metric_key == 'loss':
-                delta = final_local_score - final_fedavg_score if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score) else np.nan
-            elif metric_key == 'score':
-                delta = final_fedavg_score - final_local_score if np.isfinite(final_local_score) and np.isfinite(final_fedavg_score) else np.nan
-            
-            logger.info(f"  Performance: Local={f'{final_local_score:.4f}' if np.isfinite(final_local_score) else 'NaN'}, "
-                  f"FedAvg={f'{final_fedavg_score:.4f}' if np.isfinite(final_fedavg_score) else 'NaN'}, "
-                  f"Delta={f'{delta:.4f}' if np.isfinite(delta) else 'NaN'}")
-            
-            # Process each client pair
-            for j, pair in enumerate(pairs_to_run):
-                cid1_str, cid2_str = pair
-                logger.info(f"  Processing Pair ({j+1}/{len(pairs_to_run)}): ({cid1_str}, {cid2_str})")
+                # Generate all possible client pairs for analysis
+                client_ids = [f'client_{i+1}' for i in range(self.num_target_fl_clients)]
+                client_pairs = list(combinations(client_ids, 2))
                 
-                # Using base_seed directly
-                current_seed = base_seed
-                
-                # Process each OT configuration
-                for config in ot_configurations:
-                    method_type = config.method_type
-                    param_name = config.name
-                    params = config.params
+                # Process each client pair
+                for cid1, cid2 in client_pairs:
+                    pair_id = f"{cid1}_vs_{cid2}"
+                    logger.info(f"    Processing client pair: {pair_id}")
                     
-                    # Extract use_loss_weighting hint from config params
-                    use_loss_weighting_hint = params.get('use_loss_weighting', False)
-                    
-                    # Get activations with loss weighting hint
-                    activation_status = "Pending"
-                    processed_activations = None
-                    
-                    try:
+                    # Process each OT configuration
+                    for ot_config in ot_configs_to_run:
+                        logger.info(f"      OT config: {ot_config.name} ({ot_config.method_type})")
+                        
+                        # Create a base record with common information
+                        record = OTAnalysisRecord(
+                            dataset_name=dataset_name,
+                            fl_cost_param=fl_cost_param,
+                            fl_run_idx=fl_run_idx,
+                            client_pair=pair_id,
+                            ot_method_name=ot_config.name,
+                            ot_cost_value=None,  # Will be set below if successful
+                            fl_local_metric=local_perf,
+                            fl_fedavg_metric=fedavg_perf,
+                            fl_performance_delta=perf_delta,
+                            status="Pending",
+                            error_message=None,
+                            ot_method_specific_results={}
+                        )
+                        
+                        # Get activations for this client pair
                         processed_activations = self.data_manager.get_activations(
                             dataset_name=dataset_name,
-                            cost=cost, 
-                            seed=current_seed,
-                            client_id_1=cid1_str,
-                            client_id_2=cid2_str,
-                            num_clients=self.num_clients,
+                            fl_cost=fl_cost_param,
+                            fl_seed=current_fl_seed,
+                            client_id_1=cid1,
+                            client_id_2=cid2,
                             num_classes=num_classes,
                             loader_type=activation_loader_type,
                             force_regenerate=force_activation_regen,
-                            model_type=model_type,
-                            use_loss_weighting_hint=use_loss_weighting_hint
+                            model_type=model_type_to_analyze,
+                            use_loss_weighting_hint=ot_config.params.get('use_loss_weighting', False)
                         )
                         
-                        activation_status = "Loaded/Generated" if processed_activations else "Activation Failed"
-                    except Exception as e:
-                        activation_status = f"Activation Error: {type(e).__name__}"
-                        logger.exception(f"Error getting activations for cost {cost}, pair ({cid1_str}, {cid2_str}): {e}")
-                    
-                    # Create base row data
-                    row_data = {
-                        'Cost': cost,
-                        'Client_1': cid1_str,
-                        'Client_2': cid2_str,
-                        'Param_Set_Name': param_name,
-                        'OT_Method': method_type,
-                        'Run_Status': activation_status,
-                        'Local_Final': final_local_score,
-                        'FedAvg_Final': final_fedavg_score,
-                        'Delta': delta,
-                        # Initialize OT result columns
-                        'FeatureErrorOT_Cost': np.nan,
-                        'FeatureErrorOT_Weighting': None,
-                        'DirectOT_Cost': np.nan,
-                        'DirectOT_DistMethod': None,
-                        'DirectOT_Weighting': None,
-                    }
-                    
-                    # Skip OT calculations if activation failed
-                    if processed_activations is None:
-                        logger.warning(f"    Skipping OT calculations - activation failed or missing")
-                        results_list.append(row_data)
-                        continue
-                    
-                    # Get client data
-                    data1 = processed_activations.get(cid1_str)
-                    data2 = processed_activations.get(cid2_str)
-                    
-                    if data1 is None or data2 is None:
-                        logger.warning(f"    Skipping OT calculations - processed data missing")
-                        row_data['Run_Status'] += " + Processing Failed"
-                        results_list.append(row_data)
-                        continue
-                    
-                    # Use factory to create calculator
-                    calculator = OTCalculatorFactory.create_calculator(
-                        config=config,
-                        client_id_1=cid1_str,
-                        client_id_2=cid2_str,
-                        num_classes=num_classes
-                    )
-                    
-                    if calculator is None:
-                        row_data['Run_Status'] += " + Factory Failed"
-                        results_list.append(row_data)
-                        continue
-                    
-                    # Run OT calculation
-                    try:
-                        calculator.calculate_similarity(data1, data2, params)
-                        ot_results = calculator.get_results()
-                        self._populate_row_with_results(row_data, method_type, ot_results)
-                        row_data['Run_Status'] += " + Calc Success"
-                    except Exception as e:
-                        logger.exception(f"OT calculation failed for {param_name}: {e}")
-                        row_data['Run_Status'] += f" + Calc Error: {type(e).__name__}"
-                    finally:
-                        results_list.append(row_data)
-                
-                # Clean up memory
-                processed_activations = None
-                data1 = None
-                data2 = None
+                        # Handle activation failure
+                        if processed_activations is None or cid1 not in processed_activations or cid2 not in processed_activations:
+                            reason = "No activations generated" if processed_activations is None else f"Missing data for client(s): {cid1 if cid1 not in processed_activations else ''} {cid2 if cid2 not in processed_activations else ''}"
+                            updated_record = replace(record, 
+                                status="ActivationError", 
+                                error_message=f"Failed to get activations: {reason}"
+                            )
+                            all_ot_analysis_records.append(updated_record)
+                            continue
+                        
+                        # Extract client data
+                        data1 = processed_activations[cid1]
+                        data2 = processed_activations[cid2]
+                        
+                        # Create calculator using the factory
+                        calculator = OTCalculatorFactory.create_calculator(
+                            config=ot_config,
+                            client_id_1=cid1,
+                            client_id_2=cid2,
+                            num_classes=num_classes
+                        )
+                        
+                        if calculator is None:
+                            updated_record = replace(record, 
+                                status="CalculatorCreationError", 
+                                error_message=f"Failed to create calculator for method: {ot_config.method_type}"
+                            )
+                            all_ot_analysis_records.append(updated_record)
+                            continue
+                            
+                        # Calculate OT cost
+                        try:
+                            calculator.calculate_similarity(data1, data2, ot_config.params)
+                            ot_calc_results_dict = calculator.get_results()
+                            
+                            # Extract primary OT cost based on method type
+                            primary_ot_cost = None
+                            if ot_config.method_type == 'feature_error':
+                                primary_ot_cost = ot_calc_results_dict.get('ot_cost')
+                            elif ot_config.method_type == 'direct_ot':
+                                primary_ot_cost = ot_calc_results_dict.get('direct_ot_cost')
+                            else:
+                                # Try to find any "cost" in the results
+                                for k in ot_calc_results_dict:
+                                    if "cost" in k.lower() and isinstance(ot_calc_results_dict[k], (int, float)):
+                                        primary_ot_cost = ot_calc_results_dict[k]
+                                        break
+                            
+                            # Create successful record
+                            updated_record = replace(record, 
+                                status="Success", 
+                                ot_cost_value=primary_ot_cost, 
+                                ot_method_specific_results=ot_calc_results_dict
+                            )
+                            
+                        except Exception as e:
+                            # Handle OT calculation error
+                            error_details = f"{str(e)}\n{traceback.format_exc()}"
+                            logger.error(f"OT calculation error for {ot_config.name}: {error_details}")
+                            updated_record = replace(record, 
+                                status="OTError", 
+                                error_message=f"Error during OT calculation: {str(e)}"
+                            )
+                        
+                        # Add the record to results
+                        all_ot_analysis_records.append(updated_record)
         
-        # Create final DataFrame
-        logger.info("\n--- OT Pipeline Finished ---")
-        if not results_list:
-            logger.warning("WARNING: No results were generated")
-            return pd.DataFrame()
-        
-        results_df = pd.DataFrame(results_list)
-        return self._structure_output_dataframe(results_df)
-
-    def _create_placeholder_row(self, cost, client_id_1, client_id_2, config: OTConfig, 
-                              status, local_score, fedavg_score, delta):
-        """Creates a placeholder result row when OT calculation fails."""
-        return {
-            'Cost': cost,
-            'Client_1': client_id_1,
-            'Client_2': client_id_2,
-            'Param_Set_Name': config.name,
-            'OT_Method': config.method_type,
-            'Run_Status': status,
-            'Local_Final': local_score,
-            'FedAvg_Final': fedavg_score,
-            'Delta': delta,
-            'FeatureErrorOT_Cost': np.nan,
-            'FeatureErrorOT_Weighting': None,
-            'DirectOT_Cost': np.nan,
-            'DirectOT_DistMethod': None,
-            'DirectOT_Weighting': None,
-        }
-
-    def _populate_row_with_results(self, row_data: Dict, method_type: str, ot_results: Dict):
-        """Populates a row with OT calculation results."""
-        if not ot_results:
-            return
+        # Save the results
+        if all_ot_analysis_records:
+            logger.info(f"Saving {len(all_ot_analysis_records)} OT analysis records")
             
-        if method_type == 'feature_error':
-            row_data['FeatureErrorOT_Cost'] = ot_results.get('ot_cost', np.nan)
-            row_data['FeatureErrorOT_Weighting'] = ot_results.get('weighting_used', None)
-        elif method_type == 'direct_ot':
-            row_data['DirectOT_Cost'] = ot_results.get('direct_ot_cost', np.nan)
-            row_data['DirectOT_DistMethod'] = ot_results.get('feature_distance_method', None)
-            row_data['DirectOT_Weighting'] = ot_results.get('weighting_used', None)
-
-    def _structure_output_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Structures the output DataFrame with consistent column ordering."""
-        cols_order = [
-            'Cost', 'Client_1', 'Client_2',
-            'Param_Set_Name', 'OT_Method', 'Run_Status',
-            'Local_Final', 'FedAvg_Final', 'Delta',
-            'FeatureErrorOT_Cost', 'FeatureErrorOT_Weighting',
-            'DirectOT_Cost', 'DirectOT_DistMethod', 'DirectOT_Weighting'
-        ]
+            # Prepare metadata
+            ot_metadata = {
+                'dataset_analyzed': dataset_name,
+                'fl_clients_in_run': self.num_target_fl_clients,
+                'model_type_activations': model_type_to_analyze,
+                'activation_loader_type': activation_loader_type,
+                'performance_metric_key': performance_metric_key,
+                'ot_methods_used': [config.name for config in ot_configs_to_run],
+                'timestamp': pd.Timestamp.now().isoformat()
+            }
+            
+            # Convert OTAnalysisRecord objects to dicts for saving
+            record_dicts = [record.to_dict() for record in all_ot_analysis_records]
+            
+            # Save through the results manager using the proper enum value
+            ot_results_saver.save_results(
+                record_dicts, 
+                ExperimentType.OT_ANALYSIS,
+                ot_metadata
+            )
+            
+            logger.info("OT analysis complete and results saved")
+        else:
+            logger.warning("No OT analysis records were generated")
         
-        # Get columns present in the DataFrame, maintaining the desired order
-        cols_present = [col for col in cols_order if col in df.columns]
-        
-        # Add any extra columns that might have been generated
-        extra_cols = [col for col in df.columns if col not in cols_present]
-        
-        return df[cols_present + extra_cols]
+        # Convert results to DataFrame for convenience
+        return pd.DataFrame([record.to_dict() for record in all_ot_analysis_records])

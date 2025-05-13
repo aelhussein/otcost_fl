@@ -18,61 +18,6 @@ from ot_configs import DEFAULT_EPS, DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER
 # Configure module logger
 logger = logging.getLogger(__name__)
 
-class OTCalculatorFactory:
-    """ Factory class for creating OT calculator instances. """
-
-    @classmethod
-    def _get_calculator_map(cls) -> Dict[str, Type['BaseOTCalculator']]:
-        """ Internal method to access the map, allowing definition after classes. """
-        # Defined below BaseOTCalculator and its subclasses
-        return {
-            'feature_error': FeatureErrorOTCalculator,
-            'direct_ot': DirectOTCalculator,
-            # Register new calculator classes here
-        }
-
-    @classmethod
-    def register_calculator(cls, method_type: str, calculator_class: Type['BaseOTCalculator']):
-        """ Allows dynamic registration (though map is currently static). """
-        # This method might be less useful if the map is defined statically,
-        # but kept for potential future dynamic loading.
-        if not issubclass(calculator_class, BaseOTCalculator):
-             raise TypeError(f"{calculator_class.__name__} must inherit from BaseOTCalculator")
-        logger.info(f"Note: Dynamic registration not fully implemented with static map. Add '{method_type}' to _get_calculator_map.")
-
-
-    @staticmethod
-    def create_calculator(config: OTConfig, client_id_1: str, client_id_2: str, num_classes: int) -> Optional['BaseOTCalculator']:
-        """
-        Creates an instance of the appropriate OT calculator based on the config.
-        
-        Args:
-            config: OTConfig object with method_type and parameters
-            client_id_1: First client identifier
-            client_id_2: Second client identifier
-            num_classes: Number of classes in the dataset
-            
-        Returns:
-            An instance of the appropriate calculator or None if creation fails
-        """
-        calculator_map = OTCalculatorFactory._get_calculator_map()
-        calculator_class = calculator_map.get(config.method_type)
-
-        if calculator_class:
-            try:
-                instance = calculator_class(
-                    client_id_1=client_id_1,
-                    client_id_2=client_id_2,
-                    num_classes=num_classes
-                )
-                return instance
-            except Exception as e:
-                logger.warning(f"Failed to instantiate calculator for config '{config.name}' (type: {config.method_type}): {e}")
-                return None
-        else:
-            logger.warning(f"No calculator registered for method type '{config.method_type}' in config '{config.name}'. Skipping.")
-            return None
-
 # --- Base OT Calculator Class ---
 class BaseOTCalculator(ABC):
     """
@@ -321,7 +266,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
                     cost_matrix_k, max_cost_k = self._calculate_feature_distance_only(
                         h1_k, h2_k, **params
                     )
-                    
+                        
                 if cost_matrix_k is None or not np.isfinite(max_cost_k):
                     logger.warning(f"Cost matrix calculation failed for class {class_label}. Skipping.")
                     continue
@@ -351,7 +296,7 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
                     full_w1_k = np.ones(N_k, dtype=np.float64) / N_k
                     full_w2_k = np.ones(M_k, dtype=np.float64) / M_k
                     weighting_type_str = "Uniform"
-                    
+                        
                 # Check if sampling is needed within this class
                 features_dict_k = {
                     "client1": h1_k.cpu().numpy(),
@@ -383,6 +328,8 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
                     M_k_eff = len(indices2_k)
                     if verbose:
                         logger.info(f"Class {class_label}: Sampled client2 cols: {M_k_eff} from {M_k}")
+                
+                self.cost_matrices['feature_error_ot'] = None
                 
                 # Prepare marginals for this class
                 a_k, b_k = prepare_ot_marginals(
@@ -509,8 +456,8 @@ class FeatureErrorOTCalculator(BaseOTCalculator):
                 if verbose:
                     logger.info(f"Sampled client2 cost matrix columns: {M_eff} from original {M}")
             
-            # Store the full cost matrix for reference
-            self.cost_matrices['feature_error_ot'] = normalized_cost_matrix.cpu().numpy()
+            # Store None instead of the full cost matrix
+            self.cost_matrices['feature_error_ot'] = None
                 
             # --- Use prepare_ot_marginals with the possibly sampled weights ---
             a, b = prepare_ot_marginals(sampled_w1, sampled_w2, N_eff, M_eff, self.eps_num)
@@ -1077,8 +1024,8 @@ class DirectOTCalculator(BaseOTCalculator):
             feature_cost_matrix, max_feature_cost, params['normalize_cost'], self.eps_num
         )
             
-        # Store the feature cost matrix
-        self.cost_matrices['feature_cost'] = feature_cost_matrix.cpu().numpy()
+        # Store None instead of the full feature cost matrix
+        self.cost_matrices['feature_cost'] = None
         
         # --- Label Cost Matrix Calculation ---
         label_cost_matrix = self._calculate_label_cost_matrix(
@@ -1091,8 +1038,8 @@ class DirectOTCalculator(BaseOTCalculator):
             params['use_label_hellinger'], params['feature_weight'], params['label_weight']
         )
         
-        # Store the final full cost matrix used for OT
-        self.cost_matrices['direct_ot'] = cost_matrix.cpu().numpy()
+        # Store None instead of the full cost matrix
+        self.cost_matrices['direct_ot'] = None
         
         # --- Prepare weights for OT ---
         weight_type, full_w1, full_w2 = self._prepare_weights(
@@ -1159,8 +1106,8 @@ class DirectOTCalculator(BaseOTCalculator):
 
     def _calculate_label_cost_matrix(self, h1, h2, y1, y2, N, M, feature_cost_matrix, params):
         """Calculate label cost matrix using Hellinger distance."""
-        use_label_hellinger = params['use_label_hellinger']
-        verbose = params['verbose']
+        use_label_hellinger = params.get('use_label_hellinger')
+        verbose = params.get('verbose')
         
         # Initialize label cost matrix with same shape as feature cost matrix
         label_cost_matrix = torch.zeros_like(feature_cost_matrix)
@@ -1242,14 +1189,14 @@ class DirectOTCalculator(BaseOTCalculator):
                         if pair_key in label_pair_distances:
                             label_cost_matrix[i, j] = label_pair_distances[pair_key]
 
-                # Store the label cost matrix
-                self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
+                # Store None instead of the full label cost matrix
+                self.cost_matrices['label_cost'] = None
                 
             except Exception as e:
                 logger.warning(f"Label Hellinger distance calculation failed: {e}")
                 # Set all label costs to a neutral midpoint value
                 label_cost_matrix.fill_(0.5)
-                self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
+                self.cost_matrices['label_cost'] = None
                 use_label_hellinger = False  # Disable for the rest of the calculation
         else:
             if use_label_hellinger:
@@ -1257,8 +1204,8 @@ class DirectOTCalculator(BaseOTCalculator):
             use_label_hellinger = False
             # Fill with neutral value
             label_cost_matrix.fill_(0.5)
-            self.cost_matrices['label_cost'] = label_cost_matrix.cpu().numpy()
-            
+            self.cost_matrices['label_cost'] = None
+                
         return label_cost_matrix
 
     def _combine_cost_matrices(self, feature_cost_matrix, label_cost_matrix, use_label_hellinger, feature_weight, label_weight):

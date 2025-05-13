@@ -19,7 +19,7 @@ ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
 
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-N_WORKERS = 4 # Use 0 for simplicity/debugging
+N_WORKERS = 4 
 
 # --- Supported Algorithms ---
 ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
@@ -40,7 +40,7 @@ COMMON_TABULAR_PARAMS = dict(
     batch_size=32,
     epochs_per_round=3,
     rounds=50,
-    rounds_tune_inner=10,
+    rounds_tune_inner=30,
     runs=50,
     runs_tune=5,
     metric='F1', # Default metric for tabular
@@ -56,8 +56,9 @@ COMMON_TABULAR_PARAMS = dict(
     activation_extractor_type='hook_based',
     criterion_type="CrossEntropyLoss", # Default criterion
     source_args={}, # For raw data loading parameters
-    selection_criterion_key='val_scores', # Default for tabular: optimize for scores (F1, etc.)
-    selection_criterion_direction_overrides={}, # Empty dict means use defaults based on key name
+    selection_criterion_key='val_losses', # Default for tabular: optimize for scores (F1, etc.)
+    selection_criterion_direction_overrides={}, # Empty dict means use defaults based on key name,
+    n_workers = 0
 )
 
 # --- Common Configuration for Image Datasets ---
@@ -85,8 +86,9 @@ COMMON_IMAGE_PARAMS = dict(
     activation_extractor_type='hook_based',
     criterion_type="CrossEntropyLoss", # Default criterion
     source_args={}, # For raw data loading parameters
-    selection_criterion_key='val_scores', # Default for image: optimize for accuracy
+    selection_criterion_key='val_losses', # Default for image: optimize for accuracy
     selection_criterion_direction_overrides={}, # Empty dict means use defaults based on key name
+    n_workers = 4
 )
 
 
@@ -163,7 +165,6 @@ DEFAULT_PARAMS = {
             'feature_shift_sigma': 1.5,
             'cols_percentage': 0.5,
         },
-        'learning_rates_try': [5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
         # criterion_type defaults to "CrossEntropyLoss"
     },
     # === Image Datasets ===
@@ -226,8 +227,10 @@ DEFAULT_PARAMS = {
         'criterion_type': "ISICLoss", # Explicitly set criterion
         'batch_size': 128,
         'default_lr' : 1e-3, # Retained specific LR
-        'selection_criterion_key': 'val_scores'
+        'selection_criterion_key': 'val_scores',
+        'n_workers':4
     },
+    
     'IXITiny': {
         # Not using COMMON_IMAGE_PARAMS as it's too different
         'dataset_name': 'IXITiny',
@@ -261,20 +264,22 @@ DEFAULT_PARAMS = {
         'shift_after_split': False, # Not applicable for pre-split segmentation
         'activation_extractor_type': 'rep_vector',
         'criterion_type': "DiceLoss", # Explicitly set criterion
-          'selection_criterion_key': 'val_scores'
+        'selection_criterion_key': 'val_losses',
+        'n_workers':4
     }
 }
 
 # --- Dataset Costs / Experiment Parameters ---
 DATASET_COSTS = {
     'Synthetic_Label': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
-    'Synthetic_Feature': [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
-    'Credit': [0.0, 0.05, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 0.9, 1.0],
-    'EMNIST': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 0.9, 1.0],
-    'CIFAR': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 0.9, 1.0],
-    'Synthetic_Concept': [0.0, 0.05, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 0.9, 1.0],
-    'IXITiny': ['guys_hh', 'iop_guys', 'iop_hh', 'all'], # Using string keys now
-    'ISIC': ['bcn_vmole', 'bcn_vmod', 'bcn_rose', 'bcn_msk', 'bcn_vienna',
-             'vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',
-             'vmod_msk', 'vmod_vienna','rose_msk', 'rose_vienna','msk_vienna'], # Using string keys
+    'Synthetic_Feature': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
+    'Credit': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
+    'EMNIST': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
+    'CIFAR': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
+    'Synthetic_Concept': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
+    'IXITiny': ['guys_hh', 'iop_guys', 'iop_hh', 'all'], # Using string keys now,
+    'ISIC': ['bcn_vmole','vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',], 
+    # 'ISIC': ['bcn_vmole', 'bcn_vmod', 'bcn_rose', 'bcn_msk', 'bcn_vienna',
+    #          'vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',
+    #          'vmod_msk', 'vmod_vienna','rose_msk', 'rose_vienna','msk_vienna'], # Using string keys
 }

@@ -20,7 +20,7 @@ sys.path.insert(0, _PROJECT_ROOT)
 sys.path.insert(0, _CURRENT_DIR)
 
 # --- Import Project Modules ---
-from configs import DATASETS, RESULTS_DIR, DEFAULT_PARAMS, DATASET_COSTS
+from configs import  RESULTS_DIR, DEFAULT_PARAMS, DATASET_COSTS
 from pipeline import ExperimentType, ExperimentConfig, Experiment
 
 
@@ -87,12 +87,11 @@ def main():
     # --- Directory Setup ---
     try:
         os.makedirs(RESULTS_DIR, exist_ok=True)
-        for exp_type_val in [ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION, ExperimentType.REG_PARAM, ExperimentType.DIVERSITY]:
+        for exp_type_val in [ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION, ExperimentType.REG_PARAM]:
             dir_name = exp_type_val # Default name
             if exp_type_val == ExperimentType.LEARNING_RATE: dir_name = 'lr_tuning'
             if exp_type_val == ExperimentType.EVALUATION: dir_name = 'evaluation'
             if exp_type_val == ExperimentType.REG_PARAM: dir_name = 'reg_param_tuning'
-            if exp_type_val == ExperimentType.DIVERSITY: dir_name = 'diversity'
             os.makedirs(os.path.join(RESULTS_DIR, dir_name), exist_ok=True)
         print(f"Results will be saved in subdirectories under: {RESULTS_DIR}")
     except OSError as e:

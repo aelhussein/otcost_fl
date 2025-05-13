@@ -157,8 +157,10 @@ class MetricKey:
 
 # Define Experiment types locally
 class ExperimentType:
-    LEARNING_RATE = 'learning_rate'; REG_PARAM = 'reg_param'
-    EVALUATION = 'evaluation'; DIVERSITY = 'diversity' # Keep diversity type if needed
+    LEARNING_RATE = 'learning_rate'
+    REG_PARAM = 'reg_param'
+    EVALUATION = 'evaluation' 
+    OT_ANALYSIS = 'ot_analysis' 
 
 
 @dataclass
@@ -288,16 +290,22 @@ class TrainingManager:
         """Moves batch to compute device and handles labels."""
         if not isinstance(batch, (list, tuple)) or len(batch) < 2: return None
         batch_x, batch_y_orig = batch[0], batch[1]
+        
+        # Move input to device
         batch_x_dev = move_to_device(batch_x, self.compute_device)
-        batch_y_dev = move_to_device(batch_y_orig, self.compute_device)
+        
+        # Always move label tensor to the same device as inputs with non_blocking=True for efficiency
+        batch_y_dev = batch_y_orig.to(self.compute_device, non_blocking=True) if isinstance(batch_y_orig, torch.Tensor) else batch_y_orig
+        
+        # Keep original labels on CPU for metrics calculation if needed
         batch_y_orig_cpu = batch_y_orig.cpu() if isinstance(batch_y_orig, torch.Tensor) else batch_y_orig
 
         # Process labels on device based on criterion type
         if isinstance(criterion, nn.CrossEntropyLoss) or isinstance(criterion, WeightedCELoss) or isinstance(criterion, ISICLoss):
-             if batch_y_dev.ndim == 2 and batch_y_dev.shape[1] == 1: batch_y_dev = batch_y_dev.squeeze(1)
-             batch_y_dev = batch_y_dev.long()
+            if batch_y_dev.ndim == 2 and batch_y_dev.shape[1] == 1: batch_y_dev = batch_y_dev.squeeze(1)
+            batch_y_dev = batch_y_dev.long()
         elif callable(criterion) and criterion.__name__ == 'get_dice_loss':
-             batch_y_dev = batch_y_dev.float()
+            batch_y_dev = batch_y_dev.float()
 
         return batch_x_dev, batch_y_dev, batch_y_orig_cpu
 
