@@ -20,7 +20,7 @@ ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 N_WORKERS = 4 
-
+SELECTION_CRITERION_KEY = 'val_scores'
 # --- Supported Algorithms ---
 ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
 
@@ -56,7 +56,7 @@ COMMON_TABULAR_PARAMS = dict(
     activation_extractor_type='hook_based',
     criterion_type="CrossEntropyLoss", # Default criterion
     source_args={}, # For raw data loading parameters
-    selection_criterion_key='val_losses', # Default for tabular: optimize for scores (F1, etc.)
+    selection_criterion_key= SELECTION_CRITERION_KEY, # Default for tabular: optimize for scores (F1, etc.)
     selection_criterion_direction_overrides={}, # Empty dict means use defaults based on key name,
     n_workers = 0
 )
@@ -86,7 +86,7 @@ COMMON_IMAGE_PARAMS = dict(
     activation_extractor_type='hook_based',
     criterion_type="CrossEntropyLoss", # Default criterion
     source_args={}, # For raw data loading parameters
-    selection_criterion_key='val_losses', # Default for image: optimize for accuracy
+    selection_criterion_key= SELECTION_CRITERION_KEY, # Default for image: optimize for accuracy
     selection_criterion_direction_overrides={}, # Empty dict means use defaults based on key name
     n_workers = 4
 )
@@ -227,7 +227,7 @@ DEFAULT_PARAMS = {
         'criterion_type': "ISICLoss", # Explicitly set criterion
         'batch_size': 128,
         'default_lr' : 1e-3, # Retained specific LR
-        'selection_criterion_key': 'val_scores',
+        'selection_criterion_key': SELECTION_CRITERION_KEY,
         'n_workers':4
     },
     
@@ -264,7 +264,7 @@ DEFAULT_PARAMS = {
         'shift_after_split': False, # Not applicable for pre-split segmentation
         'activation_extractor_type': 'rep_vector',
         'criterion_type': "DiceLoss", # Explicitly set criterion
-        'selection_criterion_key': 'val_losses',
+        'selection_criterion_key': SELECTION_CRITERION_KEY,
         'n_workers':4
     }
 }
