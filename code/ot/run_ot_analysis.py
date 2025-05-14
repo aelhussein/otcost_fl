@@ -13,9 +13,9 @@ import traceback
 
 # Add project root to path
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(_CURRENT_DIR))
+_PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
-
+sys.path.insert(0, _CURRENT_DIR)
 # Import project modules
 from configs import DEFAULT_PARAMS, ACTIVATION_DIR
 from ot_pipeline_runner import OTPipelineRunner
@@ -64,7 +64,7 @@ def main():
         help="DataLoader type to use for activation extraction: 'train', 'val', or 'test'."
     )
     parser.add_argument(
-        "-pmk", "--performance_metric_key",
+        "-mc", "--metric",
         default="score",
         choices=["score", "loss"],
         help="Metric to use for performance comparison: 'score' or 'loss'."
@@ -77,20 +77,22 @@ def main():
     
     args = parser.parse_args()
 
+    # Configure paths based on the metric
+    from configs import configure_paths
+    configure_paths(args.metric)
+    from configs import ACTIVATION_DIR  # Re-import after paths have been configured
+
     # --- Resolve num_fl_clients ---
     num_fl_clients = args.num_fl_clients
     if num_fl_clients is None:
         num_fl_clients = DEFAULT_PARAMS[args.dataset].get('default_num_clients', 5)
         logger.info(f"Using default number of FL clients from config: {num_fl_clients}")
     
-    # --- Create directories ---
-    os.makedirs(ACTIVATION_DIR, exist_ok=True)
-    
     # --- Run OT Pipeline ---
     try:
         logger.info(f"Starting OT analysis for dataset '{args.dataset}' with {num_fl_clients} FL clients")
         logger.info(f"Model type: {args.model_type}, Activation loader: {args.activation_loader}")
-        logger.info(f"Performance metric: {args.performance_metric_key}")
+        logger.info(f"Performance metric: {args.metric}")
         
         runner = OTPipelineRunner(
             num_target_fl_clients=num_fl_clients, 
@@ -101,7 +103,7 @@ def main():
             dataset_name=args.dataset,
             model_type_to_analyze=args.model_type,
             activation_loader_type=args.activation_loader,
-            performance_metric_key=args.performance_metric_key,
+            performance_metric_key=args.metric,
             force_activation_regen=args.force_activation_regen
         )
         

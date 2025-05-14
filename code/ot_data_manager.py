@@ -444,7 +444,7 @@ class OTDataManager:
         """
         Loads final performance metrics from FL TrialRecords.
         """
-        self._initialize_fl_results_manager(dataset_name)
+        self._initialize_results_manager(dataset_name)
         all_records, _ = self.results_manager.load_results(ExperimentType.EVALUATION)
         
         if not all_records:

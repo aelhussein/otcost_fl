@@ -1,15 +1,14 @@
 #!/bin/bash
 
 # Default values
-#DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR"  "ISIC")
-#DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit")
-DEFAULT_DATASETS+=("CIFAR")
-#DEFAULT_EXP_TYPES=("learning_rate")
-DEFAULT_EXP_TYPES=("evaluation")
+DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR" "ISIC")
+DEFAULT_EXP_TYPES=("learning_rate")
+#DEFAULT_EXP_TYPES=("evaluation")
 DEFAULT_DIR='/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'
 DEFAULT_ENV_PATH='/gpfs/commons/home/aelhussein/anaconda3/bin/activate'
 DEFAULT_ENV_NAME='cuda_env_ne1'
-DEFAULT_NUM_CLIENTS=""
+DEFAULT_NUM_CLIENTS="2"
+DEFAULT_METRIC="score"
 
 # Function to display usage
 show_usage() {
@@ -20,14 +19,16 @@ show_usage() {
     echo "  --dir=<path>         Root directory (default: $DEFAULT_DIR)"
     echo "  --env-path=<path>    Environment activation path (default: $DEFAULT_ENV_PATH)"
     echo "  --env-name=<name>    Environment name (default: $DEFAULT_ENV_NAME)"
-    echo "  --num-clients=<int>  Override default number of clients (optional)"
+    echo "  --num-clients=<int>  Number of clients (default: $DEFAULT_NUM_CLIENTS)"
+    echo "  --metric=<str>       Metric to use (default: $DEFAULT_METRIC)"
     echo "  --help               Show this help message"
 }
 
 # Parse named arguments
 datasets=() # Initialize as empty arrays
 experiment_types=()
-#num_clients_override="" # Initialize specific variable for client override
+num_clients="$DEFAULT_NUM_CLIENTS"
+metric="$DEFAULT_METRIC"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,8 +47,11 @@ while [ $# -gt 0 ]; do
         --env-name=*)
             ENV_NAME="${1#*=}"
             ;;
-        --num-clients=*) # MODIFIED: Added num-clients parsing
-            num_clients_override="${1#*=}"
+        --num-clients=*)
+            num_clients="${1#*=}"
+            ;;
+        --metric=*)
+            metric="${1#*=}"
             ;;
         --help)
             show_usage
@@ -73,10 +77,10 @@ fi
 DIR="${DIR:-$DEFAULT_DIR}"
 ENV_PATH="${ENV_PATH:-$DEFAULT_ENV_PATH}"
 ENV_NAME="${ENV_NAME:-$DEFAULT_ENV_NAME}"
-# num_clients_override keeps its value or remains empty (default)
 
 # Create log directories
 mkdir -p logs/outputs logs/errors
+mkdir -p logs/outputs_${metric} logs/errors_${metric}
 
 # Echo configuration
 echo "Running with configuration:"
@@ -85,15 +89,8 @@ echo "Experiment types: ${experiment_types[*]}"
 echo "Directory: $DIR"
 echo "Environment path: $ENV_PATH"
 echo "Environment name: $ENV_NAME"
-# MODIFIED: Echo client override status
-if [ -n "$num_clients_override" ]; then
-    echo "Client Count Override: $num_clients_override"
-    nc_argument="-nc $num_clients_override" # Prepare argument string
-else
-    echo "Client Count Override: Not specified (using default from config)"
-    nc_argument="" # No argument if not specified
-fi
-echo
+echo "Number of clients: $num_clients"
+echo "Metric: $metric"
 
 # Submit jobs
 for dataset in "${datasets[@]}"; do
@@ -117,7 +114,7 @@ for dataset in "${datasets[@]}"; do
         gres_line=""
     fi
     for exp_type in "${experiment_types[@]}"; do
-        job_name_suffix="_nc${num_clients_override}"
+        job_name_suffix="_nc${num_clients}_${metric}"
         job_name="${dataset}_${exp_type}${job_name_suffix}"
 
         cat << EOF > temp_submit_${job_name}.sh
@@ -132,8 +129,8 @@ ${gres_line}
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=40G
 #SBATCH --time=30:00:00
-#SBATCH --output=logs/outputs/${job_name}.txt
-#SBATCH --error=logs/errors/${job_name}.txt
+#SBATCH --output=logs/outputs_${metric}/${job_name}.txt
+#SBATCH --error=logs/errors_${metric}/${job_name}.txt
 #SBATCH --exclude=ne1dg6-004
 
 # Activate the environment
@@ -144,9 +141,8 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export PYTHON_LOG_DIR="logs/python_logs"
 
 # Run the Python script
-# MODIFIED: Added the optional nc_argument
-echo "Running: python ${DIR}/code/evaluation/run.py -ds ${dataset} -exp ${exp_type} ${nc_argument}"
-python ${DIR}/code/evaluation/run.py -ds ${dataset} -exp ${exp_type} ${nc_argument}
+echo "Running: python ${DIR}/code/evaluation/run.py -ds ${dataset} -exp ${exp_type} -nc ${num_clients} -mc ${metric}"
+python ${DIR}/code/evaluation/run.py -ds ${dataset} -exp ${exp_type} -nc ${num_clients} -mc ${metric}
 
 echo "Job finished with exit code \$?"
 

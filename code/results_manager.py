@@ -95,29 +95,29 @@ class OTAnalysisRecord:
     ot_method_specific_results: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict:
-        """Converts the record to a dictionary suitable for JSON serialization."""
-        result = asdict(self)
+        """Converts the record to a dictionary suitable for JSON serialization,
+        handling NumPy types robustly."""
         
-        # Convert NumPy types to Python types for JSON serialization
-        for key in ['ot_cost_value', 'fl_local_metric', 'fl_fedavg_metric', 'fl_performance_delta']:
-            if isinstance(result[key], (np.float32, np.float64, np.int32, np.int64)):
-                result[key] = result[key].item()
-        
-        # Process method-specific results
-        if result['ot_method_specific_results']:
-            processed_results = {}
-            for k, v in result['ot_method_specific_results'].items():
-                if isinstance(v, (np.float32, np.float64, np.int32, np.int64)):
-                    processed_results[k] = v.item()
-                elif isinstance(v, np.ndarray):
-                    processed_results[k] = v.tolist()
-                elif isinstance(v, list) and v and isinstance(v[0], (np.float32, np.float64, np.int32, np.int64)):
-                    processed_results[k] = [x.item() if isinstance(x, (np.float32, np.float64, np.int32, np.int64)) else x for x in v]
-                else:
-                    processed_results[k] = v
-            result['ot_method_specific_results'] = processed_results
-            
-        return result
+        # Start with the dictionary from asdict
+        record_as_dict = asdict(self)
+
+        # Recursively convert NumPy types in the dictionary
+        def convert_numpy_types_recursive(item):
+            if isinstance(item, list):
+                return [convert_numpy_types_recursive(i) for i in item]
+            elif isinstance(item, tuple):
+                return tuple(convert_numpy_types_recursive(i) for i in item)
+            elif isinstance(item, dict):
+                return {k: convert_numpy_types_recursive(v) for k, v in item.items()}
+            elif isinstance(item, np.ndarray):
+                return item.tolist()  # Convert numpy array to Python list
+            elif isinstance(item, np.generic):  # Catches all numpy scalars (int, float, bool)
+                return item.item()  # Convert to Python native type
+            elif isinstance(item, torch.Tensor):  # Check for torch.Tensor without direct import
+                return item.cpu().tolist() if item.numel() > 1 else item.cpu().item()
+            return item
+
+        return convert_numpy_types_recursive(record_as_dict)
 
 # =============================================================================
 # == Path Management ==

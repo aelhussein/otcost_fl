@@ -20,7 +20,7 @@ sys.path.insert(0, _PROJECT_ROOT)
 sys.path.insert(0, _CURRENT_DIR)
 
 # --- Import Project Modules ---
-from configs import  RESULTS_DIR, DEFAULT_PARAMS, DATASET_COSTS
+from configs import DEFAULT_PARAMS, DATASET_COSTS, configure_paths
 from pipeline import ExperimentType, ExperimentConfig, Experiment
 
 
@@ -73,18 +73,26 @@ def main():
         choices=[ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION, ExperimentType.REG_PARAM], # Added REG_PARAM choice
         help="Select the type of experiment: 'learning_rate', 'reg_param', or 'evaluation'."
     )
-    # --- MODIFICATION START: Add num_clients argument ---
+
     parser.add_argument(
         "-nc", "--num_clients",
         type=int,
-        default=None, # Default is None, meaning use config default
-        help="Override the default number of clients specified in configs.py."
+        default=2,
+        help="Number of clients"
     )
-    # --- MODIFICATION END ---
+
+    parser.add_argument(
+        "-mc", "--metric",
+        type=str,
+        default='score',
+        help="Metric to evaluate the model performance."
+    )
 
     args = parser.parse_args()
 
     # --- Directory Setup ---
+    configure_paths(args.metric) # Configure paths based on the metric
+    from configs import RESULTS_DIR
     try:
         os.makedirs(RESULTS_DIR, exist_ok=True)
         for exp_type_val in [ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION, ExperimentType.REG_PARAM]:

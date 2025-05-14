@@ -18,6 +18,61 @@ from ot_configs import DEFAULT_EPS, DEFAULT_OT_REG, DEFAULT_OT_MAX_ITER
 # Configure module logger
 logger = logging.getLogger(__name__)
 
+class OTCalculatorFactory:
+    """ Factory class for creating OT calculator instances. """
+
+    @classmethod
+    def _get_calculator_map(cls) -> Dict[str, Type['BaseOTCalculator']]:
+        """ Internal method to access the map, allowing definition after classes. """
+        # Defined below BaseOTCalculator and its subclasses
+        return {
+            'feature_error': FeatureErrorOTCalculator,
+            'direct_ot': DirectOTCalculator,
+            # Register new calculator classes here
+        }
+
+    @classmethod
+    def register_calculator(cls, method_type: str, calculator_class: Type['BaseOTCalculator']):
+        """ Allows dynamic registration (though map is currently static). """
+        # This method might be less useful if the map is defined statically,
+        # but kept for potential future dynamic loading.
+        if not issubclass(calculator_class, BaseOTCalculator):
+             raise TypeError(f"{calculator_class.__name__} must inherit from BaseOTCalculator")
+        logger.info(f"Note: Dynamic registration not fully implemented with static map. Add '{method_type}' to _get_calculator_map.")
+
+
+    @staticmethod
+    def create_calculator(config: OTConfig, client_id_1: str, client_id_2: str, num_classes: int) -> Optional['BaseOTCalculator']:
+        """
+        Creates an instance of the appropriate OT calculator based on the config.
+        
+        Args:
+            config: OTConfig object with method_type and parameters
+            client_id_1: First client identifier
+            client_id_2: Second client identifier
+            num_classes: Number of classes in the dataset
+            
+        Returns:
+            An instance of the appropriate calculator or None if creation fails
+        """
+        calculator_map = OTCalculatorFactory._get_calculator_map()
+        calculator_class = calculator_map.get(config.method_type)
+
+        if calculator_class:
+            try:
+                instance = calculator_class(
+                    client_id_1=client_id_1,
+                    client_id_2=client_id_2,
+                    num_classes=num_classes
+                )
+                return instance
+            except Exception as e:
+                logger.warning(f"Failed to instantiate calculator for config '{config.name}' (type: {config.method_type}): {e}")
+                return None
+        else:
+            logger.warning(f"No calculator registered for method type '{config.method_type}' in config '{config.name}'. Skipping.")
+            return None
+
 # --- Base OT Calculator Class ---
 class BaseOTCalculator(ABC):
     """

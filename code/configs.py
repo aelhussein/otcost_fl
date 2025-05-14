@@ -8,19 +8,50 @@ Streamlined version.
 import os
 import torch
 
+# --- Global Settings ---
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+N_WORKERS = 4 
+METIRC = 'score' # 'loss' or 'score'
+SELECTION_CRITERION_KEY = 'val_scores' if METIRC == 'loss' else 'val_scores'
+
 # --- Core Directories ---
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT  = os.path.dirname(_CURRENT_DIR)
 ROOT_DIR = _PROJECT_ROOT
 DATA_DIR = os.path.join(ROOT_DIR, 'data')
+
+# Default directories (will be updated by configure_paths)
 RESULTS_DIR = os.path.join(ROOT_DIR, 'results')
 MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models')
 ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
 
-# --- Global Settings ---
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-N_WORKERS = 4 
-SELECTION_CRITERION_KEY = 'val_scores'
+# Function to configure paths based on metric
+def configure_paths(metric='score'):
+    """Configure directory paths based on the specified metric."""
+    global RESULTS_DIR, MODEL_SAVE_DIR, ACTIVATION_DIR
+    
+    # Set directories based on metric
+    if metric == 'loss':
+        RESULTS_DIR = os.path.join(ROOT_DIR, 'results_loss')
+        MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models_loss')
+        ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations_loss')
+    else:
+        # Default paths for 'score' or any other metric
+        RESULTS_DIR = os.path.join(ROOT_DIR, 'results')
+        MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models')
+        ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
+    
+    # Create directories if they don't exist
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+    os.makedirs(ACTIVATION_DIR, exist_ok=True)
+    
+    return {
+        'RESULTS_DIR': RESULTS_DIR,
+        'MODEL_SAVE_DIR': MODEL_SAVE_DIR,
+        'ACTIVATION_DIR': ACTIVATION_DIR
+    }
+
 # --- Supported Algorithms ---
 ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
 
