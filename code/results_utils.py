@@ -25,6 +25,7 @@ except ImportError:
 def mean_ci_bootstrap(values: np.ndarray, confidence: float = 0.95, n_bootstrap: int = 1000, seed: int = 42) -> Tuple[float, float, float]:
     """
     Return mean and bootstrapped CI at the specified confidence level.
+    Optimized version using vectorized operations.
     
     Args:
         values: Array of values to compute CI for
@@ -52,14 +53,16 @@ def mean_ci_bootstrap(values: np.ndarray, confidence: float = 0.95, n_bootstrap:
     if n == 1:
         return mean, mean, mean
     
-    # Generate bootstrap samples
-    rng = np.random.RandomState(seed)  # For reproducibility
-    bootstrap_means = np.zeros(n_bootstrap)
+    # Set random seed
+    np.random.seed(seed)
     
-    for i in range(n_bootstrap):
-        # Sample with replacement
-        bootstrap_sample = rng.choice(values, size=n, replace=True)
-        bootstrap_means[i] = np.mean(bootstrap_sample)
+    # Generate all bootstrap indices at once (shape: n_bootstrap x n)
+    # This creates a 2D array where each row is a bootstrap sample's indices
+    bootstrap_indices = np.random.randint(0, n, size=(n_bootstrap, n))
+    
+    # Use advanced indexing to get all bootstrap samples at once
+    # Then compute means along axis 1 (row-wise)
+    bootstrap_means = np.mean(values[bootstrap_indices], axis=1)
     
     # Compute percentiles for confidence interval
     alpha = (1 - confidence) / 2
@@ -156,6 +159,7 @@ def plot_losses_per_cost(
     target_costs: List[Any],
     confidence_level: float = 0.95,
     start_round: int = 1,
+    plot_losses: bool = False,
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Create a composite figure of curves + bar plots for target_costs.
@@ -212,43 +216,10 @@ def plot_losses_per_cost(
         print("No valid data found – nothing to plot.")
         return None, None
 
-    # Compute collaboration-benefit ratios
-    overall_benefit = []  # (% improvement)
-    per_client_benefit = defaultdict(dict)  # cost → {client: %}
-    client_ids = set()
-
-    for cost in costs:
-        loc = agg_test[cost]["local"]
-        fed = agg_test[cost]["fedavg"]
-        if loc and fed and loc["mean_score"] > 0:
-            overall_benefit.append(
-                (fed["mean_score"] - loc["mean_score"]) / loc["mean_score"] * 100
-            )
-        else:
-            overall_benefit.append(0.0)
-
-        # per-client – average across matching runs
-        loc_runs = records_by_cs[cost]["local"]
-        fed_runs = records_by_cs[cost]["fedavg"]
-        for lr, fr in zip(loc_runs, fed_runs):
-            lcm = lr.metrics.get("client_test_metrics", {})
-            fcm = fr.metrics.get("client_test_metrics", {})
-            for cid in lcm.keys() & fcm.keys():
-                lsc = lcm[cid].get("test_score", 0)
-                fsc = fcm[cid].get("test_score", 0)
-                if lsc > 0:
-                    per_client_benefit[cost].setdefault(cid, []).append((fsc - lsc) / lsc * 100)
-                client_ids.add(cid)
-
-    # Average across runs
-    client_ids = sorted(client_ids)
-    for cost in costs:
-        for cid in client_ids:
-            vals = per_client_benefit[cost].get(cid, [])
-            per_client_benefit[cost][cid] = float(np.mean(vals)) if vals else 0.0
-
     # Figure layout (rows = 1 + |costs|, cols = 2)
-    n_rows = 1 + len(costs)
+    n_rows = 1 
+    if plot_losses:
+        n_rows += len(costs)
     fig, axes = plt.subplots(n_rows, 2, figsize=(12, 4.5 * n_rows), sharey=False)
 
     # Final-test metrics – row 0
@@ -264,7 +235,7 @@ def plot_losses_per_cost(
         return bars[0].get_facecolor() if not color else color  # Return actual color used
 
     # Loss
-    ax_loss = axes[0, 0]
+    ax_loss = axes[0, 0] if plot_losses else axes[0]
     loc_loss = [agg_test[c]["local"]["mean_loss"] for c in costs]
     fed_loss = [agg_test[c]["fedavg"]["mean_loss"] for c in costs]
     loc_loss_err = [
@@ -286,7 +257,7 @@ def plot_losses_per_cost(
     ax_loss.legend()
 
     # Score
-    ax_score = axes[0, 1]
+    ax_score = axes[0, 1] if plot_losses else axes[1]
     loc_score = [agg_test[c]["local"]["mean_score"] for c in costs]
     fed_score = [agg_test[c]["fedavg"]["mean_score"] for c in costs]
     loc_score_err = [
@@ -306,9 +277,65 @@ def plot_losses_per_cost(
     ax_score.set_ylabel("Score")
     ax_score.grid(True, ls="--", alpha=0.3)
     ax_score.legend()
-    
-    # Add more plotting for the training curves and per-client benefits here
-    # This would complete the implementation of what's started in paste-3.txt
+    if plot_losses:
+        for row_idx, cost in enumerate(costs, start=1):
+            min_r = min_rounds_per_cost[cost]
+            rounds = np.arange(start_round, min_r)
+            
+            # Training loss curves (left column)
+            ax_train = axes[row_idx, 0]
+            loc_data = agg_curves[cost]["local"]
+            fed_data = agg_curves[cost]["fedavg"]
+            
+            # Plot local training
+            ax_train.plot(rounds, loc_data["mean_train"][start_round:min_r], color=local_color, 
+                        linestyle='-', label="Local")
+            ax_train.fill_between(rounds, 
+                                loc_data["lower_train"][start_round:min_r], 
+                                loc_data["upper_train"][start_round:min_r], 
+                                color=local_color, alpha=0.2)
+            
+            # Plot fedavg training
+            ax_train.plot(rounds, fed_data["mean_train"][start_round:min_r], color=fedavg_color, 
+                        linestyle='-', label="FedAvg")
+            ax_train.fill_between(rounds, 
+                                fed_data["lower_train"][start_round:min_r], 
+                                fed_data["upper_train"][start_round:min_r], 
+                                color=fedavg_color, alpha=0.2)
+            
+            ax_train.set_title(f"Training Loss for Cost = {cost}")
+            ax_train.set_xlabel("Round")
+            ax_train.set_ylabel("Training Loss")
+            ax_train.grid(True, ls="--", alpha=0.3)
+            ax_train.legend()
+            
+            # Validation loss curves (right column)
+            ax_val = axes[row_idx, 1]
+            
+            # Plot local validation
+            ax_val.plot(rounds, loc_data["mean_val"][start_round:min_r], color=local_color, 
+                        linestyle='--', label="Local")
+            ax_val.fill_between(rounds, 
+                            loc_data["lower_val"][start_round:min_r], 
+                            loc_data["upper_val"][start_round:min_r], 
+                            color=local_color, alpha=0.2)
+            
+            # Plot fedavg validation
+            ax_val.plot(rounds, fed_data["mean_val"][start_round:min_r], color=fedavg_color, 
+                        linestyle='--', label="FedAvg")
+            ax_val.fill_between(rounds, 
+                            fed_data["lower_val"][start_round:min_r], 
+                            fed_data["upper_val"][start_round:min_r], 
+                            color=fedavg_color, alpha=0.2)
+            
+            ax_val.set_title(f"Validation Loss for Cost = {cost}")
+            ax_val.set_xlabel("Round")
+            ax_val.set_ylabel("Validation Loss")
+            ax_val.grid(True, ls="--", alpha=0.3)
+            ax_val.legend()
+
+        # Adjust layout
+        plt.tight_layout()
     
     return fig, axes
 

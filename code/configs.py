@@ -277,7 +277,7 @@ DATASET_COSTS = {
     'EMNIST': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
     'CIFAR': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
     'Synthetic_Concept': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
-    'IXITiny': ['guys_hh', 'iop_guys', 'iop_hh', 'all'], # Using string keys now,
+    'IXITiny': ['guys_hh', 'iop_guys', 'iop_hh', 'all'], 
     'ISIC': ['bcn_vmole','vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',], 
     # 'ISIC': ['bcn_vmole', 'bcn_vmod', 'bcn_rose', 'bcn_msk', 'bcn_vienna',
     #          'vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',

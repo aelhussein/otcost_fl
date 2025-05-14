@@ -269,12 +269,24 @@ class ResultsManager:
         except Exception as e:
             print(f"ERROR saving results/metadata for {experiment_type}: {e}")
 
-    def load_results(self, experiment_type: str) -> Tuple[List[Dict], Optional[Dict]]:
-        """Loads results list and metadata from JSON files."""
+    def load_results(self, experiment_type: str) -> Tuple[List[Any], Optional[Dict]]:
+        """
+        Loads results list and metadata from JSON files.
+        
+        For normal experiment types (LEARNING_RATE, REG_PARAM, EVALUATION),
+        converts loaded dictionaries to TrialRecord objects for compatibility
+        with visualization functions.
+        
+        Returns:
+            Tuple containing:
+            - List of TrialRecord objects (or dictionaries for OT_ANALYSIS)
+            - Optional metadata dictionary
+        """
         results_path, meta_path = self.path_builder.get_results_path(experiment_type)
         loaded_dicts = []
         metadata = None
 
+        # Load metadata if available
         if os.path.exists(meta_path):
             try:
                 with open(meta_path, 'r') as f_meta:
@@ -282,6 +294,7 @@ class ResultsManager:
             except Exception as e:
                 print(f"Warning: Failed to load metadata from {meta_path}: {e}")
 
+        # Load results if available
         if os.path.exists(results_path):
             try:
                 with open(results_path, 'r') as f_results:
@@ -291,6 +304,21 @@ class ResultsManager:
                 print(f"ERROR: Failed to load or parse results from {results_path}: {e}")
                 loaded_dicts = []  # Return empty list on error
 
+        # Convert dictionaries to appropriate objects based on experiment type
+        if loaded_dicts:
+            if experiment_type == ExperimentType.OT_ANALYSIS:
+                # Keep as dictionaries for OT analysis
+                return loaded_dicts, metadata
+            else:
+                # Convert to TrialRecord objects for standard experiment types
+                try:
+                    trial_records = [TrialRecord(**record_dict) for record_dict in loaded_dicts]
+                    return trial_records, metadata
+                except Exception as e:
+                    print(f"WARNING: Error converting dictionaries to TrialRecord objects: {e}")
+                    print(f"Returning raw dictionaries instead - some functions may not work correctly.")
+                    
+        # Default return (empty list or unconverted dictionaries)
         return loaded_dicts, metadata
 
     # --- Results Analysis & Status ---
