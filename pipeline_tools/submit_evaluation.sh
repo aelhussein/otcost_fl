@@ -82,7 +82,6 @@ ENV_PATH="${ENV_PATH:-$DEFAULT_ENV_PATH}"
 ENV_NAME="${ENV_NAME:-$DEFAULT_ENV_NAME}"
 
 # Create log directories
-mkdir -p logs/outputs logs/errors
 mkdir -p logs/outputs_${metric} logs/errors_${metric}
 
 # Echo configuration
@@ -132,8 +131,8 @@ ${gres_line}
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=40G
 #SBATCH --time=30:00:00
-#SBATCH --output=logs/outputs_${metric}/${job_name}.txt
-#SBATCH --error=logs/errors_${metric}/${job_name}.txt
+#SBATCH --output=${DIR}/logs/outputs_${metric}/${job_name}.txt
+#SBATCH --error=${DIR}/logs/errors_${metric}/${job_name}.txt
 #SBATCH --exclude=ne1dg6-004
 # Activate the environment
 source ${ENV_PATH} ${ENV_NAME}

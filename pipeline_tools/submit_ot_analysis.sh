@@ -154,8 +154,8 @@ for i in "${!datasets[@]}"; do
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=40G
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/outputs_${metric}/${job_name}.txt
-#SBATCH --error=logs/errors_${metric}/${job_name}.txt
+#SBATCH --output=${DIR}/code/ot/logs/outputs_${metric}/${job_name}.txt
+#SBATCH --error=${DIR}/code/ot/logs/errors_${metric}/${job_name}.txt
 
 # Activate the environment
 source ${ENV_PATH} ${ENV_NAME}

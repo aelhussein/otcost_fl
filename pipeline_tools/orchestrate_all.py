@@ -125,15 +125,15 @@ def main():
     parser = argparse.ArgumentParser(description="Orchestrate FL experiments for multiple datasets")
     parser.add_argument("--datasets", required=True, help="Comma-separated list of datasets or 'all'")
     parser.add_argument("--num-clients", type=str, default="2", 
-                      help="Comma-separated list of client counts, or single value for all datasets")
+                    help="Comma-separated list of client counts, or single value for all datasets")
     parser.add_argument("--metric", default="score", choices=["score", "loss"], 
-                      help="Metric to use (score or loss)")
+                    help="Metric to use (score or loss)")
     parser.add_argument("--force", action="store_true", help="Force rerun of all phases")
     parser.add_argument("--force-phases", type=str, 
-                      help="Comma-separated list of phases to force (e.g., learning_rate,reg_param)")
+                    help="Comma-separated list of phases to force. Valid phases: learning_rate, reg_param, evaluation, ot_analysis")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     parser.add_argument("--summary-only", action="store_true", 
-                      help="Only print summary status without running orchestrator")
+                    help="Only print summary status without running orchestrator")
     args = parser.parse_args()
     
     # Parse datasets
