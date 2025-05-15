@@ -168,7 +168,7 @@ class DataPreprocessor:
                 pin_mem = False   
             else:
                 pin_mem = True
-            persistent_work = False
+            persistent_work = n_workers > 0
             
             train_loader = DataLoader(
                 train_dataset, batch_size=self.batch_size, shuffle=True, 

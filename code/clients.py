@@ -248,8 +248,6 @@ class Client:  # only the two changed methods are shown
                         epoch_predictions_cpu = [output.cpu() for output in device_outputs]
                         epoch_labels_cpu = [label.cpu() if torch.is_tensor(label) else label for label in device_labels]
                 
-                # Clean up device tensors
-                del device_outputs, device_labels
 
         avg_loss = epoch_loss / num_batches if num_batches > 0 else (0.0 if is_training else float('inf'))
         return avg_loss, epoch_predictions_cpu, epoch_labels_cpu
