@@ -15,8 +15,7 @@ from configs import ROOT_DIR, MODEL_SAVE_DIR, RESULTS_DIR
 from helper import MetricKey, ExperimentType, infer_higher_is_better
 # =============================================================================
 # == Data Structures ==
-# =============================================================================
-
+# ==============================================================================
 @dataclass
 class TrialRecord:
     """Record of a single trial's execution and metrics."""
@@ -38,29 +37,36 @@ class TrialRecord:
             record_dict['tuning_param_name'] = self.tuning_param_name
             record_dict['tuning_param_value'] = self.tuning_param_value
         if self.metrics:
-            # Include all metrics including client-specific ones
-            record_dict['metrics'] = self.metrics
+            # Use the helper to ensure metrics are properly serialized
+            record_dict['metrics'] = self._metrics_to_serializable()
         return record_dict
 
     # Helper to convert potentially non-JSON serializable types in metrics
-    def _metrics_to_serializable(self) -> dict:
-        """Convert metrics to JSON-serializable format."""
-        serializable_metrics = {}
-        for key, value_list in self.metrics.items():
-            if isinstance(value_list, list):
-                # Convert NumPy types to standard Python types
-                serializable_metrics[key] = [
-                    v.item() if isinstance(v, np.generic) else
-                    (float(v) if isinstance(v, (np.float32, np.float64)) else v)
-                    for v in value_list
-                ]
-            else:  # Handle cases where metrics might not be list
-                serializable_metrics[key] = value_list
-        return serializable_metrics
-    
+
+    def _serialize_item(self, item: Any) -> Any:
+        """Recursively serializes an item to ensure JSON compatibility."""
+        if isinstance(item, list):
+            return [self._serialize_item(i) for i in item]
+        elif isinstance(item, dict):
+            return {k: self._serialize_item(v) for k, v in item.items()}
+        elif isinstance(item, np.generic):  # Catches all numpy scalars (int64, float32, etc.)
+            return item.item()
+        elif isinstance(item, (np.float32, np.float64)):  # Explicit handling for numpy floats
+            return float(item)
+        elif isinstance(item, torch.Tensor):  # Handle any tensors
+            return item.cpu().tolist() if item.numel() > 1 else item.cpu().item()
+        # Add other types like datetime if needed in the future
+        return item  # Assume other Python types are directly serializable
+
+    def _metrics_to_serializable(self) -> Optional[dict]:
+        """Convert metrics to JSON-serializable format using recursion."""
+        if self.metrics is None:
+            return None
+        return self._serialize_item(self.metrics)  # Apply recursive serialization to the whole metrics dict
+        
     def matches_config(self, cost: Any, server_type: str, 
-                      param_name: Optional[str] = None, 
-                      param_value: Optional[Any] = None) -> bool:
+                    param_name: Optional[str] = None, 
+                    param_value: Optional[Any] = None) -> bool:
         """Check if this record matches the given configuration."""
         if self.cost != cost or self.server_type != server_type:
             return False
@@ -135,7 +141,7 @@ class PathBuilder:
         # Ensure base directories exist
         os.makedirs(self.results_base, exist_ok=True)
         os.makedirs(self.models_base, exist_ok=True)
-
+        print(f"[PathBuilder.__init__] Using RESULTS_DIR: {RESULTS_DIR}") 
         # Mapping experiment type to subdirectory name
         self.exp_type_dirs = {
             ExperimentType.LEARNING_RATE: 'lr_tuning',
@@ -219,7 +225,7 @@ class ResultsManager:
             return None
 
     # --- Results Saving/Loading ---
-    def save_results(self, results_list: List[Dict], 
+    def save_results(self, results_list: List[Any], 
                     experiment_type: str,
                     run_metadata: Optional[Dict] = None):
         """
@@ -229,8 +235,19 @@ class ResultsManager:
         results_path, meta_path = self.path_builder.get_results_path(experiment_type)
         run_metadata = run_metadata if run_metadata is not None else {}
 
-        # Check for errors within the list of records
-        contains_errors = any('error' in record and record['error'] is not None for record in results_list)
+        # Check for errors within the list of records, handling different record types
+        contains_errors = False
+        for record in results_list:
+            if hasattr(record, 'error') and record.error is not None:  # TrialRecord
+                contains_errors = True
+                break
+            elif hasattr(record, 'error_message') and record.error_message is not None:  # OTAnalysisRecord
+                contains_errors = True
+                break
+            elif isinstance(record, dict):  # Dictionary record
+                if (record.get('error') is not None or record.get('error_message') is not None):
+                    contains_errors = True
+                    break
 
         # Ensure selection criteria info is included in metadata if provided
         selection_info = {}
@@ -257,14 +274,24 @@ class ResultsManager:
             **run_metadata  # Merge run-specific info if provided
         }
 
+        # Prepare serializable results
+        serializable_results = []
+        for record in results_list:
+            if hasattr(record, 'to_dict'):
+                # Use the object's own serialization method
+                serializable_results.append(record.to_dict())
+            else:
+                # Assume it's already a dictionary
+                serializable_results.append(record)
+
         try:
             # Save metadata
             with open(meta_path, 'w') as f_meta:
                 json.dump(metadata, f_meta, indent=4)
 
-            # Save results list (already dicts)
+            # Save results list (using serializable dicts)
             with open(results_path, 'w') as f_results:
-                json.dump(results_list, f_results, indent=4)
+                json.dump(serializable_results, f_results, indent=4)
 
         except Exception as e:
             print(f"ERROR saving results/metadata for {experiment_type}: {e}")

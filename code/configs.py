@@ -10,9 +10,10 @@ import torch
 
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+if DEVICE == 'cpu':
+    torch.set_num_threads(1)
 N_WORKERS = 4 
-METIRC = 'score' # 'loss' or 'score'
-SELECTION_CRITERION_KEY = 'val_scores' if METIRC == 'loss' else 'val_scores'
+SELECTION_CRITERION_KEY = None
 
 # --- Core Directories ---
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,40 +22,46 @@ ROOT_DIR = _PROJECT_ROOT
 DATA_DIR = os.path.join(ROOT_DIR, 'data')
 
 # Default directories (will be updated by configure_paths)
-RESULTS_DIR = os.path.join(ROOT_DIR, 'results')
+RESULTS_DIR = os.path.join(ROOT_DIR, 'results_loss')
 MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models')
 ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
 
 # Function to configure paths based on metric
 def configure_paths(metric='score'):
     """Configure directory paths based on the specified metric."""
-    global RESULTS_DIR, MODEL_SAVE_DIR, ACTIVATION_DIR
+    global RESULTS_DIR, MODEL_SAVE_DIR, ACTIVATION_DIR, SELECTION_CRITERION_KEY, DEFAULT_PARAMS
     
     # Set directories based on metric
     if metric == 'loss':
         RESULTS_DIR = os.path.join(ROOT_DIR, 'results_loss')
         MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models_loss')
         ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations_loss')
+        SELECTION_CRITERION_KEY = 'val_losses' # For loss metric
     else:
         # Default paths for 'score' or any other metric
         RESULTS_DIR = os.path.join(ROOT_DIR, 'results')
         MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models')
         ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
+        SELECTION_CRITERION_KEY = 'val_scores'
     
     # Create directories if they don't exist
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     os.makedirs(ACTIVATION_DIR, exist_ok=True)
+
+    for dataset_name in DEFAULT_PARAMS:
+        DEFAULT_PARAMS[dataset_name]['selection_criterion_key'] = SELECTION_CRITERION_KEY
     
     return {
         'RESULTS_DIR': RESULTS_DIR,
         'MODEL_SAVE_DIR': MODEL_SAVE_DIR,
-        'ACTIVATION_DIR': ACTIVATION_DIR
+        'ACTIVATION_DIR': ACTIVATION_DIR,
+        'SELECTION_CRITERION_KEY': SELECTION_CRITERION_KEY 
     }
 
 # --- Supported Algorithms ---
 ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
-
+REG_ALOGRITHMS = ['fedprox', 'pfedme', 'ditto'] # Add others as implemented
 # --- Supported Datasets ---
 DATASETS = [
     'Synthetic_Label', 'Synthetic_Feature', 'Synthetic_Concept',
@@ -64,10 +71,10 @@ DATASETS = [
 # --- Common Configuration for Tabular-like Datasets ---
 COMMON_TABULAR_PARAMS = dict(
     fixed_classes=2, # Default for binary classification, override for multiclass
-    default_lr=1e-3,
+    default_lr = 5e-3,
     learning_rates_try=[1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
     default_reg_param=0.1,
-    reg_params_try=[1, 0.1, 0.01],
+    reg_params_try=[1, 5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3],
     batch_size=32,
     epochs_per_round=3,
     rounds=50,
@@ -79,7 +86,7 @@ COMMON_TABULAR_PARAMS = dict(
     samples_per_client=300,
     default_num_clients=5,
     servers_tune_lr=ALGORITHMS,
-    servers_tune_reg=[],
+    servers_tune_reg = REG_ALOGRITHMS,
     partitioner_args={},
     max_parallel_clients=None,
     use_weighted_loss=False, # If True, client should use WeightedCELoss if criterion is CE
@@ -98,7 +105,7 @@ COMMON_IMAGE_PARAMS = dict(
     default_lr=3e-3,
     learning_rates_try=[5e-3, 1e-3, 5e-4],
     default_reg_param=0.1,
-    reg_params_try=[1, 0.1, 1e-2],
+    reg_params_try=[1, 5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3],
     batch_size=96,
     epochs_per_round=3,
     rounds=60,
@@ -109,7 +116,7 @@ COMMON_IMAGE_PARAMS = dict(
     base_seed=42,
     default_num_clients=2,
     servers_tune_lr=ALGORITHMS,
-    servers_tune_reg=[],
+    servers_tune_reg = REG_ALOGRITHMS,
     partitioner_args={},
     max_parallel_clients=None,
     use_weighted_loss=False, # If True, client should use WeightedCELoss if criterion is CE
@@ -214,7 +221,8 @@ DEFAULT_PARAMS = {
         },
         'samples_per_client': 5000,
         'batch_size': 512,
-        'fixed_classes': 10, 
+        'fixed_classes': 10,
+        'default_lr': 5e-4, 
         # criterion_type defaults to "CrossEntropyLoss"
     },
     'EMNIST': {
@@ -234,6 +242,7 @@ DEFAULT_PARAMS = {
         'samples_per_client': 1000,
         'fixed_classes': 10, # Already in COMMON_IMAGE_PARAMS, explicit here
         'batch_size': 64,
+        'default_lr': 5e-3, 
         # criterion_type defaults to "CrossEntropyLoss"
     },
     'ISIC': {
@@ -250,56 +259,53 @@ DEFAULT_PARAMS = {
         },
         'samples_per_client': 2000,
         'fixed_classes': 8,
-        'runs': 5,
+        'runs': 15,
         'runs_tune': 1,
         'metric': 'Balanced_accuracy',
         # max_clients removed
         'use_weighted_loss': True, # This flag will be used by client
         'criterion_type': "ISICLoss", # Explicitly set criterion
         'batch_size': 128,
-        'default_lr' : 1e-3, # Retained specific LR
+        'default_lr' : 5e-4,
         'selection_criterion_key': SELECTION_CRITERION_KEY,
-        'n_workers':4
+        
     },
     
     'IXITiny': {
-        # Not using COMMON_IMAGE_PARAMS as it's too different
+        **COMMON_IMAGE_PARAMS,
         'dataset_name': 'IXITiny',
         'data_source': 'ixi_paths',
         'partitioning_strategy': 'pre_split',
         'dataset_class': 'IXITinyDataset',
+        'fixed_classes': None,  # Override for segmentation
+        'default_lr': 1e-3,  # Specific learning rate
+        'learning_rates_try': [1e-2, 5e-3, 1e-3],  # Custom learning rates
+        'batch_size': 4,  # Smaller batch size for 3D volumes
+        'rounds': 30,  # Fewer rounds
+        'rounds_tune_inner': 10,  # Fewer tuning rounds
+        'runs': 10,  # Fewer runs
+        'metric': 'DICE',  # Segmentation metric
+        'shift_after_split': False,  # Not applicable for pre-split
+        'activation_extractor_type': 'rep_vector',  # Different extractor
+        'criterion_type': "DiceLoss",  # Segmentation loss
+        # Unique parameters for fixed train/test split
+        'fixed_train_test_split': True,
+        'metadata_path': 'metadata_tiny.csv',
+        'id_column': 'Patient ID',
+        'split_column': 'Split',
+        'validation_from_train_size': 0.2,
+        # Override source_args completely
         'source_args': {
-            'site_mappings': { 'guys_hh': [['Guys'], ['HH']], 'iop_guys': [['IOP'], ['Guys']], 'iop_hh': [['IOP'], ['HH']], 'all': [['IOP'], ['HH'], ['Guys']] },
-            'image_shape': (48, 60, 48)
+            'site_mappings': {
+                'guys_hh': [['Guys'], ['HH']],
+                'iop_guys': [['IOP'], ['Guys']],
+                'iop_hh': [['IOP'], ['HH']],
+                'all': [['IOP'], ['HH'], ['Guys']]
+            },
+            'image_shape': (80, 48, 48)
         },
-        'samples_per_client': None,
-        'fixed_classes': None, # For segmentation, num_classes for OT might come from model output_channels
-        'default_lr': 1e-3,
-        'learning_rates_try': [1e-2, 5e-3, 1e-3],
-        'default_reg_param': 0.1, # Kept for potential future algo use, though not by Dice
-        'reg_params_try':[1, 0.1, 1e-2], # Kept for potential future algo use
-        'batch_size': 4,
-        'epochs_per_round': 3,
-        'rounds': 30,
-        'rounds_tune_inner': 10,
-        'runs': 10,
-        'runs_tune': 3,
-        'metric': 'DICE',
-        'base_seed': 42,
-        'default_num_clients': 2,
-        # max_clients removed
-        'servers_tune_lr': ALGORITHMS,
-        'servers_tune_reg': [],
-        'max_parallel_clients' : 2,
-        'use_weighted_loss': False, # Not applicable for Dice loss
-        'shift_after_split': False, # Not applicable for pre-split segmentation
-        'activation_extractor_type': 'rep_vector',
-        'criterion_type': "DiceLoss", # Explicitly set criterion
-        'selection_criterion_key': SELECTION_CRITERION_KEY,
-        'n_workers':4
-    }
+    },
 }
-
 # --- Dataset Costs / Experiment Parameters ---
 DATASET_COSTS = {
     'Synthetic_Label': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],

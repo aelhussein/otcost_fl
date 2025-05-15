@@ -14,7 +14,7 @@ from typing import Dict, Tuple, Any, Optional, List, Union, Callable
 
 # Assume necessary libraries are installed
 import nibabel as nib
-from monai.transforms import (LoadImaged, Resized, NormalizeIntensityd,
+from monai.transforms import (LoadImaged, Resized, NormalizeIntensityd,EnsureChannelFirstd,
                               AsDiscreted, ToTensord, Compose)
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
@@ -340,18 +340,28 @@ class IXITinyDataset(TorchDataset):
         self.image_paths = image_paths
         self.label_paths = label_paths
         self.is_train = (split_type == 'train')
-        common_shape = dataset_config.get('source_args', {}).get('image_shape', (48, 60, 48))
+        common_shape = dataset_config.get('source_args', {}).get('image_shape', (80, 48, 48))
         self.transform = self._get_transform(common_shape)
 
     def _get_transform(self, spatial_size) -> Callable:
         keys = ["image", "label"]
-        load_dict = LoadImaged(keys=keys, image_only=True, ensure_channel_first=True)
-        normalize_dict = NormalizeIntensityd(keys="image", subtrahend=0.0, divisor=1.0, nonzero=True)
-        resize_dict = Resized(keys=keys, spatial_size=spatial_size, mode=("bilinear", "nearest"))
-        discretize_dict = AsDiscreted(keys="label", to_onehot=2)
-        to_tensor_dict = ToTensord(keys=keys)
-        # Add train-specific augmentations here if needed
-        all_transforms = [load_dict, normalize_dict, resize_dict, discretize_dict, to_tensor_dict]
+        all_transforms = [
+            # 1. Load image and label from paths.
+            LoadImaged(keys=keys, image_only=True, ensure_channel_first=False, reader="NibabelReader"),
+            EnsureChannelFirstd(keys=keys), # Result: (C, H, W, D) array, C=1 for grayscale
+
+            # 2. Resize both image and label to the common_shape.
+            Resized(keys=keys, spatial_size=spatial_size, mode=("bilinear", "nearest")),
+
+            # 3. Normalize the intensity of the image.
+            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+
+            # 4. Convert the label to a one-hot representation.
+            AsDiscreted(keys="label", to_onehot=2),
+
+            # 5. Convert image and label arrays to PyTorch Tensors.
+            ToTensord(keys=keys)
+        ]
         return Compose(all_transforms)
 
     def __len__(self) -> int: return len(self.image_paths)
@@ -362,5 +372,10 @@ class IXITinyDataset(TorchDataset):
             transformed_dict = self.transform(data_dict)
             image_tensor = transformed_dict['image']
             label_tensor = transformed_dict['label']
+            if hasattr(image_tensor, 'as_tensor'): # Check if it's a MetaTensor
+                image_tensor = image_tensor.as_tensor()
+            if hasattr(label_tensor, 'as_tensor'):
+                label_tensor = label_tensor.as_tensor()
             return image_tensor.float(), label_tensor.float()
         except Exception as e: raise RuntimeError(f"Failed processing IXI sample {idx}: {self.image_paths[idx]}") from e
+

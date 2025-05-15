@@ -21,8 +21,6 @@ sys.path.insert(0, _CURRENT_DIR)
 
 # --- Import Project Modules ---
 from configs import DEFAULT_PARAMS, DATASET_COSTS, configure_paths
-from pipeline import ExperimentType, ExperimentConfig, Experiment
-
 
 def run_experiments(dataset: str, experiment_type: str, num_clients_override: int = None): # MODIFIED: Added num_clients_override
     """
@@ -33,6 +31,7 @@ def run_experiments(dataset: str, experiment_type: str, num_clients_override: in
         experiment_type (str): The type of experiment to run.
         num_clients_override (int, optional): Number of clients to use, overriding config default. Defaults to None.
     """
+    from pipeline import ExperimentConfig, Experiment
     print(f"Preparing to run experiment: Dataset='{dataset}', Type='{experiment_type}', Client Override={num_clients_override}")
     # Create an ExperimentConfig object, passing the override
     config = ExperimentConfig(
@@ -70,7 +69,6 @@ def main():
     parser.add_argument(
         "-exp", "--experiment_type",
         required=True,
-        choices=[ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION, ExperimentType.REG_PARAM], # Added REG_PARAM choice
         help="Select the type of experiment: 'learning_rate', 'reg_param', or 'evaluation'."
     )
 
@@ -93,6 +91,7 @@ def main():
     # --- Directory Setup ---
     configure_paths(args.metric) # Configure paths based on the metric
     from configs import RESULTS_DIR
+    from pipeline import ExperimentType
     try:
         os.makedirs(RESULTS_DIR, exist_ok=True)
         for exp_type_val in [ExperimentType.LEARNING_RATE, ExperimentType.EVALUATION, ExperimentType.REG_PARAM]:

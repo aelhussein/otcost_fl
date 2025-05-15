@@ -9,8 +9,6 @@ import copy
 import numpy as np
 import torch
 from typing import Dict, Optional, List, Tuple, Any, Callable
-import concurrent.futures
-
 # Get core types from helper
 from helper import (MetricKey, TrainerConfig, SiteData, ModelState, # Import types
                    DiversityMixin, MetricsCalculator, infer_higher_is_better) # gpu_scope not strictly needed server-side
@@ -105,41 +103,15 @@ class Server:
         
         Returns:
             List of (client_id, result) tuples in deterministic order
-        """
-        max_parallel = getattr(self.config, 'max_parallel_clients', None)
-        # If max_parallel is None or 1, run serially (original behavior)
-        if max_parallel is None or max_parallel <= 1 or len(self.clients) <= 1:
-            results = []
-            for client_id, client in self.clients.items():
-                try:
-                    client_result = step_fn(client)
-                    results.append((client_id, client_result))
-                except Exception as e: 
-                    print(f"ERROR step_fn client {client_id}: {e}")
-            return results
-        
-        # For parallel execution using ThreadPoolExecutor
+        """        
         results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
-            # Prepare the futures with deterministic client ordering
-            client_items = sorted(self.clients.items())  # Sort by client_id for reproducibility
-            future_to_client = {}
-            
-            for client_id, client in client_items:
-                future = executor.submit(step_fn, client)
-                future_to_client[future] = client_id
-            
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(future_to_client):
-                client_id = future_to_client[future]
-                try:
-                    client_result = future.result()
-                    results.append((client_id, client_result))
-                except Exception as e:
-                    print(f"ERROR step_fn client {client_id}: {e}")
-        
-        # Sort results by client_id to ensure deterministic aggregation order
-        # regardless of thread completion order
+        for client_id, client in self.clients.items():
+            try:
+                client_result = step_fn(client)
+                results.append((client_id, client_result))
+            except Exception as e: 
+                print(f"ERROR step_fn client {client_id}: {e}")
+
         results.sort(key=lambda x: x[0]) 
         return results
 
@@ -259,7 +231,7 @@ class Server:
                 'test_score': test_score,
                 'weight': weight
             }
-
+        print(f"Test Loss: {round_test_loss:.4f}, Test Score: {round_test_score:.4f}")
         # Store client test metrics in the history
         if 'client_test_metrics' not in self.history:
             self.history['client_test_metrics'] = {}
@@ -422,7 +394,7 @@ class DittoServer(FLServer):
         self.after_step_hook(personal_client_outputs) # Hook after personal step
 
         # --- Capture Round 0 State ---
-        if current_round == 10 and self.round_0_state_dict is None:
+        if current_round == 0 and self.round_0_state_dict is None:
             try: self.round_0_state_dict = self.serverstate.model.state_dict()
             except: pass
 
@@ -451,5 +423,3 @@ class DittoServer(FLServer):
                     self.best_global_model_state_dict = copy.deepcopy(self.serverstate.model.state_dict())
                 except Exception as e:
                     print(f"Warning: Failed to update best global model state: {e}")
-
-    # test_global inherited from base Server will test personal models

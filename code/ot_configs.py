@@ -125,20 +125,20 @@ feature_error_configs = [
 
 # Direct OT Configurations
 direct_ot_configs = [
-    # OTConfig(
-    #     method_type='direct_ot',
-    #     name='Direct_Euclidean',
-    #     params={
-    #         'use_loss_weighting': False,
-    #         'normalize_activations': True,
-    #         'normalize_cost': True,
-    #         'distance_method': 'euclidean',
-    #         'min_samples': 20, 
-    #         'max_samples': 900,
-    #         'use_label_hellinger': False,
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
+    OTConfig(
+        method_type='direct_ot',
+        name='Direct_Wasserstein',
+        params={
+            'use_loss_weighting': False,
+            'normalize_activations': False,
+            'normalize_cost': True,
+            'distance_method': 'euclidean',
+            'min_samples': 20, 
+            'max_samples': 900,
+            'use_label_hellinger': True,
+            'verbose':VERBOSE,
+        }
+    ),
     # OTConfig(
     #     method_type='direct_ot',
     #     name='Direct_Cosine',
@@ -155,7 +155,7 @@ direct_ot_configs = [
     # ),
     OTConfig(
         method_type='direct_ot',
-        name='Direct_WithHellinger',
+        name='Direct_',
         params={
             'use_loss_weighting': False,
             'normalize_activations': True,

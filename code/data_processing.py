@@ -5,7 +5,9 @@ and DataPreprocessor for client-level splitting and Dataset instantiation.
 Streamlined version with simplified code flow and reduced conditional complexity.
 """
 import os
+import sys
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Subset
 from typing import Dict, Tuple, Any, Optional, List, Union, Callable
@@ -13,7 +15,7 @@ from sklearn.model_selection import train_test_split
 import random
 import copy
 # Project Imports
-from configs import N_WORKERS
+from configs import N_WORKERS, DATA_DIR
 from helper import get_parameters_for_dataset
 from data_loading import get_loader
 from data_partitioning import get_partitioner
@@ -21,7 +23,7 @@ from synthetic_data import apply_feature_shift, apply_concept_shift
 # Import all final Dataset classes
 from data_sets import (SyntheticDataset, CreditDataset, EMNISTDataset,
                       CIFARDataset, ISICDataset, IXITinyDataset)
-
+import re
 # =============================================================================
 # == Data Splitting Functions (Internal Helpers) ==
 # =============================================================================
@@ -80,6 +82,13 @@ def _split_indices(indices: List[int], test_size: float = 0.2, val_size: float =
         
     return idx_train.tolist(), idx_val.tolist(), idx_test.tolist()
 
+def _extract_patient_id_from_filename(filename):
+    """Extract patient ID from IXI filename patterns like 'IXI002-...' -> 2.
+    CAN BE EXTENDED FOR OTHER FORMATS."""
+    match = re.search(r'IXI0*(\d+)', os.path.basename(filename))
+    if match:
+        return int(match.group(1))
+    return None
 # =============================================================================
 # == Data Preprocessor Class (Client-Level Processing) ==
 # =============================================================================
@@ -130,7 +139,53 @@ class DataPreprocessor:
         data_type = client_data_bundle.get('type')
         raw_data = client_data_bundle.get('data')
         client_dataset_args = {k.split('-')[-1]: v for k, v in client_data_bundle.items() if k not in ['type', 'data'] and client_id in k}
-        # Extract and split data based on type
+        
+        # Special handling for pre-split paths (IXITiny with fixed splits)
+        if data_type == 'pre_split_paths':
+            train_data = raw_data.get('train')
+            test_data = raw_data.get('test')
+            
+            # Further split train into train/val
+            val_size = self.dataset_config.get('validation_from_train_size', 0.2)
+            train_paths, train_labels = train_data
+            
+            if len(train_paths) > 5:  # Minimum size for meaningful split
+                train_paths, val_paths, train_labels, val_labels = train_test_split(
+                    train_paths, train_labels, test_size=val_size,
+                )
+                val_data = (val_paths, val_labels)
+            else:
+                # Not enough training data for validation split
+                val_data = ([], [])
+            # Create datasets
+            train_dataset = self._get_dataset_instance({'image_paths': train_paths, 'label_paths': train_labels}, 'train') if train_paths else None
+            val_dataset = self._get_dataset_instance({'image_paths': val_paths, 'label_paths': val_labels}, 'val') if val_data[0] else None
+            test_dataset = self._get_dataset_instance({'image_paths': test_data[0], 'label_paths': test_data[1]}, 'test') if test_data[0] else None
+            
+            # Create dataloaders
+            n_workers = self.dataset_config.get('num_workers', N_WORKERS)
+            if n_workers <= 1:
+                pin_mem = False   
+            else:
+                pin_mem = True
+            persistent_work = False
+            
+            train_loader = DataLoader(
+                train_dataset, batch_size=self.batch_size, shuffle=True, 
+                num_workers=n_workers, pin_memory=pin_mem, drop_last=False,
+                persistent_workers=persistent_work) if train_dataset else DataLoader([])
+                
+            val_loader = DataLoader(
+                val_dataset, batch_size=self.batch_size, shuffle=False, 
+                num_workers=n_workers, pin_memory=pin_mem,
+                persistent_workers=persistent_work) if val_dataset else DataLoader([])
+                
+            test_loader = DataLoader(
+                test_dataset, batch_size=self.batch_size, shuffle=False, 
+                num_workers=n_workers, pin_memory=pin_mem,
+                persistent_workers=persistent_work) if test_dataset else DataLoader([])
+            return train_loader, val_loader, test_loader
+        
         if data_type == 'subset':
             
             indices, base_data = raw_data.get('indices', []), raw_data.get('base_data')
@@ -344,6 +399,110 @@ class DataManager:
         # --- Seed the instance sampler for this specific run/cost ---
         # Ensures sampling is deterministic per run, even if DataManager is reused
         self.py_random_sampler.seed(run_seed + 101 + hash(str(cost)))
+
+        # Generic handling for datasets with fixed train/test splits
+        if self.config.get('fixed_train_test_split', False):
+            # Get metadata path - either from a specific library location or data directory
+            metadata_path = self.config.get('metadata_path')
+            if not metadata_path:
+                print(f"Warning: fixed_train_test_split is True but no metadata_path provided for {self.dataset_name}")
+                return {}
+                
+            # Try common locations for the metadata file
+            metadata_locations = [
+                # Dataset-specific library location if applicable
+                os.path.join(os.path.dirname(sys.modules.get(f'flamby.datasets.fed_{self.dataset_name.lower()}', None).__file__), 
+                            'metadata', metadata_path) if f'flamby.datasets.fed_{self.dataset_name.lower()}' in sys.modules else None,
+                # General data directory
+                os.path.join(DATA_DIR, self.dataset_name, metadata_path)
+            ]
+            
+            metadata_file = None
+            for location in metadata_locations:
+                if location and os.path.exists(location):
+                    metadata_file = location
+                    break
+                    
+            if not metadata_file:
+                print(f"Warning: Metadata file {metadata_path} not found for {self.dataset_name}")
+                return {}
+                
+            # Load metadata from CSV
+            try:
+                metadata_df = pd.read_csv(metadata_file)
+                id_col = self.config.get('id_column', 'Patient ID')
+                split_col = self.config.get('split_column', 'Split')
+                
+                # Create mapping of ID to train/test split
+                id_splits = {row[id_col]: row[split_col] for _, row in metadata_df.iterrows()}
+                
+                # Handle client site mappings based on the cost parameter
+                center_mappings = source_args.get('site_mappings', {}).get(cost, [])
+                
+                # For each client (center/site)
+                for client_idx, center_ids in enumerate(center_mappings):
+                    client_id = f"client_{client_idx+1}"
+                    
+                    # Load data for this client from data loader
+                    loader_args = self._prepare_loader_args(cost, client_idx+1, num_clients)
+                    loaded_data = loader_func(**loader_args)
+                    
+                    # Extract file paths and labels based on data format
+                    if isinstance(loaded_data[0], list):
+                        file_paths, labels = loaded_data
+                    else:
+                        print(f"Warning: Unsupported data format for fixed split in {self.dataset_name}")
+                        continue
+                    
+                    # Split into train/test based on metadata IDs
+                    train_paths, train_labels = [], []
+                    test_paths, test_labels = [], []
+                    
+                    for path, label in zip(file_paths, labels):
+                        # Extract ID using a function appropriate for the dataset
+                        item_id = _extract_patient_id_from_filename(path)
+                        if item_id is not None:
+                            split = id_splits.get(item_id, 'train')  # Default to train if not in metadata
+                            if split.lower() == 'train':
+                                train_paths.append(path)
+                                train_labels.append(label)
+                            else:  # Assume anything not 'train' is 'test'
+                                test_paths.append(path)
+                                test_labels.append(label)
+                    
+                    # Apply sampling if needed
+                    train_data = (train_paths, train_labels)
+                    test_data = (test_paths, test_labels)
+                    
+                    sampled_train = self._sample_data_for_client(train_data, target_samples_per_client)
+                    
+                    # Store in a specialized pre-split bundle format
+                    client_final_data_bundles[client_id] = {
+                        'type': 'pre_split_paths',
+                        'data': {
+                            'train': sampled_train,
+                            'test': test_data
+                        }
+                    }
+                
+                # Process the bundles and return dataloaders
+                preprocessor = DataPreprocessor(self.config, self.batch_size)
+                client_dataloaders = {}
+                
+                for client_id, bundle in client_final_data_bundles.items():
+                    try:
+                        dataloaders = preprocessor.preprocess_client_data(client_id, bundle)
+                        if dataloaders[0] and hasattr(dataloaders[0], 'dataset') and len(dataloaders[0].dataset) > 0:
+                            client_dataloaders[client_id] = dataloaders
+                        else:
+                            print(f"Warning: Client {client_id} has no training samples after preprocessing, skipping.")
+                    except Exception as e:
+                        print(f"Error preprocessing data for client {client_id}: {e}")
+                        
+                return client_dataloaders
+                    
+            except Exception as e:
+                print(f"Error loading metadata for {self.dataset_name}: {e}")
 
         base_data_for_partitioning, all_labels = None, None
         if self.partitioning_strategy == 'pre_split':

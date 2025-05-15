@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # Default values
-DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR" "ISIC")
-DEFAULT_EXP_TYPES=("learning_rate")
+#DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR" "ISIC" "IXITiny")
+#DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST")
+DEFAULT_DATASETS=("Synthetic_Concept" "Credit" "EMNIST" "CIFAR" "ISIC" "IXITiny")
+#DEFAULT_EXP_TYPES=("learning_rate")
+DEFAULT_EXP_TYPES=("reg_param")
 #DEFAULT_EXP_TYPES=("evaluation")
 DEFAULT_DIR='/gpfs/commons/groups/gursoy_lab/aelhussein/classes/otcost_fl'
 DEFAULT_ENV_PATH='/gpfs/commons/home/aelhussein/anaconda3/bin/activate'
@@ -132,7 +135,6 @@ ${gres_line}
 #SBATCH --output=logs/outputs_${metric}/${job_name}.txt
 #SBATCH --error=logs/errors_${metric}/${job_name}.txt
 #SBATCH --exclude=ne1dg6-004
-
 # Activate the environment
 source ${ENV_PATH} ${ENV_NAME}
 

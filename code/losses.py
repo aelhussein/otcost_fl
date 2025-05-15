@@ -37,78 +37,197 @@ class ISICLoss(_Loss):
 
         return loss.mean()
 
+# def get_dice_score(output: torch.Tensor, target: torch.Tensor,
+#                    foreground_channel: int = 1, # Assumes foreground is channel 1
+#                    spatial_dims: Tuple[int, ...] = (2, 3, 4), # D, H, W for 3D
+#                    epsilon: float = 1e-9) -> float:
+#     """Calculates the mean Dice score for segmentation tasks."""
+#     p0 = output[:, foreground_channel, ...]
+#     if target.dim() == output.dim() and target.shape[1] == output.shape[1]:
+#         g0 = target[:, foreground_channel, ...]
+#     elif target.dim() == output.dim() and target.shape[1] == 1:
+#         g0 = (target[:, 0, ...] == foreground_channel).float()
+#     elif target.dim() == output.dim() - 1 and target.shape[0] == output.shape[0] and \
+#          target.shape[1:] == output.shape[2:]:
+#         g0 = (target == foreground_channel).float()
+#     else:
+#         raise ValueError(
+#             f"Target shape {target.shape} is not compatible with output shape {output.shape} "
+#             f"for Dice score calculation. Expected target formats: \n"
+#             f"1. (Batch, Classes, D, H, W) - one-hot encoded\n"
+#             f"2. (Batch, 1, D, H, W) - class indices\n"
+#             f"3. (Batch, D, H, W) - class indices"
+#         )
+#     g0 = g0.float()
+#     sum_dims = tuple(range(1, p0.dim()))
+
+#     tp = torch.sum(p0 * g0, dim=sum_dims)
+#     fp = torch.sum(p0 * (1.0 - g0), dim=sum_dims)
+#     fn = torch.sum((1.0 - p0) * g0, dim=sum_dims)
+
+#     numerator = 2 * tp
+#     denominator = 2 * tp + fp + fn + epsilon
+
+#     dice_score_per_sample = numerator / denominator
+#     return dice_score_per_sample.mean().item()
+
+
+# def get_dice_loss(output: torch.Tensor, target: torch.Tensor,
+#                   foreground_channel: int = 1,
+#                   epsilon: float = 1e-9) -> torch.Tensor: # Return a Tensor
+#     """
+#     Calculates the Dice Loss for segmentation tasks.
+#     The Dice Loss is 1 - Dice Score.
+#     """
+#     p0 = output[:, foreground_channel, ...] # Shape: (Batch, D, H, W)
+
+#     # 2. Prepare the target tensor
+#     if target.dim() == output.dim() and target.shape[1] == output.shape[1]: # One-hot
+#         g0 = target[:, foreground_channel, ...]
+#     elif target.dim() == output.dim() and target.shape[1] == 1: # Class indices (B, 1, D, H, W)
+#         g0 = (target[:, 0, ...] == foreground_channel).float()
+#     elif target.dim() == output.dim() - 1 and target.shape[0] == output.shape[0] and \
+#          target.shape[1:] == output.shape[2:]: # Class indices (B, D, H, W)
+#         g0 = (target == foreground_channel).float()
+#     else:
+#         raise ValueError(
+#             f"Target shape {target.shape} is not compatible with output shape {output.shape} "
+#             f"for Dice loss calculation."
+#         )
+#     g0 = g0.float() # Ensure target is float
+#     sum_dims = tuple(range(1, p0.dim()))
+
+#     tp = torch.sum(p0 * g0, dim=sum_dims)
+#     fp = torch.sum(p0 * (1.0 - g0), dim=sum_dims)
+#     fn = torch.sum((1.0 - p0) * g0, dim=sum_dims)
+
+#     numerator = 2 * tp
+#     denominator = 2 * tp + fp + fn + epsilon
+#     dice_score_per_sample = numerator / denominator
+#     mean_dice_score = dice_score_per_sample.mean()
+#     dice_loss = 1.0 - mean_dice_score
+
+#     return dice_loss # Return the scalar tensor
+
 def get_dice_score(output: torch.Tensor, target: torch.Tensor,
-                   foreground_channel: int = 1, # Assumes foreground is channel 1
-                   spatial_dims: Tuple[int, ...] = (2, 3, 4), # D, H, W for 3D
-                   epsilon: float = 1e-9) -> float:
-    """Calculates the mean Dice score for segmentation tasks."""
-    p0 = output[:, foreground_channel, ...]
-    if target.dim() == output.dim() and target.shape[1] == output.shape[1]:
-        g0 = target[:, foreground_channel, ...]
-    elif target.dim() == output.dim() and target.shape[1] == 1:
-        g0 = (target[:, 0, ...] == foreground_channel).float()
-    elif target.dim() == output.dim() - 1 and target.shape[0] == output.shape[0] and \
-         target.shape[1:] == output.shape[2:]:
-        g0 = (target == foreground_channel).float()
-    else:
-        raise ValueError(
-            f"Target shape {target.shape} is not compatible with output shape {output.shape} "
-            f"for Dice score calculation. Expected target formats: \n"
-            f"1. (Batch, Classes, D, H, W) - one-hot encoded\n"
-            f"2. (Batch, 1, D, H, W) - class indices\n"
-            f"3. (Batch, D, H, W) - class indices"
-        )
-    g0 = g0.float()
-    sum_dims = tuple(range(1, p0.dim()))
-
-    tp = torch.sum(p0 * g0, dim=sum_dims)
-    fp = torch.sum(p0 * (1.0 - g0), dim=sum_dims)
-    fn = torch.sum((1.0 - p0) * g0, dim=sum_dims)
-
-    numerator = 2 * tp
-    denominator = 2 * tp + fp + fn + epsilon
-
-    dice_score_per_sample = numerator / denominator
-    return dice_score_per_sample.mean().item()
-
-
-def get_dice_loss(output: torch.Tensor, target: torch.Tensor,
                   foreground_channel: int = 1,
-                  epsilon: float = 1e-9) -> torch.Tensor: # Return a Tensor
+                  background_channel: int = 0,
+                  epsilon: float = 1e-9) -> float:
     """
-    Calculates the Dice Loss for segmentation tasks.
-    The Dice Loss is 1 - Dice Score.
+    Calculates the balanced Dice score for both foreground and background classes.
+    
+    Args:
+        output: Model predictions (softmax outputs) in format (Batch, Classes, D, H, W)
+        target: Ground truth tensors
+        foreground_channel: Channel index for foreground (default: 1)
+        background_channel: Channel index for background (default: 0)
+        epsilon: Small value to avoid zero division
+        
+    Returns:
+        Mean Dice score across all samples
     """
-    p0 = output[:, foreground_channel, ...] # Shape: (Batch, D, H, W)
-
-    # 2. Prepare the target tensor
-    if target.dim() == output.dim() and target.shape[1] == output.shape[1]: # One-hot
-        g0 = target[:, foreground_channel, ...]
-    elif target.dim() == output.dim() and target.shape[1] == 1: # Class indices (B, 1, D, H, W)
-        g0 = (target[:, 0, ...] == foreground_channel).float()
-    elif target.dim() == output.dim() - 1 and target.shape[0] == output.shape[0] and \
-         target.shape[1:] == output.shape[2:]: # Class indices (B, D, H, W)
-        g0 = (target == foreground_channel).float()
+    # Handle case where target is class indices rather than one-hot
+    if target.dim() == output.dim() and target.shape[1] == output.shape[1]:
+        # Target is already one-hot encoded
+        target_fg = target[:, foreground_channel, ...]
+        target_bg = target[:, background_channel, ...]
+    elif target.dim() == output.dim() and target.shape[1] == 1:
+        # Target is single channel with class indices
+        target_fg = (target[:, 0, ...] == foreground_channel).float()
+        target_bg = (target[:, 0, ...] == background_channel).float()
+    elif target.dim() == output.dim() - 1:
+        # Target has no channel dimension
+        target_fg = (target == foreground_channel).float()
+        target_bg = (target == background_channel).float()
     else:
-        raise ValueError(
-            f"Target shape {target.shape} is not compatible with output shape {output.shape} "
-            f"for Dice loss calculation."
-        )
-    g0 = g0.float() # Ensure target is float
-    sum_dims = tuple(range(1, p0.dim()))
+        raise ValueError(f"Unsupported target shape: {target.shape} for output shape: {output.shape}")
+    
+    # Get foreground and background probabilities
+    pred_fg = output[:, foreground_channel, ...]
+    pred_bg = output[:, background_channel, ...]
+    
+    # Calculate spatial dimensions based on tensor dimensions
+    spatial_dims = tuple(range(1, pred_fg.dim()))
+    
+    # Foreground Dice
+    fg_tp = torch.sum(pred_fg * target_fg, dim=spatial_dims)
+    fg_fp = torch.sum(pred_fg * (1.0 - target_fg), dim=spatial_dims)
+    fg_fn = torch.sum((1.0 - pred_fg) * target_fg, dim=spatial_dims)
+    
+    fg_dice = (2 * fg_tp + epsilon) / (2 * fg_tp + fg_fp + fg_fn + epsilon)
+    
+    # Background Dice
+    bg_tp = torch.sum(pred_bg * target_bg, dim=spatial_dims)
+    bg_fp = torch.sum(pred_bg * (1.0 - target_bg), dim=spatial_dims)
+    bg_fn = torch.sum((1.0 - pred_bg) * target_bg, dim=spatial_dims)
+    
+    bg_dice = (2 * bg_tp + epsilon) / (2 * bg_tp + bg_fp + bg_fn + epsilon)
+    
+    # Average Dice score across foreground and background
+    mean_dice = (fg_dice + bg_dice) / 2.0
+    
+    # Return mean across batch
+    return mean_dice.mean().item()
 
-    tp = torch.sum(p0 * g0, dim=sum_dims)
-    fp = torch.sum(p0 * (1.0 - g0), dim=sum_dims)
-    fn = torch.sum((1.0 - p0) * g0, dim=sum_dims)
-
-    numerator = 2 * tp
-    denominator = 2 * tp + fp + fn + epsilon
-    dice_score_per_sample = numerator / denominator
-    mean_dice_score = dice_score_per_sample.mean()
-    dice_loss = 1.0 - mean_dice_score
-
-    return dice_loss # Return the scalar tensor
-
+def get_dice_loss(output: torch.Tensor, target: torch.Tensor, 
+                 foreground_channel: int = 1,
+                 background_channel: int = 0,
+                 epsilon: float = 1e-9) -> torch.Tensor:
+    """
+    Calculates the Dice Loss (1 - Dice Score) for both foreground and background.
+    
+    Args:
+        output: Model predictions (softmax outputs)
+        target: Ground truth tensors
+        foreground_channel: Channel index for foreground (default: 1)
+        background_channel: Channel index for background (default: 0)
+        epsilon: Small value to avoid zero division
+        
+    Returns:
+        Scalar loss tensor
+    """
+    # Handle one-hot targets vs. class index targets
+    if target.dim() == output.dim() and target.shape[1] == output.shape[1]:
+        # Target is already one-hot encoded
+        target_fg = target[:, foreground_channel, ...]
+        target_bg = target[:, background_channel, ...]
+    elif target.dim() == output.dim() and target.shape[1] == 1:
+        # Target is single channel with class indices
+        target_fg = (target[:, 0, ...] == foreground_channel).float()
+        target_bg = (target[:, 0, ...] == background_channel).float()
+    elif target.dim() == output.dim() - 1:
+        # Target has no channel dimension
+        target_fg = (target == foreground_channel).float()
+        target_bg = (target == background_channel).float()
+    else:
+        raise ValueError(f"Unsupported target shape: {target.shape} for output shape: {output.shape}")
+    
+    # Get foreground and background probabilities
+    pred_fg = output[:, foreground_channel, ...]
+    pred_bg = output[:, background_channel, ...]
+    
+    # Calculate spatial dimensions based on tensor dimensions
+    spatial_dims = tuple(range(1, pred_fg.dim()))
+    
+    # Foreground Dice
+    fg_tp = torch.sum(pred_fg * target_fg, dim=spatial_dims)
+    fg_fp = torch.sum(pred_fg * (1.0 - target_fg), dim=spatial_dims)
+    fg_fn = torch.sum((1.0 - pred_fg) * target_fg, dim=spatial_dims)
+    
+    fg_dice = (2 * fg_tp + epsilon) / (2 * fg_tp + fg_fp + fg_fn + epsilon)
+    
+    # Background Dice
+    bg_tp = torch.sum(pred_bg * target_bg, dim=spatial_dims)
+    bg_fp = torch.sum(pred_bg * (1.0 - target_bg), dim=spatial_dims)
+    bg_fn = torch.sum((1.0 - pred_bg) * target_bg, dim=spatial_dims)
+    
+    bg_dice = (2 * bg_tp + epsilon) / (2 * bg_tp + bg_fp + bg_fn + epsilon)
+    
+    # Average Dice score across foreground and background
+    mean_dice = (fg_dice + bg_dice) / 2.0
+    
+    # Calculate loss as 1 - mean_dice and return batch mean
+    return 1.0 - mean_dice.mean()
 
 class WeightedCELoss(nn.Module):
     """

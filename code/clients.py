@@ -156,12 +156,10 @@ class Client:  # only the two changed methods are shown
         
         # More efficient memory usage with set_to_none=True
         optimizer.zero_grad(set_to_none=True)
-        
         # Use autocast for forward pass when on GPU
         with autocast('cuda', enabled=use_amp):
             outputs = model(batch_x)
             loss = criterion(outputs, batch_y)
-        
         # Scale gradients and update weights when on CUDA
         if use_amp:
             self.scaler.scale(loss).backward()
@@ -171,7 +169,6 @@ class Client:  # only the two changed methods are shown
             # Standard CPU path
             loss.backward()
             optimizer.step()
-        
         return loss.item()
     
     def _process_epoch(self, 
@@ -208,9 +205,7 @@ class Client:  # only the two changed methods are shown
                 prepared_batch = self.training_manager.prepare_batch(batch, self.criterion)
                 if prepared_batch is None: 
                     continue
-                    
                 batch_x_dev, batch_y_dev, batch_y_orig_cpu = prepared_batch
-                
                 if is_training:
                     batch_loss = self._train_batch(model, optimizer, self.criterion, batch_x_dev, batch_y_dev)
                     epoch_loss += batch_loss
@@ -415,12 +410,27 @@ class Client:  # only the two changed methods are shown
 
 class FedProxClient(Client):
     """FedProx Client: Overrides _train_batch to add proximal term."""
-    def __init__(self, *args, **kwargs):
-        config = args[0]; config.requires_personal_model = False
-        super().__init__(*args, **kwargs, personal_model=False)
-        self.reg_param = self.config.algorithm_params.get('reg_param', 0.01) # Mu
+    def __init__(
+        self,
+        config: TrainerConfig,
+        data: SiteData,
+        initial_global_state: ModelState,
+        metric_fn: Callable,
+        personal_model: bool = False,
+    ):
+        # Set requires_personal_model to False for FedProx
+        config.requires_personal_model = False
+        # Call parent constructor with explicit parameters
+        super().__init__(
+            config=config,
+            data=data,
+            initial_global_state=initial_global_state,
+            metric_fn=metric_fn,
+            personal_model=False
+        )
+        self.reg_param = self.config.algorithm_params.get('reg_param', 1e-1)  # Mu
         self._initial_global_state_dict_cpu = self.global_state.get_current_model_state_dict()
-        # Create GPU parameters list for faster training
+        # Create GPU parameters dictionary for faster training
         self._initial_global_params_gpu = None
 
     def set_model_state(self, state_dict: Dict, test: bool = False):
@@ -431,15 +441,13 @@ class FedProxClient(Client):
         self._initial_global_params_gpu = None
         
     def _ensure_global_params_on_gpu(self):
-        """Transfers global model parameters to GPU once per training session."""
+        """Transfers global model parameters to GPU using a dictionary keyed by name for robust lookup."""
         if self._initial_global_params_gpu is None:
-            # Transfer parameters to GPU in advance
-            self._initial_global_params_gpu = []
-            for param_tensor in self._initial_global_state_dict_cpu.values():
+            # Create a dictionary mapping names to GPU tensors
+            self._initial_global_params_gpu = {}
+            for name, param_tensor in self._initial_global_state_dict_cpu.items():
                 if isinstance(param_tensor, torch.Tensor):
-                    self._initial_global_params_gpu.append(
-                        param_tensor.to(self.training_manager.compute_device)
-                    )
+                    self._initial_global_params_gpu[name] = param_tensor.to(self.training_manager.compute_device)
 
     def _train_batch(self, model: nn.Module, optimizer: optim.Optimizer, criterion: Union[nn.Module, Callable], batch_x: Any, batch_y: Any) -> float:
         """Adds FedProx proximal term to the loss before backward."""
@@ -461,21 +469,18 @@ class FedProxClient(Client):
         param_module = model._orig_mod if hasattr(model, '_orig_mod') else model
         proximal_term = torch.tensor(0.0, device=batch_x.device)
         
-        # Use pre-transferred GPU parameters or CPU parameters
+        # Look up parameters by name to avoid ordering assumptions
         if is_gpu and self._initial_global_params_gpu:
-            for idx, param_current in enumerate(p for p in param_module.parameters() if p.requires_grad):
-                if idx < len(self._initial_global_params_gpu):
-                    param_initial = self._initial_global_params_gpu[idx]
+            for name, param_current in param_module.named_parameters():
+                if param_current.requires_grad and name in self._initial_global_params_gpu:
+                    param_initial = self._initial_global_params_gpu[name]
                     proximal_term += torch.sum(torch.pow(param_current - param_initial, 2))
         else:
             # CPU path - use state dict directly
-            param_idx = 0
             for name, param_current in param_module.named_parameters():
-                if param_current.requires_grad:
-                    if name in self._initial_global_state_dict_cpu:
-                        param_initial = self._initial_global_state_dict_cpu[name].to(param_current.device)
-                        proximal_term += torch.sum(torch.pow(param_current - param_initial, 2))
-                    param_idx += 1
+                if param_current.requires_grad and name in self._initial_global_state_dict_cpu:
+                    param_initial = self._initial_global_state_dict_cpu[name].to(param_current.device)
+                    proximal_term += torch.sum(torch.pow(param_current - param_initial, 2))
         
         total_loss = task_loss + (self.reg_param / 2.0) * proximal_term
         
@@ -493,10 +498,25 @@ class FedProxClient(Client):
 
 class PFedMeClient(Client):
     """pFedMe Client: Overrides train_and_validate for k-step inner loop."""
-    def __init__(self, *args, **kwargs):
-        config = args[0]; config.requires_personal_model = True
-        super().__init__(*args, **kwargs, personal_model=True)
-        self.reg_param = self.config.algorithm_params.get('reg_param', 15.0) # Lambda
+    def __init__(
+        self,
+        config: TrainerConfig,
+        data: SiteData,
+        initial_global_state: ModelState,
+        metric_fn: Callable,
+        personal_model: bool = True,
+    ):
+        # Set requires_personal_model to True for pFedMe
+        config.requires_personal_model = True
+        # Call parent constructor with explicit parameters
+        super().__init__(
+            config=config,
+            data=data,
+            initial_global_state=initial_global_state,
+            metric_fn=metric_fn,
+            personal_model=True
+        )
+        self.reg_param = self.config.algorithm_params.get('reg_param', 1e-1)  # Lambda
         self.k_steps = self.config.algorithm_params.get('k_steps', 5)
         self._global_params_gpu = None  # Cache for global parameters on GPU
 
@@ -515,13 +535,16 @@ class PFedMeClient(Client):
     def train_and_validate(self, personal: bool) -> Dict:
         """
         Custom pFedMe training implementation with k-step inner optimization.
-        Still maintains consistent CPU/GPU behavior with base class.
+        Reports average loss from last k-step of each batch.
         """
         # Wrap entire method in gpu_scope for better CUDA stream management
         with gpu_scope():
             if not personal:
                 # Use standard implementation for global model
                 return super().train_and_validate(personal=False)
+            
+            # Clear GPU params cache at the start of personal training to ensure fresh copy
+            self._global_params_gpu = None
             
             # Get states
             personal_state = self._get_state(True)
@@ -563,7 +586,8 @@ class PFedMeClient(Client):
                 
             model.train()
             criterion = self.criterion
-            epoch_task_loss = 0.0
+            # Initialize accumulator for the last k-step loss
+            epoch_last_k_step_loss = 0.0
             num_batches_processed = 0
             
             # Training loop
@@ -582,12 +606,19 @@ class PFedMeClient(Client):
                         global_module = self.global_state.model
                         global_params = [p.detach().clone().to(device) for p in global_module.parameters() if p.requires_grad]
                     
+                    # Variable to store the loss from the last k-step
+                    last_k_step_loss = 0.0
+                    
                     # K-step optimization
-                    for _ in range(self.k_steps):
+                    for k_idx in range(self.k_steps):
                         # Use autocast for forward pass on GPU
                         with autocast('cuda', enabled=use_gpu):
                             outputs = model(batch_x_dev)
                             loss = criterion(outputs, batch_y_dev)
+                        
+                        # Store the loss from the last k-step
+                        if k_idx == self.k_steps - 1:
+                            last_k_step_loss = loss.item()
                         
                         # Training step
                         optimizer.zero_grad(set_to_none=True)
@@ -607,15 +638,13 @@ class PFedMeClient(Client):
                                 update_step = self.config.learning_rate * self.reg_param * (param_personal - param_global)
                                 param_personal.sub_(update_step)
                     
-                    # Track task loss after update
-                    with torch.no_grad():
-                        with autocast('cuda', enabled=use_gpu):
-                            outputs = model(batch_x_dev)
-                            task_loss_post_update = criterion(outputs, batch_y_dev)
-                        epoch_task_loss += task_loss_post_update.item()
-                    
+                    # Accumulate the last k-step loss
+                    epoch_last_k_step_loss += last_k_step_loss
                     num_batches_processed += 1
-            
+                
+            # Calculate average training loss for reporting
+            train_loss = epoch_last_k_step_loss / num_batches_processed if num_batches_processed > 0 else float('inf')
+                
             # Validation
             val_loss, preds_cpu, labels_cpu = self._process_epoch(
                 loader=self.data.val_loader,
@@ -643,9 +672,12 @@ class PFedMeClient(Client):
                 torch.cuda.empty_cache()  # No need for availability check
             
             # Track best model
-            avg_loss = epoch_task_loss / num_batches_processed if num_batches_processed > 0 else float('inf')
-            if val_loss < personal_state.best_loss:
-                personal_state.update_best_state(val_loss)
+            current_metrics = {
+                'train_losses': train_loss,
+                'val_losses': val_loss,
+                'val_scores': val_score
+            }
+            personal_state.update_best_state(current_metrics)
             
             # Return results
             return {
@@ -656,10 +688,25 @@ class PFedMeClient(Client):
 
 class DittoClient(Client):
     """Ditto Client: Overrides _train_batch to modify gradients."""
-    def __init__(self, *args, **kwargs):
-        config = args[0]; config.requires_personal_model = True
-        super().__init__(*args, **kwargs, personal_model=True)
-        self.reg_param = self.config.algorithm_params.get('reg_param', 0.75) # Lambda
+    def __init__(
+        self,
+        config: TrainerConfig,
+        data: SiteData,
+        initial_global_state: ModelState,
+        metric_fn: Callable,
+        personal_model: bool = False,
+    ):
+        # Set requires_personal_model to True for Ditto
+        config.requires_personal_model = True
+        # Call parent constructor with explicit parameters
+        super().__init__(
+            config=config,
+            data=data,
+            initial_global_state=initial_global_state,
+            metric_fn=metric_fn,
+            personal_model=True
+        )
+        self.reg_param = self.config.algorithm_params.get('reg_param', 1e-1)  # Lambda
         # Cache for global model parameters on GPU
         self._global_params_gpu = None
 
@@ -676,8 +723,8 @@ class DittoClient(Client):
         """Ditto training step: Modifies gradients only for the personal model."""
         # Check if this is the personal model being trained
         is_personal_model = (model is self.personal_state.model) or \
-                             (hasattr(model, '_orig_mod') and model._orig_mod is self.personal_state.model)
-                             
+                            (hasattr(model, '_orig_mod') and model._orig_mod is self.personal_state.model)
+                            
         # Get device info from configs
         from configs import DEVICE
         use_amp = DEVICE == 'cuda' and batch_x.device.type == 'cuda'
@@ -691,7 +738,7 @@ class DittoClient(Client):
         
         # Calculate standard gradients
         if use_amp:
-            self.scaler.scale(loss).backward(retain_graph=is_personal_model)
+            self.scaler.scale(loss).backward()
             
             # Special handling for personal model with regularization
             if is_personal_model:
@@ -722,7 +769,7 @@ class DittoClient(Client):
                 self.scaler.update()
         else:
             # CPU path remains unchanged
-            loss.backward(retain_graph=is_personal_model)
+            loss.backward()
             
             # Add regularization for personal model
             if is_personal_model:

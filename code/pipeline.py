@@ -71,7 +71,7 @@ class SingleRunExecutor:
             device=str(self.device), 
             learning_rate=lr,
             batch_size=self.default_params['batch_size'], 
-            epochs=self.default_params.get('epochs_per_round', 1),
+            epochs=self.default_params.get('epochs_per_round', 3),
             rounds=rounds, 
             requires_personal_model=requires_personal_model, 
             algorithm_params=algo_params,
@@ -310,7 +310,7 @@ class Experiment:
             hp = {param_key: param_val, fixed_key: fixed_val}
             for server_type in servers_to_tune:
                 print(f"\n")
-                print(f"========== Cost: {cost} | Server: {server_type:<10} | Run: {run_idx+1} | LR: {param_val:.5f} ========== ", end="")
+                print(f"========== Cost: {cost} | Server: {server_type:<10} | Run: {run_idx+1} | {param_key}: {param_val:.5f} ========== ", end="")
                 print(f"\n")
                 trial_metrics, _ = self.single_run_executor.execute_trial( # Ignore model states for tuning
                     server_type=server_type, hyperparams=hp,
