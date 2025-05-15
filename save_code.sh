@@ -77,6 +77,14 @@ data_files=("pipeline.py" "data_processing.py" "data_partitioning.py" "data_load
 ot_files=("submit_ot_analysis.sh" "results_manager.py" "results_utils.py" "run_ot_analysis.py" "ot_pipeline_runner.py" "ot_calculators.py" "ot_data_manager.py" "ot_utils.py" "ot_configs.py" "helper.py" "models.py")
 pipeline_files=("orchestrate_all.py" "orchestrate.py" "status.py" "submit_ot_analysis.sh" "submit_evaluation.sh" "pipeline.py" "configs.py" "results_manager.py" "results_utils.py" "helper.py")
 
+
+fl_files=("run.py" "results_utils.py" "results_manager.py" "pipeline.py" "servers.py" "clients.py" "models.py" "losses.py" "data_processing.py" "data_partitioning.py" "data_loading.py" "data_sets.py" "synthetic_data.py" "helper.py" "configs.py")
+eval_files=("run.py" "results_manager.py" "pipeline.py" "servers.py" "clients.py" "helper.py" "models.py" "losses.py" "configs.py")
+data_files=("pipeline.py" "data_processing.py" "data_partitioning.py" "data_loading.py" "data_sets.py" "synthetic_data.py"  "configs.py")
+ot_files=("run_ot_analysis.py" "ot_pipeline_runner.py" "ot_calculators.py" "ot_data_manager.py" "ot_utils.py" "ot_configs.py")
+pipeline_files=("orchestrate_all.py" "orchestrate.py" "status.py" "submit_ot_analysis.sh" "submit_evaluation.sh")
+
+
 # Call save_files for each list, passing the array name as a string
 save_files "fl_files" "code_fl.txt"
 save_files "ot_files" "code_ot.txt"
