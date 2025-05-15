@@ -3,7 +3,7 @@
 # Default values
 #DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST" "CIFAR" "ISIC" "IXITiny")
 #DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit" "EMNIST")
-DEFAULT_DATASETS=("Synthetic_Concept" "Credit" "EMNIST" "CIFAR" "ISIC" "IXITiny")
+DEFAULT_DATASETS=("Synthetic_Feature" "Synthetic_Concept" "Credit")
 #DEFAULT_EXP_TYPES=("learning_rate")
 DEFAULT_EXP_TYPES=("reg_param")
 #DEFAULT_EXP_TYPES=("evaluation")

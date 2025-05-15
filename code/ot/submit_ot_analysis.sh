@@ -93,7 +93,6 @@ ENV_PATH="${ENV_PATH:-$DEFAULT_ENV_PATH}"
 ENV_NAME="${ENV_NAME:-$DEFAULT_ENV_NAME}"
 
 # Create log directories
-mkdir -p logs/outputs logs/errors
 mkdir -p logs/outputs_${metric} logs/errors_${metric}
 
 # Echo configuration

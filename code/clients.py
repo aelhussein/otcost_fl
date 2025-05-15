@@ -516,9 +516,10 @@ class PFedMeClient(Client):
             metric_fn=metric_fn,
             personal_model=True
         )
-        self.reg_param = self.config.algorithm_params.get('reg_param', 1e-1)  # Lambda
+        self.reg_param = self.config.algorithm_params.get('reg_param', 1e-1) 
         self.k_steps = self.config.algorithm_params.get('k_steps', 5)
         self._global_params_gpu = None  # Cache for global parameters on GPU
+        self.outer_loop_factor = self.config.algorithm_params.get("outer_lr_factor", 30.0)
 
     def _prepare_global_params_gpu(self, device):
         """Creates or returns cached global parameters on the target device."""
@@ -635,7 +636,7 @@ class PFedMeClient(Client):
                     with torch.no_grad():
                         for param_personal, param_global in zip(target_module.parameters(), global_params):
                             if param_personal.requires_grad:
-                                update_step = self.config.learning_rate * self.reg_param * (param_personal - param_global)
+                                update_step = self.config.learning_rate * self.outer_loop_factor * self.reg_param * (param_personal - param_global)
                                 param_personal.sub_(update_step)
                     
                     # Accumulate the last k-step loss
