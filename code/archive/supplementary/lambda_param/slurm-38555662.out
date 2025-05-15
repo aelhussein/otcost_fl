@@ -1,0 +1,158 @@
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+cost: 0.12
+cost: 0.16
+cost: 0.22
+cost: nan
+cost: nan
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: nan
+cost: 0.13
+cost: 0.15
+cost: 0.19
+cost: nan
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.47
+cost: 0.19
+cost: 0.33
+cost: 0.21
+cost: 0.31
+cost: nan
+cost: 0.40
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: inf
+cost: 0.19
+cost: inf
+cost: nan
+cost: 0.51
+cost: 0.58
+cost: 0.11
+cost: 0.26
+cost: 0.33
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.36
+cost: 0.15
+cost: inf
+cost: 0.14
+cost: 0.27
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.32
+cost: 0.11
+cost: 0.22
+cost: 0.20
+cost: 0.25
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: inf
+cost: 0.18
+cost: 0.28
+Degenerate vector, reducing dimension
+cost: 0.27
+cost: 0.17
+cost: inf
+cost: 0.26
+cost: 0.23
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.25

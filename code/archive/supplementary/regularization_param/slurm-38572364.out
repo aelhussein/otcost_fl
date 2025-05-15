@@ -1,0 +1,90 @@
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+cost: 0.12
+Degenerate vector, reducing dimension
+cost: 0.55
+cost: 0.43
+Degenerate vector, reducing dimension
+cost: 0.39
+cost: 0.52
+Degenerate vector, reducing dimension
+cost: 0.56
+Degenerate vector, reducing dimension
+cost: 0.27
+Degenerate vector, reducing dimension
+cost: 0.55
+Degenerate vector, reducing dimension
+cost: 0.32
+cost: 0.52
+Degenerate vector, reducing dimension
+cost: 0.53
+Degenerate vector, reducing dimension
+cost: 0.20
+cost: 0.22
+Degenerate vector, reducing dimension
+cost: 0.31
+cost: 0.12
+Degenerate vector, reducing dimension
+cost: 0.25
+Degenerate vector, reducing dimension
+cost: 0.35
+cost: 0.22
+cost: 0.45
+Degenerate vector, reducing dimension
+cost: 0.52
+cost: 0.29
+Degenerate vector, reducing dimension
+cost: 0.26
+Degenerate vector, reducing dimension
+cost: 0.58
+Degenerate vector, reducing dimension
+cost: 0.55
+cost: 0.45
+Degenerate vector, reducing dimension
+cost: 0.54
+cost: 0.47
+Degenerate vector, reducing dimension
+cost: 0.39
+Degenerate vector, reducing dimension
+cost: 0.20
+cost: 0.30
+cost: 0.45
+Degenerate vector, reducing dimension
+cost: 0.54
+cost: 0.49
+Degenerate vector, reducing dimension
+cost: 0.33
+Degenerate vector, reducing dimension
+cost: 0.20
+Degenerate vector, reducing dimension
+cost: 0.54
+cost: 0.20
+Degenerate vector, reducing dimension
+cost: 0.26
+Degenerate vector, reducing dimension
+cost: 0.58
+Degenerate vector, reducing dimension
+cost: 0.55
+cost: 0.44
+Degenerate vector, reducing dimension
+cost: 0.45
+cost: 0.52
+Degenerate vector, reducing dimension
+cost: 0.58
+Degenerate vector, reducing dimension
+cost: 0.50
+cost: 0.23
+cost: 0.45
+Degenerate vector, reducing dimension
+cost: 0.53
+cost: 0.13
+cost: 0.52
+Degenerate vector, reducing dimension
+cost: 0.58
+Degenerate vector, reducing dimension
+cost: 0.53
+cost: 0.36
+Degenerate vector, reducing dimension
+cost: 0.31
+Degenerate vector, reducing dimension
+cost: 0.54

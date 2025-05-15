@@ -1,0 +1,203 @@
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+cost: 0.23
+cost: 0.39
+cost: 0.24
+cost: 0.09
+cost: 0.43
+cost: nan
+cost: nan
+cost: 0.29
+cost: 0.16
+cost: 0.42
+cost: 0.18
+cost: 0.18
+cost: 0.11
+cost: 0.16
+cost: 0.30
+cost: nan
+cost: 0.17
+cost: 0.54
+cost: 0.08
+cost: 0.31
+cost: 0.21
+cost: 0.24
+cost: 0.10
+cost: 0.18
+cost: 0.14
+cost: 0.66
+cost: nan
+cost: 0.19
+cost: 0.36
+cost: nan
+cost: 0.14
+cost: nan
+cost: nan
+cost: nan
+cost: 0.51
+cost: 0.21
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+cost: 0.16
+cost: 0.53
+cost: 0.55
+cost: 0.14
+cost: 0.52
+cost: 0.13
+cost: 0.56
+cost: 0.60
+cost: 0.67
+cost: inf
+cost: inf
+cost: 0.15
+cost: 0.68
+cost: inf
+cost: inf
+cost: 0.16
+cost: 0.64
+cost: 0.54
+cost: inf
+cost: 0.54
+cost: 0.16
+cost: 0.66
+cost: 0.58
+cost: 0.52
+cost: 0.12
+cost: 0.12
+cost: 0.12
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1112: UserWarning: Sinkhorn did not converge. You might want to increase the number of iterations `numItermax` or the regularization parameter `reg`.
+  warnings.warn("Sinkhorn did not converge. You might want to "
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+/gpfs/commons/home/aelhussein/anaconda3/envs/torch_env/lib/python3.10/site-packages/ot/bregman.py:1106: UserWarning: Numerical errors at iteration 1
+  warnings.warn('Numerical errors at iteration %d' % ii)
+cost: 0.10
+Degenerate vector, reducing dimension
+cost: nan
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.27
+cost: 0.21
+cost: 0.17
+cost: 0.10
+Degenerate vector, reducing dimension
+cost: 0.20
+cost: inf
+cost: nan
+Degenerate vector, reducing dimension
+cost: 0.23
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.20
+cost: inf
+cost: nan
+cost: 0.11
+Degenerate vector, reducing dimension
+cost: nan
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.21
+cost: 0.25
+cost: 0.40
+cost: 0.10
+Degenerate vector, reducing dimension
+cost: nan
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.19
+cost: inf
+cost: nan
+cost: 0.12
+Degenerate vector, reducing dimension
+cost: 0.22
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.18
+cost: nan
+cost: 0.13
+Degenerate vector, reducing dimension
+cost: 0.21
+cost: 0.29
+cost: 0.32
+cost: 0.13
+Degenerate vector, reducing dimension
+cost: 0.27
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: nan
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: nan
+cost: 0.28
+cost: 0.09
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.24
+cost: 0.19
+cost: 0.25
+cost: 0.13
+Degenerate vector, reducing dimension
+cost: 0.30
+Degenerate vector, reducing dimension
+Degenerate vector, reducing dimension
+cost: 0.28
+cost: 0.18
+cost: 0.23
