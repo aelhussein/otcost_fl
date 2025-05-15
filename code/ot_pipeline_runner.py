@@ -225,34 +225,35 @@ class OTPipelineRunner:
                         # Add the record to results
                         all_ot_analysis_records.append(updated_record)
         
-        # Save the results
-        if all_ot_analysis_records:
-            logger.info(f"Saving {len(all_ot_analysis_records)} OT analysis records")
-            
-            # Prepare metadata
-            ot_metadata = {
-                'dataset_analyzed': dataset_name,
-                'fl_clients_in_run': self.num_target_fl_clients,
-                'model_type_activations': model_type_to_analyze,
-                'activation_loader_type': activation_loader_type,
-                'performance_metric_key': performance_metric_key,
-                'ot_methods_used': [config.name for config in ot_configs_to_run],
-                'timestamp': pd.Timestamp.now().isoformat()
-            }
-            
-            # Convert OTAnalysisRecord objects to dicts for saving
-            record_dicts = [record.to_dict() for record in all_ot_analysis_records]
-            
-            # Save through the results manager using the proper enum value
-            ot_results_saver.save_results(
-                record_dicts, 
-                ExperimentType.OT_ANALYSIS,
-                ot_metadata
-            )
-            
-            logger.info("OT analysis complete and results saved")
-        else:
-            logger.warning("No OT analysis records were generated")
+            # Save the results
+            if all_ot_analysis_records:
+                logger.info(f"Saving {len(all_ot_analysis_records)} OT analysis records")
+                
+                # Prepare metadata
+                ot_metadata = {
+                    'dataset_analyzed': dataset_name,
+                    'fl_clients_in_run': self.num_target_fl_clients,
+                    'model_type_activations': model_type_to_analyze,
+                    'activation_loader_type': activation_loader_type,
+                    'performance_metric_key': performance_metric_key,
+                    'ot_methods_used': [config.name for config in ot_configs_to_run],
+                    'last_fl_run_idx_processed': fl_run_idx,
+                    'timestamp': pd.Timestamp.now().isoformat()
+                }
+                
+                # Convert OTAnalysisRecord objects to dicts for saving
+                record_dicts = [record.to_dict() for record in all_ot_analysis_records]
+                
+                # Save through the results manager using the proper enum value
+                ot_results_saver.save_results(
+                    record_dicts, 
+                    ExperimentType.OT_ANALYSIS,
+                    ot_metadata
+                )
+                
+                logger.info("OT analysis complete and results saved")
+            else:
+                logger.warning("No OT analysis records were generated")
         
         # Convert results to DataFrame for convenience
         return pd.DataFrame([record.to_dict() for record in all_ot_analysis_records])

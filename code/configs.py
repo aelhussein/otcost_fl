@@ -60,7 +60,8 @@ def configure_paths(metric='score'):
     }
 
 # --- Supported Algorithms ---
-ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
+ALGORITHMS = ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto'] # Add others as implemented
+LR_ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
 REG_ALOGRITHMS = ['fedprox', 'pfedme', 'ditto'] # Add others as implemented
 # --- Supported Datasets ---
 DATASETS = [
@@ -85,7 +86,7 @@ COMMON_TABULAR_PARAMS = dict(
     base_seed=42,
     samples_per_client=300,
     default_num_clients=5,
-    servers_tune_lr=ALGORITHMS,
+    servers_tune_lr=LR_ALGORITHMS,
     servers_tune_reg = REG_ALOGRITHMS,
     partitioner_args={},
     max_parallel_clients=None,
@@ -115,7 +116,7 @@ COMMON_IMAGE_PARAMS = dict(
     metric='Accuracy', # Default metric for image classification
     base_seed=42,
     default_num_clients=2,
-    servers_tune_lr=ALGORITHMS,
+    servers_tune_lr=LR_ALGORITHMS,
     servers_tune_reg = REG_ALOGRITHMS,
     partitioner_args={},
     max_parallel_clients=None,

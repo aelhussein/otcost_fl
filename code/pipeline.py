@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple, Any, Union, Callable
 
 # Import project modules
-from configs import ROOT_DIR, ALGORITHMS, DEVICE, DEFAULT_PARAMS, DATA_DIR
+from configs import ROOT_DIR, ALGORITHMS, DEVICE, DEFAULT_PARAMS, DATA_DIR, REG_ALOGRITHMS
 from helper import (set_seeds, get_parameters_for_dataset, get_model_instance, # Keep necessary imports
                     get_default_lr, get_default_reg, MetricKey, SiteData, ModelState, TrainerConfig) # Import types from helper
 # Import necessary components
@@ -288,8 +288,8 @@ class Experiment:
     # --- Cost Processing Helpers ---
 
     def _tune_cost_for_run(self, cost: Any, run_idx: int, seed: int,
-                           client_dataloaders: Dict, num_actual_clients: int
-                          ) -> CostExecutionResult:
+                        client_dataloaders: Dict, num_actual_clients: int
+                        ) -> CostExecutionResult:
         """Executes all tuning trials for a single cost and run."""
         tuning_type = self.config.experiment_type
         trial_records: List[TrialRecord] = []
@@ -307,8 +307,26 @@ class Experiment:
 
         # Loop over HPs and Servers
         for param_val in try_vals:
-            hp = {param_key: param_val, fixed_key: fixed_val}
             for server_type in servers_to_tune:
+                # For REG_PARAM tuning of personalized algorithms, use FedAvg's best LR
+                if tuning_type == ExperimentType.REG_PARAM and server_type in REG_ALOGRITHMS:
+                    # Get FedAvg's best learning rate
+                    selection_criterion_key = self.default_params.get('selection_criterion_key', 'val_losses')
+                    selection_criterion_direction_overrides = self.default_params.get('selection_criterion_direction_overrides', {})
+                    fedavg_best_lr = self.results_manager.get_best_parameters(
+                        ExperimentType.LEARNING_RATE, 
+                        'fedavg', 
+                        cost,
+                        selection_criterion_key,
+                        selection_criterion_direction_overrides
+                    )
+                    # Fallback to default if FedAvg's best LR not found
+                    if fedavg_best_lr is None:
+                        fedavg_best_lr = get_default_lr(self.config.dataset)
+                    hp = {param_key: param_val, fixed_key: fedavg_best_lr}
+                else:
+                    hp = {param_key: param_val, fixed_key: fixed_val}
+                    
                 print(f"\n")
                 print(f"========== Cost: {cost} | Server: {server_type:<10} | Run: {run_idx+1} | {param_key}: {param_val:.5f} ========== ", end="")
                 print(f"\n")
@@ -317,8 +335,8 @@ class Experiment:
                     client_dataloaders=client_dataloaders, tuning=True
                 )
                 record = TrialRecord(cost=cost, run_idx=run_idx, server_type=server_type,
-                                     tuning_param_name=param_key, tuning_param_value=param_val,
-                                     metrics=trial_metrics, error=trial_metrics.get('error'))
+                                    tuning_param_name=param_key, tuning_param_value=param_val,
+                                    metrics=trial_metrics, error=trial_metrics.get('error'))
                 trial_records.append(record)
         print(f"\n")
         return CostExecutionResult(cost=cost, trial_records=trial_records)
@@ -334,14 +352,27 @@ class Experiment:
         selection_criterion_direction_overrides = self.default_params.get('selection_criterion_direction_overrides', {})
 
         for server_type in ALGORITHMS: # Use global ALGORITHMS list
-            # Fetch best HPs using configured selection criterion
-            best_lr = self.results_manager.get_best_parameters(
-                ExperimentType.LEARNING_RATE, 
-                server_type, 
-                cost, 
-                selection_criterion_key,
-                selection_criterion_direction_overrides
-            )
+            # For personalized algorithms, use FedAvg's best learning rate
+            if server_type in REG_ALOGRITHMS:
+                # Get FedAvg's best learning rate
+                best_lr = self.results_manager.get_best_parameters(
+                    ExperimentType.LEARNING_RATE, 
+                    'fedavg', 
+                    cost, 
+                    selection_criterion_key,
+                    selection_criterion_direction_overrides
+                )
+            else:
+                # For local and fedavg, use their own best learning rate
+                best_lr = self.results_manager.get_best_parameters(
+                    ExperimentType.LEARNING_RATE, 
+                    server_type, 
+                    cost, 
+                    selection_criterion_key,
+                    selection_criterion_direction_overrides
+                )
+            
+            # Get best reg param (specific to each algorithm)
             best_reg = self.results_manager.get_best_parameters(
                 ExperimentType.REG_PARAM, 
                 server_type, 
@@ -352,7 +383,7 @@ class Experiment:
             
             # Use defaults if not found
             if best_lr is None: best_lr = get_default_lr(self.config.dataset)
-            if best_reg is None and server_type in ['fedprox', 'pfedme', 'ditto']: best_reg = get_default_reg(self.config.dataset)
+            if best_reg is None and server_type in REG_ALOGRITHMS: best_reg = get_default_reg(self.config.dataset)
             eval_hyperparams = {'learning_rate': best_lr, 'reg_param': best_reg}
             print(f"\n")
             print(f"========== Cost: {cost} | Server: {server_type:<10} | Run: {run_idx+1} | LR: {best_lr:.5f} ========== ", end="")
