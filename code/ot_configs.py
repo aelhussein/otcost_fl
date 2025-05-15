@@ -1,13 +1,15 @@
 """
 Configuration utilities for OT-based similarity analysis.
 Defines OTConfig class and pre-defined configuration collections.
+Includes both within-class and non-within-class configurations.
 """
 import logging
 from typing import Dict, Optional, Any, List
 
 # Configure module logger
 logger = logging.getLogger(__name__)
-VERBOSE = True
+VERBOSE = True # Assuming VERBOSE is defined elsewhere or set directly. If not, set to True/False.
+
 # --- Constants ---
 DEFAULT_OT_REG = 0.01
 DEFAULT_OT_MAX_ITER = 5000
@@ -20,13 +22,13 @@ class OTConfig:
     Stores method type, name, and parameters.
     """
     # Define known method types to prevent typos
-    KNOWN_METHOD_TYPES = {'feature_error', 'direct_ot'}
+    KNOWN_METHOD_TYPES = {'direct_ot'}
 
     def __init__(self, method_type: str, name: str, params: Optional[Dict[str, Any]] = None):
         """
         Args:
-            method_type (str): The type of OT calculator (e.g., 'feature_error').
-            name (str): A unique descriptive name for this configuration set (e.g., 'FE_LossW_Norm').
+            method_type (str): The type of OT calculator
+            name (str): A unique descriptive name for this configuration set
             params (dict, optional): Dictionary of parameters specific to the OT method. Defaults to {}.
         """
         if not isinstance(method_type, str) or not method_type:
@@ -49,156 +51,153 @@ class OTConfig:
 
 # ----- Predefined OT Configurations -----
 
-# Feature Error OT Configurations
-feature_error_configs = [
-    # Basic configurations with different weighting strategies
-    # OTConfig(
-    #     method_type='feature_error',
-    #     name='FE_Uniform_Norm',
-    #     params={
-    #         'use_loss_weighting': False,
-    #         'normalize_cost': True,
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'alpha': 1.0,
-    #         'beta': 1.0,
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
-    # OTConfig(
-    #     method_type='feature_error',
-    #     name='FE_LossWeighted_Norm',
-    #     params={
-    #         'use_loss_weighting': True,
-    #         'normalize_cost': True,
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'alpha': 1.0,
-    #         'beta': 1.0,
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
-    # # Feature-only variant (no error term)
-    # OTConfig(
-    #     method_type='feature_error',
-    #     name='FE_FeatureOnly',
-    #     params={
-    #         'use_loss_weighting': False,
-    #         'normalize_cost': True,
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'alpha': 1.0,
-    #         'beta': 0.0,  # No error term
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
-    # # Error-only variant (no feature term)
-    # OTConfig(
-    #     method_type='feature_error',
-    #     name='FE_ErrorOnly',
-    #     params={
-    #         'use_loss_weighting': False,
-    #         'normalize_cost': True,
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'alpha': 0.0,  # No feature term
-    #         'beta': 1.0,
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
-#     OTConfig(
-#     method_type='feature_error',
-#     name='FE_WithinClass',
-#     params={
-#         'use_loss_weighting': False,
-#         'normalize_cost': True,
-#         'min_samples': 20,
-#         'max_samples': 900,
-#         'alpha': 1.0, 
-#         'beta': 1.0,
-#         'within_class_only': True,
-#         'verbose': VERBOSE,
-#     }
-# ),
-]
+# Parameters common to all direct_ot configurations, irrespective of within_class
+ABSOLUTE_COMMON_PARAMS = {
+    'use_loss_weighting': False,
+    'normalize_cost': False,
+    'min_samples': 20,
+    'max_samples': 900,
+    'verbose': VERBOSE,
+    # Default OT parameters, can be overridden if needed
+    'reg': DEFAULT_OT_REG,
+    'max_iter': DEFAULT_OT_MAX_ITER,
+    'compress_vectors': True, # Common for label distances
+    'compression_threshold': 20,
+    'compression_ratio': 5, # Example: retain 80% variance
+}
 
+# Base parameters for direct_ot configurations that ARE within_class_only
+COMMON_WITHIN_CLASS_PARAMS = {
+    **ABSOLUTE_COMMON_PARAMS,
+    'within_class_only': True,
+}
 
-# Direct OT Configurations
+# Parameters specific to configurations using cosine feature distance and Hellinger label distance,
+# and are also within_class_only.
+COMMON_WC_COSINE_HELLINGER_PARAMS = {
+    **COMMON_WITHIN_CLASS_PARAMS,
+    'normalize_cost': True,
+    'normalize_activations': True,
+    'distance_method': 'cosine',
+    'label_distance': 'hellinger',
+}
+
 direct_ot_configs = [
+    # Non-Within-Class Wasserstein configuration
     OTConfig(
         method_type='direct_ot',
-        name='Direct_Wasserstein',
+        name='Direct_Wasserstein', # No WC_ prefix
         params={
-            'use_loss_weighting': False,
+            **ABSOLUTE_COMMON_PARAMS, # Base common parameters
             'normalize_activations': False,
-            'normalize_cost': True,
             'distance_method': 'euclidean',
-            'min_samples': 20, 
-            'max_samples': 900,
-            'use_label_hellinger': True,
-            'verbose':VERBOSE,
+            'label_distance': 'wasserstein_gaussian',
+            'feature_weight': 1.0,
+            'label_weight': 1.0,
+            # 'within_class_only' is NOT set, so it defaults to False in the calculator
         }
     ),
-    # OTConfig(
-    #     method_type='direct_ot',
-    #     name='Direct_Cosine',
-    #     params={
-    #         'use_loss_weighting': False,
-    #         'normalize_activations': True,
-    #         'normalize_cost': True,
-    #         'distance_method': 'cosine',
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'use_label_hellinger': False,
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
+    # Within-Class Wasserstein configuration
     OTConfig(
         method_type='direct_ot',
-        name='Direct_',
+        name='WC_Direct_Wasserstein', # WC for Within-Class
         params={
-            'use_loss_weighting': False,
-            'normalize_activations': True,
-            'normalize_cost': True,
-            'distance_method': 'cosine',
-            'min_samples': 20,
-            'max_samples': 900,
-            'use_label_hellinger': True,
+            **COMMON_WITHIN_CLASS_PARAMS, # Base within-class parameters
+            'normalize_activations': False,
+            'distance_method': 'euclidean',
+            'label_distance': 'wasserstein_gaussian',
+            'feature_weight': 1.0,
+            'label_weight': 1.0,
+        }
+    ),
+
+    # Within-Class Hellinger-based configurations with varying feature/label weights
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_1:1',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 1.0,
+            'label_weight': 1.0,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_2:1',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 2.0,
+            'label_weight': 1.0,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_3:1',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
             'feature_weight': 3.0,
             'label_weight': 1.0,
-            'verbose':VERBOSE,
         }
     ),
     OTConfig(
-    method_type='direct_ot',
-    name='Direct_WithinClass',
-    params={
-        'use_loss_weighting': False,
-        'normalize_activations': True,
-        'normalize_cost': True,
-        'distance_method': 'cosine',
-        'min_samples': 20,
-        'max_samples': 900,
-        'use_label_hellinger': False,  # No need for Hellinger in within-class mode
-        'within_class_only': True,
-        'verbose': VERBOSE,
-    }
-),
-    # OTConfig(
-    #     method_type='direct_ot',
-    #     name='Direct_LossWeighted',
-    #     params={
-    #         'use_loss_weighting': True,
-    #         'normalize_activations': True,
-    #         'normalize_cost': True,
-    #         'distance_method': 'euclidean',
-    #         'min_samples': 20,
-    #         'max_samples': 900,
-    #         'use_label_hellinger': False,
-    #         'verbose':VERBOSE,
-    #     }
-    # ),
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_1:2',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 1.0,
+            'label_weight': 2.0,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_1:3',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 1.0,
+            'label_weight': 3.0,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_1:4',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 1.0,
+            'label_weight': 4.0,
+        }
+    ),
+
+    # Within-Class Feature-only configurations
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_FeatureOnly_Cosine',
+        params={
+            **COMMON_WITHIN_CLASS_PARAMS, # Base within-class parameters
+            'normalize_activations': True,
+            'distance_method': 'cosine',
+            'label_distance': None, # No label distance component
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_FeatureOnly_Euclidean',
+        params={
+            **COMMON_WITHIN_CLASS_PARAMS, # Base within-class parameters
+            'normalize_activations': False,
+            'distance_method': 'euclidean',
+            'label_distance': None, # No label distance component
+        }
+    ),
 ]
 
 # Combined configuration list for convenience
-all_configs = feature_error_configs + direct_ot_configs
+all_configs = direct_ot_configs

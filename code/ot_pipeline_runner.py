@@ -197,9 +197,7 @@ class OTPipelineRunner:
                             
                             # Extract primary OT cost based on method type
                             primary_ot_cost = None
-                            if ot_config.method_type == 'feature_error':
-                                primary_ot_cost = ot_calc_results_dict.get('ot_cost')
-                            elif ot_config.method_type == 'direct_ot':
+                            if ot_config.method_type == 'direct_ot':
                                 primary_ot_cost = ot_calc_results_dict.get('direct_ot_cost')
                             else:
                                 # Try to find any "cost" in the results
