@@ -48,7 +48,7 @@ parser.add_argument(
 args = parser.parse_args()
 
 # --- Directory Setup ---
-configure(args.metrics)
+configure(args.metric)
 dir_paths = paths()
 RESULTS_DIR = dir_paths.results_dir
 

@@ -17,7 +17,7 @@ import copy
 # Project Imports
 from directories import paths
 dir_paths = paths()
-DATA_DIR = dir_paths.DATA_DIR
+DATA_DIR = dir_paths.data_dir
 from configs import N_WORKERS
 from helper import get_parameters_for_dataset
 from data_loading import get_loader
