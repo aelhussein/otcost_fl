@@ -130,7 +130,7 @@ def get_formatted_timestamp(timestamp_str: str) -> str:
         return timestamp_str
 
 def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List[Any]]:
-    """Get detailed status information for a dataset"""
+    """Get detailed status information for a dataset by checking individual configurations"""
     rm = ResultsManager(ROOT_DIR, dataset, num_clients)
     costs = DATASET_COSTS.get(dataset, [])
     dflt = DEFAULT_PARAMS.get(dataset, {})
@@ -150,19 +150,60 @@ def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List
         
         # Calculate total configurations for this phase
         total_configs = len(costs)
+        completed_configs = 0
+        
+        # Generate list of all expected configurations
+        expected_configs = []
+        
         if phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM]:
             # For tuning phases, multiply by number of parameters to try
             param_key = 'learning_rates_try' if phase == ExperimentType.LEARNING_RATE else 'reg_params_try'
+            param_name = 'learning_rate' if phase == ExperimentType.LEARNING_RATE else 'reg_param' 
             servers_key = 'servers_tune_lr' if phase == ExperimentType.LEARNING_RATE else 'servers_tune_reg'
-            params_to_try = len(dflt.get(param_key, []))
-            servers = len(dflt.get(servers_key, []))
-            total_configs *= params_to_try * servers
+            params_to_try = dflt.get(param_key, [])
+            servers_to_try = dflt.get(servers_key, [])
+            
+            # Calculate total configurations
+            total_configs *= len(params_to_try) * len(servers_to_try)
+            
+            # Generate all expected configurations
+            for cost in costs:
+                for server in servers_to_try:
+                    for param_val in params_to_try:
+                        expected_configs.append((cost, server, param_name, param_val))
+                        
         elif phase == ExperimentType.EVALUATION:
             # For evaluation, multiply by algorithms
-            total_configs *= len(dflt.get('algorithms', ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto']))
+            algorithms = dflt.get('algorithms', ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto'])
+            total_configs *= len(algorithms)
             
-        completed_configs = total_configs - len(remaining)
+            # Generate all expected configurations
+            for cost in costs:
+                for algorithm in algorithms:
+                    expected_configs.append((cost, algorithm, None, None))
+        else:
+            # For other phases, just use costs
+            for cost in costs:
+                expected_configs.append((cost, None, None, None))
         
+        # Determine target number of runs for this phase
+        target_runs_key = 'runs_tune' if phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM] else 'runs'
+        target_runs = dflt.get(target_runs_key, 1)
+        
+        # Check each configuration against records
+        for config in expected_configs:
+            cost, server, param_name, param_value = config
+            
+            # Count successful runs for this config
+            successful_runs = 0
+            for r in records:
+                if hasattr(r, 'matches_config') and r.matches_config(cost, server, param_name, param_value) and r.error is None:
+                    successful_runs += 1
+            
+            # Mark configuration as complete if it has enough runs
+            if successful_runs >= target_runs:
+                completed_configs += 1
+            
         # Calculate progress percentage
         if total_configs > 0:
             progress_pct = round(completed_configs / total_configs * 100, 1)

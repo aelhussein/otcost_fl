@@ -98,56 +98,61 @@ def log_job_submission(dataset: str, num_clients: int, phase: str,
     with open(JOBS_LOG_FILE, 'w') as f:
         json.dump(job_data, f, indent=2)
 
-def submit_phase(dataset: str, num_clients: int, phase: str, metric: str, 
-               dry_run: bool = False) -> Optional[str]:
-    """Submit jobs for a specific phase and return job ID if available"""
+def submit_phase(dataset: str,
+                 num_clients: int,
+                 phase: str,
+                 metric: str,
+                 dry_run: bool = False) -> List[str]:
+    """
+    Submit the Slurm jobs for one phase and return **all** Slurm job-IDs
+    printed by the submit script (one ID per “Submitted batch job …” line).
+    """
     script_name, arg_name = PHASE_SUBMIT_INFO[phase]
-    
-    # Get the full path to the submit script
     script_path = os.path.join(_SCRIPT_DIR, script_name)
-    
-    # Build command based on script type
+
     if script_name == "submit_evaluation.sh":
         cmd = [
             "bash", script_path,
             f"--datasets={dataset}",
             f"--exp-types={arg_name}",
             f"--num-clients={num_clients}",
-            f"--metric={metric}"
+            f"--metric={metric}",
         ]
-    else:  # OT analysis has different args
+    else:  # OT analysis
         cmd = [
             "bash", script_path,
             f"--datasets={dataset}",
             f"--fl-num-clients={num_clients}",
-            f"--metric={metric}"
+            f"--metric={metric}",
         ]
-    
-    print(f"Command: {' '.join(cmd)}")
-    
+
+    print("Command:", " ".join(cmd))
     if dry_run:
-        print("(Dry run - not executing)")
-        return None
-    
-    # Execute the command and try to capture job ID
+        print("(dry-run)")
+        return []
+
     try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
-        # Try to extract Slurm job ID
-        job_id = None
-        for line in output.splitlines():
-            if "Submitted batch job" in line:
-                job_id = line.split()[-1].strip()
-                break
-        
-        print(f"Submitted {phase} jobs for {dataset} (clients={num_clients}, metric={metric})")
-        if job_id:
-            print(f"Submission job ID: {job_id}")
-        
-        return job_id
-    
+        output = subprocess.check_output(cmd,
+                                         stderr=subprocess.STDOUT,
+                                         text=True)
     except subprocess.CalledProcessError as e:
-        print(f"Error submitting jobs: {e.output}")
-        return None
+        print("ERROR submitting jobs:\n", e.output)
+        return []
+
+    # Extract every job-ID mentioned by sbatch
+    job_ids: List[str] = [
+        line.split()[-1].strip()
+        for line in output.splitlines()
+        if "Submitted batch job" in line
+    ]
+
+    if job_ids:
+        print(f"→ {phase}: submitted {len(job_ids)} job(s): {','.join(job_ids)}")
+    else:
+        print(f"WARNING: no job-ID detected for {phase}")
+
+    return job_ids
+
 
 def archive_phase_results(dataset: str, num_clients: int, phase: str, metric: str):
     """Archives existing result files for a phase to ensure complete rerun."""
@@ -193,24 +198,66 @@ def archive_phase_results(dataset: str, num_clients: int, phase: str, metric: st
         print(f"Archived metadata to: {archive_meta}")
 
 def get_progress_info(rm: ResultsManager, phase: str, costs, params) -> Dict[str, Any]:
-    """Get progress information for a phase"""
+    """Get progress information for a phase by counting explicitly completed configurations"""
     records, remaining, min_runs = rm.get_experiment_status(
         phase, costs, params, metric_key_cls=None
     )
     
+    # Calculate the total number of expected configurations
     total_configs = len(costs)
+    completed_configs = 0
+    
+    # List to store all expected configurations for detailed checking
+    expected_configs = []
+    
     if phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM]:
-        # For tuning phases, multiply by number of parameters to try
+        # For tuning phases, get parameters to try
         param_key = 'learning_rates_try' if phase == ExperimentType.LEARNING_RATE else 'reg_params_try'
+        param_name = 'learning_rate' if phase == ExperimentType.LEARNING_RATE else 'reg_param'
         servers_key = 'servers_tune_lr' if phase == ExperimentType.LEARNING_RATE else 'servers_tune_reg'
-        params_to_try = len(params.get(param_key, []))
-        servers = len(params.get(servers_key, []))
-        total_configs *= params_to_try * servers
+        params_to_try = params.get(param_key, [])
+        servers_to_try = params.get(servers_key, [])
+        
+        # Total configurations = costs * servers * parameters
+        total_configs *= len(params_to_try) * len(servers_to_try)
+        
+        # Generate all expected configurations
+        for cost in costs:
+            for server in servers_to_try:
+                for param_val in params_to_try:
+                    expected_configs.append((cost, server, param_name, param_val))
+                    
     elif phase == ExperimentType.EVALUATION:
         # For evaluation, multiply by algorithms
-        total_configs *= len(params.get('algorithms', ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto']))
+        algorithms = params.get('algorithms', ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto'])
+        total_configs *= len(algorithms)
         
-    completed_configs = total_configs - len(remaining)
+        # Generate all expected configurations
+        for cost in costs:
+            for algorithm in algorithms:
+                expected_configs.append((cost, algorithm, None, None))
+    else:
+        # For other phases, just use costs
+        for cost in costs:
+            expected_configs.append((cost, None, None, None))
+    
+    # Determine target number of runs based on experiment type
+    target_runs = params.get('runs_tune' if phase != ExperimentType.EVALUATION else 'runs', 1)
+    
+    # Check each expected configuration against records
+    for config in expected_configs:
+        cost, server, param_name, param_value = config
+        
+        # Count successful runs for this config
+        successful_runs = 0
+        for r in records:
+            # Use matches_config for standard TrialRecord
+            if hasattr(r, 'matches_config') and r.matches_config(cost, server, param_name, param_value) and r.error is None:
+                successful_runs += 1
+        
+        # Mark configuration as complete if it has enough runs
+        if successful_runs >= target_runs:
+            completed_configs += 1
     
     # Calculate error count
     error_count = sum(1 for r in records if getattr(r, "error", None) is not None)
@@ -220,58 +267,112 @@ def get_progress_info(rm: ResultsManager, phase: str, costs, params) -> Dict[str
         "completed": completed_configs,
         "percent": round(completed_configs / total_configs * 100, 1) if total_configs > 0 else 0,
         "errors": error_count,
-        "runs_per_config": params.get('runs_tune' if phase != ExperimentType.EVALUATION else 'runs', 1),
+        "runs_per_config": target_runs,
         "min_completed_runs": min_runs
     }
 
+def schedule_next_orchestrator(dataset: str,
+                               num_clients: int,
+                               metric: str,
+                               force: bool,
+                               force_phases: List[str],
+                               dependency_ids: List[str]) -> None:
+    """
+    Submit *this* script again so that it runs only after all
+    `dependency_ids` finish successfully.
+    """
+    if not dependency_ids:                      # nothing to depend on
+        return
+
+    dep_str = ":".join(dependency_ids)
+    job_name = f"orch_{dataset}_{num_clients}_{metric}"
+
+    # Re-create the CLI we were launched with
+    args_list = [
+        f"python {_SCRIPT_DIR}/orchestrate.py",
+        f"-ds {dataset}",
+        f"-nc {num_clients}",
+        f"--metric {metric}",
+    ]
+    if force:
+        args_list.append("--force")
+    if force_phases:
+        args_list.append(f"--force-phases={','.join(force_phases)}")
+
+    wrap_cmd = " ".join(args_list)
+    sbatch_cmd = [
+        "sbatch",
+        f"--dependency=afterok:{dep_str}",
+        "--job-name", job_name,
+        "--output", "/dev/null",
+        "--error", "/dev/null",
+        "--wrap", wrap_cmd,
+    ]
+
+    try:
+        new_job = subprocess.check_output(sbatch_cmd,
+                                          stderr=subprocess.STDOUT,
+                                          text=True).strip()
+        print(f"Chained orchestrator submitted (job-ID {new_job}) "
+              f"→ will start after {dep_str}")
+    except subprocess.CalledProcessError as e:
+        print("ERROR chaining orchestrator:\n", e.output)
+
+
 def main():
-    # Validate dataset
+    # ------------ validation ------------
     if args.dataset not in DATASET_COSTS:
-        print(f"Error: Dataset '{args.dataset}' not found in DATASET_COSTS.")
+        print(f"Unknown dataset {args.dataset}")
         sys.exit(1)
-    
+
     costs = DATASET_COSTS[args.dataset]
-    dflt = DEFAULT_PARAMS[args.dataset]
-    rm = ResultsManager(ROOT_DIR, args.dataset, args.num_clients)
-    
-    # Parse force phases if provided
-    force_phases = []
-    if args.force_phases:
-        force_phases = [phase.strip() for phase in args.force_phases.split(",")]
-    
-    # Process each phase in order
+    dflt  = DEFAULT_PARAMS[args.dataset]
+    rm    = ResultsManager(ROOT_DIR, args.dataset, args.num_clients)
+
+    force_phases = [p.strip() for p in args.force_phases.split(",")] \
+                   if args.force_phases else []
+
+    # ------------ phase loop ------------
     for phase in PHASES:
-        # Determine if this phase should be forced
         phase_force = args.force or phase in force_phases
-        
-        # When forcing a phase, archive existing results first (if not dry run)
+
+        # archive if forcing (skip during dry-run)
         if phase_force and not args.dry_run:
-            print(f"Forcing phase '{phase}', archiving existing results...")
-            archive_phase_results(args.dataset, args.num_clients, phase, args.metric)
-        
-        if not _phase_done(rm, phase, costs, dflt, force=False):  # Always pass force=False as we handle forcing via archiving
-            # Get progress info before submission
-            progress_before = get_progress_info(rm, phase, costs, dflt)
-            
-            # Submit the jobs for this phase
-            job_id = submit_phase(args.dataset, args.num_clients, phase, args.metric, args.dry_run)
-            
-            # Log the submission
-            if not args.dry_run:
-                log_job_submission(args.dataset, args.num_clients, phase, job_id, args.metric)
-                
-                # Show progress info
-                print(f"\nPhase '{phase}' status:")
-                print(f"  Completed: {progress_before['completed']}/{progress_before['total']} configs ({progress_before['percent']}%)")
-                print(f"  Minimum runs completed per config: {progress_before['min_completed_runs']}/{progress_before['runs_per_config']}")
-                if progress_before['errors'] > 0:
-                    print(f"  Warning: {progress_before['errors']} records contain errors")
-                print(f"\nJobs have been submitted for incomplete configurations. Run this script again after they complete.")
-            
-            # Exit after submitting first incomplete phase
-            sys.exit(0)
-    
-    print("All phases complete for dataset:", args.dataset, f"(clients={args.num_clients}, metric={args.metric})")
+            print(f"[Force] archiving old {phase} results …")
+            archive_phase_results(args.dataset, args.num_clients,
+                                   phase, args.metric)
+
+        # already done?
+        if _phase_done(rm, phase, costs, dflt, force=False):
+            continue
+
+        # submit jobs, then resubmit *this* script with dependency
+        job_ids = submit_phase(args.dataset, args.num_clients,
+                               phase, args.metric, args.dry_run)
+
+        if not args.dry_run:
+            log_job_submission(args.dataset, args.num_clients,
+                               phase, job_ids[0] if job_ids else None,
+                               args.metric)
+
+            # schedule next orchestrator run once these jobs finish
+            schedule_next_orchestrator(
+                dataset=args.dataset,
+                num_clients=args.num_clients,
+                metric=args.metric,
+                force=args.force,
+                force_phases=force_phases,
+                dependency_ids=job_ids,
+            )
+
+        # Stop after the first incomplete phase – the next orchestrator
+        # (scheduled above) will pick up where we leave off.
+        sys.exit(0)
+
+    print(f"All phases complete for {args.dataset} "
+          f"(clients={args.num_clients}, metric={args.metric})")
+
+
 if __name__ == "__main__":
     main()
 
