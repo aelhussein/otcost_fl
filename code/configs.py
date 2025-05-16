@@ -33,13 +33,13 @@ DATASETS = [
 COMMON_TABULAR_PARAMS = dict(
     fixed_classes=2, # Default for binary classification, override for multiclass
     default_lr = 5e-3,
-    learning_rates_try=[1e-1], #[1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
+    learning_rates_try=[1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
     default_reg_param=0.1,
     reg_params_try=[5, 2, 1, 5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4, 1e-5, 1e-6],
     batch_size=32,
     epochs_per_round=3,
     rounds=50,
-    rounds_tune_inner=10,
+    rounds_tune_inner=30,
     runs=50,
     runs_tune=5,
     metric='F1', # Default metric for tabular
@@ -64,13 +64,13 @@ COMMON_TABULAR_PARAMS = dict(
 COMMON_IMAGE_PARAMS = dict(
     fixed_classes=10, # Default for common image datasets like CIFAR/EMNIST
     default_lr=3e-3,
-    learning_rates_try=[5e-3], #[5e-3, 1e-3, 5e-4],
+    learning_rates_try=[5e-3, 1e-3, 5e-4],
     default_reg_param=0.1,
     reg_params_try=[1, 5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4, 1e-5],
     batch_size=96,
     epochs_per_round=3,
     rounds=50,
-    rounds_tune_inner=5,
+    rounds_tune_inner=20,
     runs=15,
     runs_tune=3,
     metric='Accuracy', # Default metric for image classification
@@ -271,7 +271,7 @@ DATASET_COSTS = {
     'Credit': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
     'EMNIST': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
     'CIFAR': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
-    'Synthetic_Concept': [0.0, 1.0], #[0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
+    'Synthetic_Concept': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
     'IXITiny': ['guys_hh', 'iop_guys', 'iop_hh', 'all'], 
     'ISIC': ['bcn_vmole','vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',], 
     # 'ISIC': ['bcn_vmole', 'bcn_vmod', 'bcn_rose', 'bcn_msk', 'bcn_vienna',

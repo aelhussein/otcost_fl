@@ -9,15 +9,24 @@ import json
 from datetime import datetime
 import tabulate
 from typing import Dict, List, Any
-
+parser = argparse.ArgumentParser(description="Check status of FL experiments")
+parser.add_argument("-ds", "--dataset", help="Dataset name (or 'all')")
+parser.add_argument("-nc", "--num_clients", type=int, default=2, help="Number of clients")
+parser.add_argument("--metric", default="score", choices=["score", "loss"], 
+                    help="Metric to use (score or loss)")
+parser.add_argument("--all", action="store_true", help="Show status for all datasets")
+parser.add_argument("--no-color", action="store_true", help="Disable colored output")
+args = parser.parse_args()
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)  # Root directory containing code/ and pipeline_tools/
-_CODE_DIR = os.path.join(_PROJECT_ROOT, "code")  # Path to code/ directory
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+sys.path.insert(0, _SCRIPT_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
-sys.path.insert(0, _CODE_DIR)  # Add code/ directory specifically to import path
+from directories import configure, paths
+configure(args.metric)
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
 
-
-from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS
+from configs import DATASET_COSTS, DEFAULT_PARAMS
 from helper import ExperimentType
 from results_manager import ResultsManager
 
@@ -192,15 +201,6 @@ def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List
     return rows
 
 def main():
-    parser = argparse.ArgumentParser(description="Check status of FL experiments")
-    parser.add_argument("-ds", "--dataset", help="Dataset name (or 'all')")
-    parser.add_argument("-nc", "--num_clients", type=int, default=2, help="Number of clients")
-    parser.add_argument("--metric", default="score", choices=["score", "loss"], 
-                      help="Metric to use (score or loss)")
-    parser.add_argument("--all", action="store_true", help="Show status for all datasets")
-    parser.add_argument("--no-color", action="store_true", help="Disable colored output")
-    args = parser.parse_args()
-    
     # Disable colors if requested
     if args.no_color:
         for attr in dir(Colors):

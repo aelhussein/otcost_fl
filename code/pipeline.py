@@ -350,10 +350,6 @@ class Experiment:
             
             self.results_manager.save_results(self.all_trial_records, experiment_type, metadata_dict)
             
-            # Run-level cleanup
-            run_records.clear()
-            run_cost_client_counts.clear()
-            
             # Comprehensive memory cleanup at run level
             systematic_memory_cleanup()
     # --- Cost Processing Helpers ---
