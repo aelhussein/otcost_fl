@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple, Any, Union, Callable
 import gc
 # Import project modules
-from configs import ROOT_DIR, ALGORITHMS, DEVICE, DEFAULT_PARAMS, DATA_DIR, REG_ALOGRITHMS
+from directories import paths
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
+DATA_DIR = dir_paths.data_dir
+from configs import ALGORITHMS, DEVICE,REG_ALOGRITHMS
 from helper import (set_seeds, get_parameters_for_dataset, get_model_instance, systematic_memory_cleanup, # Keep necessary imports
                     get_default_lr, get_default_reg, MetricKey, SiteData, ModelState, TrainerConfig) # Import types from helper
 # Import necessary components

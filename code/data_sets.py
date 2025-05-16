@@ -127,9 +127,8 @@ class _BaseImgDS(TorchDataset):
         z = self.trans_args.get('zoom', 0.0)      # e.g. +0.2 → 1.2×, −0.2 → 0.8×
         if abs(z) > 1e-3:
             scale = 1.0 + z
-            t.append(transforms.Lambda(lambda img, s=scale:
-                TF.affine(img, angle=0, translate=(0,0),
-                                            scale=s, shear=(0,0), fill=100)))
+            # Replace Lambda with picklable DeterministicAffineZoom
+            t.append(DeterministicAffineZoom(scale_factor=scale, fill_value=100))
 
         if self.RESIZE_TO is not None:
             t.append(transforms.Resize(self.RESIZE_TO))
@@ -137,13 +136,17 @@ class _BaseImgDS(TorchDataset):
         r = self.trans_args.get('angle', 0.0)
         if abs(r) > 1e-6:
             t.append(transforms.RandomAffine(
-                     degrees=(r, r)))
+                    degrees=(r, r)))
             
-
         # --- frequency filter -------------------------------------------------
         f = self.trans_args.get('frequency', 0.0)
         if abs(f) > 1e-3:
-            t.append(transforms.Lambda(lambda img, d=f: self.img_transform(img, d)))
+            # Replace Lambda with appropriate picklable transform class
+            # We'll use a dataset-specific check here
+            if isinstance(self, EMNISTDataset):
+                t.append(EMNISTFrequencyFilter(delta=f))
+            elif isinstance(self, CIFARDataset):
+                t.append(CIFARImageTransform(delta=f))
 
         if self.is_train and self.TRAIN_AUG:
             t.extend(self.TRAIN_AUG)
@@ -165,17 +168,56 @@ class _BaseImgDS(TorchDataset):
         img = self.transform(img)
         return img, torch.tensor(label, dtype=torch.long)
 
+# Add these top-level callable transform classes at the beginning of the file
+class DeterministicAffineZoom(torch.nn.Module):
+    """Applies a deterministic zoom using TF.affine."""
+    def __init__(self, scale_factor: float, fill_value: int = 100):
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.fill_value = fill_value # Can be a single int or a tuple for RGB
+
+    def forward(self, img: Image.Image) -> Image.Image:
+        return TF.affine(img, angle=0, translate=(0, 0),
+                         scale=self.scale_factor, shear=(0, 0), fill=self.fill_value)
+
+
+class EMNISTFrequencyFilter(torch.nn.Module):
+    """Applies the EMNIST-specific frequency filter."""
+    def __init__(self, delta: float):
+        super().__init__()
+        self.delta = delta
+
+    def forward(self, img: Image.Image) -> Image.Image:
+        return EMNISTDataset.freq_filter_static(img, self.delta)
+
+
+class CIFARImageTransform(torch.nn.Module):
+    """Applies CIFAR-specific image transformations."""
+    def __init__(self, delta: float):
+        super().__init__()
+        self.delta = delta
+
+    def forward(self, img: Image.Image) -> Image.Image:
+        img = CIFARDataset.color_jitter_filter_static(img, self.delta)
+        img = CIFARDataset.shear_filter_static(img, self.delta)
+        return img
 
 # ------------------------ concrete datasets --------------------
 class EMNISTDataset(_BaseImgDS):
     MEAN_STD  = ((0.1307,), (0.3081,))
     TRAIN_AUG = [transforms.RandomRotation((-0, 0))]
     RESIZE_TO = (28, 28)
+    
     def img_transform(self, img: Image.Image, delta: float) -> Image.Image:
         return self.freq_filter(img, delta)
 
     def freq_filter(self, img: Image.Image, delta: float) -> Image.Image:
-    # delta>0 high-pass, delta<0 low-pass
+        # Use the static version for implementation
+        return EMNISTDataset.freq_filter_static(img, delta)
+    
+    @staticmethod
+    def freq_filter_static(img: Image.Image, delta: float) -> Image.Image:
+        # delta>0 high-pass, delta<0 low-pass
         if abs(delta) < 1e-3:
             return img
         arr = np.array(img, np.float32)
@@ -192,49 +234,39 @@ class EMNISTDataset(_BaseImgDS):
 class CIFARDataset(_BaseImgDS):
     MEAN_STD  = ((0.4914, 0.4822, 0.4465),
                  (0.2470, 0.2435, 0.2616))
-    MEAN_STD = ((0, 0, 0), (1, 1, 1))
     TRAIN_AUG = [transforms.RandomCrop(32, padding=4, padding_mode="reflect")]
     RESIZE_TO = None
-
     
     def img_transform(self, img: Image.Image, delta: float) -> Image.Image:
-        #delta = -1 * delta
+        # Keep original function, but use static implementations
         return self.shear_filter(self.color_jitter_filter(img, delta), delta)
     
     def color_jitter_filter(self, img: Image.Image, delta: float) -> Image.Image:
+        # Use static implementation
+        return CIFARDataset.color_jitter_filter_static(img, delta)
+    
+    @staticmethod
+    def color_jitter_filter_static(img: Image.Image, delta: float) -> Image.Image:
         """
         Apply a deterministic color adjustment based on delta.
         Aims to simulate parts of ColorJitter's behavior deterministically.
-        - delta > 0: generally increases brightness, contrast, saturation; positive hue shift.
-        - delta < 0: generally decreases brightness, contrast, saturation; negative hue shift.
-        - |delta| should ideally be in [0,1] to control intensity, but scales are capped.
-          A delta of 0 results in no change.
         """
         if abs(delta) < 1e-3: # no-op for tiny delta
             return img
 
         # Define maximum impact scales for each parameter when |delta|=1.
-        # These can be tuned. For example, a 0.4 scale means at delta=1,
-        # the factor becomes 1.4, and at delta=-1, it becomes 0.6.
         BRIGHTNESS_STRENGTH = 0.4
         CONTRAST_STRENGTH = 0.4
         SATURATION_STRENGTH = 0.4
-        # Max hue shift. Typical range for hue in TF.adjust_hue is [-0.5, 0.5].
-        # So, HUE_STRENGTH of 0.2 means delta=1 results in +0.2 hue shift.
         HUE_STRENGTH = 0.2
 
         # Calculate deterministic adjustment factors
-        # brightness_factor: 1.0 means no change.
         brightness_factor = max(0.0, 1.0 + delta * BRIGHTNESS_STRENGTH)
-        # contrast_factor: 1.0 means no change.
         contrast_factor = max(0.0, 1.0 + delta * CONTRAST_STRENGTH)
-        # saturation_factor: 1.0 means no change.
         saturation_factor = max(0.0, 1.0 + delta * SATURATION_STRENGTH)
-        # hue_factor: 0.0 means no change. Values should be in [-0.5, 0.5].
         hue_factor = torch.clamp(torch.tensor(delta * HUE_STRENGTH), -0.5, 0.5).item()
 
-        # Apply transformations sequentially using torchvision.transforms.functional
-        # These functions expect PIL Images and return PIL Images.
+        # Apply transformations sequentially
         img_transformed = TF.adjust_brightness(img, brightness_factor)
         img_transformed = TF.adjust_contrast(img_transformed, contrast_factor)
         img_transformed = TF.adjust_saturation(img_transformed, saturation_factor)
@@ -244,12 +276,13 @@ class CIFARDataset(_BaseImgDS):
         return img_transformed
     
     def shear_filter(self, img: Image.Image, delta: float) -> Image.Image:
+        # Use static implementation
+        return CIFARDataset.shear_filter_static(img, delta)
+    
+    @staticmethod
+    def shear_filter_static(img: Image.Image, delta: float) -> Image.Image:
         """
         Apply a deterministic shear transformation based on a signed delta.
-        - delta: Controls intensity and can influence direction.
-                        Expected range for effective control, e.g., [-1, 1].
-                        delta_signed = 0 results in no shear.
-        - Positive delta might shear along x, negative along y, or mix.
         """
         if abs(delta) < 1e-3: # no-op for tiny delta
             return img
@@ -263,17 +296,16 @@ class CIFARDataset(_BaseImgDS):
             MAX_SHEAR_Y_DEGREES = 00.0 # e.g., up to 10 degrees shear
         # --- End Tunable Parameters ---
 
-
         shear_x_degrees = delta * MAX_SHEAR_X_DEGREES
         shear_y_degrees = delta * MAX_SHEAR_Y_DEGREES
         f = 200 + 2 * shear_y_degrees if delta > 0 else 200 + 2 * shear_x_degrees
         img_transformed = TF.affine(img, 
-                                    angle=0, 
-                                    translate=(0, 0), 
-                                    scale=1.0, 
-                                    shear=(shear_x_degrees, shear_y_degrees),
-                                    fill = (f,f,f) # fill color for shear
-                                    )
+                                angle=0, 
+                                translate=(0, 0), 
+                                scale=1.0, 
+                                shear=(shear_x_degrees, shear_y_degrees),
+                                fill = (f,f,f) # fill color for shear
+                                )
         
         return img_transformed
 

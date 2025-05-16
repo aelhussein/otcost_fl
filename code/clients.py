@@ -78,23 +78,15 @@ class Client:  # only the two changed methods are shown
         # Get the appropriate module for parameters
         target_module = model._orig_mod if hasattr(model, '_orig_mod') else model
         
-        # Check if we're actually using GPU for training
-        device_check = lambda: (
-            torch.cuda.is_available() and
-            self.training_manager.compute_device.type == 'cuda' and 
-            hasattr(optim.AdamW, 'fused')
+        # Create standard AdamW optimizer without fused option
+        optimizer = optim.AdamW(
+            target_module.parameters(),
+            lr=lr,
+            weight_decay=wd,
+            eps=1e-8
         )
         
-        # Cache optimizer class after first call
-        if not hasattr(self, '_optim_cls'):
-            self._optim_cls = lambda params, **kwargs: optim.AdamW(
-                params, 
-                fused=device_check(), 
-                **kwargs
-            )
-        
-        # Use cached optimizer factory with current parameters
-        return self._optim_cls(target_module.parameters(), lr=lr, weight_decay=wd, eps=1e-8)
+        return optimizer
         
     
     def _initialize_criterion(self):
@@ -295,13 +287,6 @@ class Client:  # only the two changed methods are shown
             if use_gpu:
                 # Move model to GPU
                 model_on_gpu = state.model.to(self.training_manager.compute_device)
-                
-                # Compile model if not already compiled (first time)
-                if hasattr(torch, "compile") and not getattr(state, "_compiled", False):
-                    model_on_gpu = torch.compile(model_on_gpu, mode="max-autotune")
-                    # Recreate optimizer after compilation to ensure it targets the right parameters
-                    state.optimizer = self._create_optimizer(model_on_gpu)
-                    state._compiled = True
                 
                 operational_model = model_on_gpu
             else:
@@ -582,13 +567,6 @@ class PFedMeClient(Client):
                 model = personal_state.model.to(self.training_manager.compute_device)
                 device = self.training_manager.compute_device
                 
-                # Compile model if not already compiled
-                if hasattr(torch, "compile") and not getattr(personal_state, "_compiled", False):
-                    model = torch.compile(model, mode="max-autotune")
-                    # Recreate optimizer
-                    personal_state.optimizer = self._create_optimizer(model)
-                    personal_state._compiled = True
-                    
                 # Prepare global params on GPU
                 global_params = self._prepare_global_params_gpu(device)
             else:

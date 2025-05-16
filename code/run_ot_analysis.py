@@ -10,83 +10,80 @@ import os
 import sys
 import logging
 import traceback
-
-# Add project root to path
-_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJECT_ROOT)
-sys.path.insert(0, _CURRENT_DIR)
-# Import project modules
-from configs import DEFAULT_PARAMS, ACTIVATION_DIR
-from ot_pipeline_runner import OTPipelineRunner
+from directories import configure, paths
+# --- Argument Parsing ---
+parser = argparse.ArgumentParser(
+    description='Run Optimal Transport (OT) analysis on FL models.'
+)
+parser.add_argument(
+    "-ds", "--dataset",
+    required=True,
+    help="Select the dataset for analysis."
+)
+parser.add_argument(
+    "-nc", "--num_fl_clients",
+    type=int,
+    default=None,
+    help="Number of FL clients in the run to analyze. If not provided, uses the default from configs."
+)
+parser.add_argument(
+    "-mt", "--model_type",
+    default="round0",
+    choices=["round0", "best", "final"],
+    help="Type of model to analyze: 'round0', 'best', or 'final'."
+)
+parser.add_argument(
+    "-al", "--activation_loader",
+    default="val",
+    choices=["train", "val", "test"],
+    help="DataLoader type to use for activation extraction: 'train', 'val', or 'test'."
+)
+parser.add_argument(
+    "-mc", "--metric",
+    default="score",
+    choices=["score", "loss"],
+    help="Metric to use for performance comparison: 'score' or 'loss'."
+)
+parser.add_argument(
+    "-far", "--force_activation_regen",
+    action="store_true",
+    help="Force regeneration of activation cache."
+)
 
-# Configure logging
+args = parser.parse_args()
+# --- Directory Setup ---
+configure(args.metrics)
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
+RESULTS_DIR = dir_paths.results_dir
+ACTIVATION_DIR = dir_paths.activation_dir
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(os.path.join(_CURRENT_DIR, 'ot_analysis.log'))
+        logging.FileHandler(os.path.join(ROOT_DIR, 'logs', 'ot_analysis.log'))
     ]
 )
 logger = logging.getLogger(__name__)
+
+from configs import DEFAULT_PARAMS
+from ot_pipeline_runner import OTPipelineRunner
+
+
 
 def main():
     """
     Parses command-line arguments and runs the OT analysis pipeline.
     """
-    # --- Argument Parsing ---
-    parser = argparse.ArgumentParser(
-        description='Run Optimal Transport (OT) analysis on FL models.'
-    )
-    parser.add_argument(
-        "-ds", "--dataset",
-        required=True,
-        choices=list(DEFAULT_PARAMS.keys()),
-        help="Select the dataset for analysis."
-    )
-    parser.add_argument(
-        "-nc", "--num_fl_clients",
-        type=int,
-        default=None,
-        help="Number of FL clients in the run to analyze. If not provided, uses the default from configs."
-    )
-    parser.add_argument(
-        "-mt", "--model_type",
-        default="round0",
-        choices=["round0", "best", "final"],
-        help="Type of model to analyze: 'round0', 'best', or 'final'."
-    )
-    parser.add_argument(
-        "-al", "--activation_loader",
-        default="val",
-        choices=["train", "val", "test"],
-        help="DataLoader type to use for activation extraction: 'train', 'val', or 'test'."
-    )
-    parser.add_argument(
-        "-mc", "--metric",
-        default="score",
-        choices=["score", "loss"],
-        help="Metric to use for performance comparison: 'score' or 'loss'."
-    )
-    parser.add_argument(
-        "-far", "--force_activation_regen",
-        action="store_true",
-        help="Force regeneration of activation cache."
-    )
-    
-    args = parser.parse_args()
-
-    # Configure paths based on the metric
-    from configs import configure_paths
-    configure_paths(args.metric)
-    from configs import ACTIVATION_DIR  # Re-import after paths have been configured
-
     # --- Resolve num_fl_clients ---
     num_fl_clients = args.num_fl_clients
     if num_fl_clients is None:
         num_fl_clients = DEFAULT_PARAMS[args.dataset].get('default_num_clients', 5)
-        logger.info(f"Using default number of FL clients from config: {num_fl_clients}")
+
     
     # --- Run OT Pipeline ---
     try:

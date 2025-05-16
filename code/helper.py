@@ -13,6 +13,7 @@ from contextlib import contextmanager, suppress
 from torch import nn, optim
 from torch.utils.data import DataLoader
 import numpy as np
+import directories
 from typing import Dict, Optional, Tuple, List, Iterator, Any, Callable,  Union
 from dataclasses import dataclass, field
 import copy
@@ -209,16 +210,15 @@ class TrainerConfig:
     algorithm_params: Dict[str, Any] = field(default_factory=dict)
     max_parallel_clients: Optional[int] = None
     use_weighted_loss: bool = False
-    selection_criterion_key: str = 'val_losses'  # Default to val_losses for backward compatibility
+    selection_criterion_key: str = directories.SELECTION_CRITERION_KEY
     selection_criterion_direction_overrides: Optional[Dict[str, str]] = field(default_factory=dict)
 
-# Update the ModelState dataclass
 @dataclass
 class ModelState:
     """Holds state for one model: current weights, optimizer, best state."""
     model: nn.Module # Current model weights/arch (CPU)
     optimizer: Optional[optim.Optimizer] = None # Client creates and assigns
-    selection_criterion_key: str = 'val_losses'  # Default to val_losses for backward compatibility
+    selection_criterion_key: str = directories.SELECTION_CRITERION_KEY
     selection_criterion_direction_overrides: Optional[Dict[str, str]] = field(default_factory=dict)
     criterion_is_higher_better: bool = field(init=False)
     best_value_for_selection: float = field(init=False)

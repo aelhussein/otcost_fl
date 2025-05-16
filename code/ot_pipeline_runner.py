@@ -11,7 +11,10 @@ from itertools import combinations
 from typing import List, Dict, Any, Optional, Union
 
 # Import OT-related components
-from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS
+from directories import paths
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
+from configs import DATASET_COSTS, DEFAULT_PARAMS
 from ot_configs import OTConfig, all_configs
 from ot_data_manager import OTDataManager
 from ot_calculators import OTCalculatorFactory

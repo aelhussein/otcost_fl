@@ -11,15 +11,29 @@ import time
 import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)  # Root directory containing code/ and pipeline_tools/
-_CODE_DIR = os.path.join(_PROJECT_ROOT, "code")  # Path to code/ directory
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+sys.path.insert(0, _SCRIPT_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
-sys.path.insert(0, _CODE_DIR)  # Add code/ directory specifically to import path
+from directories import configure, paths
+
+# ARGS
+parser = argparse.ArgumentParser(description="Orchestrate FL experiments in sequence")
+parser.add_argument("-ds", "--dataset", required=True, help="Dataset name")
+parser.add_argument("-nc", "--num_clients", type=int, default=2, help="Number of clients")
+parser.add_argument("--metric", default="score", choices=["score", "loss"], 
+                    help="Metric to use (score or loss)")
+parser.add_argument("--force", action="store_true", help="Force rerun of all phases")
+parser.add_argument("--force-phases", type=str, 
+                    help="Comma-separated list of phases to force (e.g., learning_rate,reg_param,evaluation,ot_analysis)")
+parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+args = parser.parse_args()
+configure(args.metric)
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
 
 
-from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS, configure_paths
+from configs import DATASET_COSTS, DEFAULT_PARAMS
 from helper import ExperimentType
 from results_manager import ResultsManager
 
@@ -211,17 +225,6 @@ def get_progress_info(rm: ResultsManager, phase: str, costs, params) -> Dict[str
     }
 
 def main():
-    parser = argparse.ArgumentParser(description="Orchestrate FL experiments in sequence")
-    parser.add_argument("-ds", "--dataset", required=True, help="Dataset name")
-    parser.add_argument("-nc", "--num_clients", type=int, default=2, help="Number of clients")
-    parser.add_argument("--metric", default="score", choices=["score", "loss"], 
-                      help="Metric to use (score or loss)")
-    parser.add_argument("--force", action="store_true", help="Force rerun of all phases")
-    parser.add_argument("--force-phases", type=str, 
-                      help="Comma-separated list of phases to force (e.g., learning_rate,reg_param,evaluation,ot_analysis)")
-    parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
-    args = parser.parse_args()
-    configure_paths(args.metric)
     # Validate dataset
     if args.dataset not in DATASET_COSTS:
         print(f"Error: Dataset '{args.dataset}' not found in DATASET_COSTS.")

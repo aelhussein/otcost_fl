@@ -47,9 +47,6 @@ This repository contains a Python-based research framework for conducting Federa
 ├── data/ # Raw and processed datasets (organized by dataset name)
 │ ├── CIFAR/
 │ ├── Credit/
-│ ├── EMNIST/
-│ ├── ISIC/
-│ ├── IXITiny/
 │ └── ... # Other dataset directories
 ├── results/ # Stores FL experiment results when using 'score' metric
 │ ├── lr_tuning/
@@ -78,15 +75,13 @@ This repository contains a Python-based research framework for conducting Federa
 │ ├── Credit/
 │ └── ...
 └── logs/ # Slurm logs
-    ├── outputs/
     ├── outputs_loss/
-    ├── errors/
     └── errors_loss/
 ```
 
 ## Setup
 
-1.  **Environment:** Ensure you have a Python environment (e.g., Conda) with necessary packages installed. Create a `requirements.txt` file and install using `pip install -r requirements.txt`. Key dependencies include PyTorch, NumPy, Pandas, Scipy, POT (Python Optimal Transport), scikit-learn, Matplotlib, Seaborn, tabulate, etc.
+1.  **Environment:** Ensure you have a Python environment (e.g., Conda) with necessary packages installed. Use the `requirements` file and install using `pip install -r requirements`. Key dependencies include PyTorch, NumPy, Pandas, Scipy, POT (Python Optimal Transport), scikit-learn, Matplotlib, Seaborn, tabulate, etc.
 2.  **CUDA (Optional):** If using GPUs, ensure CUDA toolkit and compatible PyTorch versions are installed. The code will automatically use CUDA if available.
 3.  **Data:** Place datasets in the `data/` directory, following the expected structure for each dataset loader (see `data_loading.py` and `configs.py`). Some datasets (e.g., CIFAR, EMNIST) may be downloaded automatically on first run if not found.
 

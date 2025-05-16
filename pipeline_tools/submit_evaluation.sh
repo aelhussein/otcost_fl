@@ -142,8 +142,8 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export PYTHON_LOG_DIR="logs/python_logs"
 
 # Run the Python script
-echo "Running: python ${DIR}/code/evaluation/run.py -ds ${dataset} -exp ${exp_type} -nc ${num_clients} -mc ${metric}"
-python ${DIR}/code/evaluation/run.py -ds ${dataset} -exp ${exp_type} -nc ${num_clients} -mc ${metric}
+echo "Running: python ${DIR}/code/run_evaluation.py -ds ${dataset} -exp ${exp_type} -nc ${num_clients} -mc ${metric}"
+python ${DIR}/code/run_evaluation.py -ds ${dataset} -exp ${exp_type} -nc ${num_clients} -mc ${metric}
 
 echo "Job finished with exit code \$?"
 

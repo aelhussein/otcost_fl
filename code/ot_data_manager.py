@@ -6,8 +6,12 @@ import logging
 import traceback
 from typing import Dict, Optional, Tuple, List, Union, Any
 from abc import ABC, abstractmethod
-
-from configs import ROOT_DIR, ACTIVATION_DIR, DEFAULT_PARAMS, DATA_DIR # Added DEFAULT_PARAMS
+from directories import paths
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
+ACTIVATION_DIR = dir_paths.root_dir
+DATA_DIR = dir_paths.data_dir
+from configs import DEFAULT_PARAMS
 import models as ms
 from helper import set_seeds,  MetricKey, get_model_instance
 from ot_utils import calculate_sample_loss, DEFAULT_EPS

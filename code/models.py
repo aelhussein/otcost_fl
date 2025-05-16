@@ -1,11 +1,13 @@
 
-from configs import ROOT_DIR
+from directories import paths
 import torch.nn.functional as F
 import torch.nn as nn
 import torch
 from unet import UNet
 from torchvision.models import resnet18
 
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
 
 class L2Normalize(torch.nn.Module):
     def __init__(self, dim=1):

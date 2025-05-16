@@ -7,58 +7,18 @@ Streamlined version.
 """
 import os
 import torch
+from directories import paths
 
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 if DEVICE == 'cpu':
     torch.set_num_threads(1)
 N_WORKERS = 4 
-SELECTION_CRITERION_KEY = None
 
 # --- Core Directories ---
-_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT  = os.path.dirname(_CURRENT_DIR)
-ROOT_DIR = _PROJECT_ROOT
-DATA_DIR = os.path.join(ROOT_DIR, 'data')
-
-# Default directories (will be updated by configure_paths)
-RESULTS_DIR = os.path.join(ROOT_DIR, 'results_loss')
-MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models_loss')
-ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations_loss')
-
-# Function to configure paths based on metric
-def configure_paths(metric='score'):
-    """Configure directory paths based on the specified metric."""
-    global RESULTS_DIR, MODEL_SAVE_DIR, ACTIVATION_DIR, SELECTION_CRITERION_KEY, DEFAULT_PARAMS
-    
-    # Set directories based on metric
-    if metric == 'loss':
-        RESULTS_DIR = os.path.join(ROOT_DIR, 'results_loss')
-        MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models_loss')
-        ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations_loss')
-        SELECTION_CRITERION_KEY = 'val_losses' # For loss metric
-    else:
-        # Default paths for 'score' or any other metric
-        RESULTS_DIR = os.path.join(ROOT_DIR, 'results')
-        MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models')
-        ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
-        SELECTION_CRITERION_KEY = 'val_scores'
-    
-    # Create directories if they don't exist
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
-    os.makedirs(ACTIVATION_DIR, exist_ok=True)
-
-    for dataset_name in DEFAULT_PARAMS:
-        DEFAULT_PARAMS[dataset_name]['selection_criterion_key'] = SELECTION_CRITERION_KEY
-    
-    return {
-        'RESULTS_DIR': RESULTS_DIR,
-        'MODEL_SAVE_DIR': MODEL_SAVE_DIR,
-        'ACTIVATION_DIR': ACTIVATION_DIR,
-        'SELECTION_CRITERION_KEY': SELECTION_CRITERION_KEY 
-    }
-
+dir_paths = paths()
+SELECTION_CRITERION_KEY = dir_paths.selection_criterion_key
+DATA_DIR = dir_paths.data_dir
 # --- Supported Algorithms ---
 ALGORITHMS = ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto'] # Add others as implemented
 LR_ALGORITHMS = ['local', 'fedavg'] # Add others as implemented
@@ -73,13 +33,13 @@ DATASETS = [
 COMMON_TABULAR_PARAMS = dict(
     fixed_classes=2, # Default for binary classification, override for multiclass
     default_lr = 5e-3,
-    learning_rates_try=[1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
+    learning_rates_try=[1e-1], #[1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4],
     default_reg_param=0.1,
     reg_params_try=[5, 2, 1, 5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4, 1e-5, 1e-6],
     batch_size=32,
     epochs_per_round=3,
     rounds=50,
-    rounds_tune_inner=30,
+    rounds_tune_inner=10,
     runs=50,
     runs_tune=5,
     metric='F1', # Default metric for tabular
@@ -104,13 +64,13 @@ COMMON_TABULAR_PARAMS = dict(
 COMMON_IMAGE_PARAMS = dict(
     fixed_classes=10, # Default for common image datasets like CIFAR/EMNIST
     default_lr=3e-3,
-    learning_rates_try=[5e-3, 1e-3, 5e-4],
+    learning_rates_try=[5e-3], #[5e-3, 1e-3, 5e-4],
     default_reg_param=0.1,
     reg_params_try=[1, 5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4, 1e-5],
     batch_size=96,
     epochs_per_round=3,
     rounds=50,
-    rounds_tune_inner=20,
+    rounds_tune_inner=5,
     runs=15,
     runs_tune=3,
     metric='Accuracy', # Default metric for image classification
@@ -311,7 +271,7 @@ DATASET_COSTS = {
     'Credit': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
     'EMNIST': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
     'CIFAR': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
-    'Synthetic_Concept': [0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
+    'Synthetic_Concept': [0.0, 1.0], #[0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0],
     'IXITiny': ['guys_hh', 'iop_guys', 'iop_hh', 'all'], 
     'ISIC': ['bcn_vmole','vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',], 
     # 'ISIC': ['bcn_vmole', 'bcn_vmod', 'bcn_rose', 'bcn_msk', 'bcn_vienna',

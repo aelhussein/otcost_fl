@@ -15,7 +15,10 @@ from sklearn.model_selection import train_test_split
 import random
 import copy
 # Project Imports
-from configs import N_WORKERS, DATA_DIR
+from directories import paths
+dir_paths = paths()
+DATA_DIR = dir_paths.DATA_DIR
+from configs import N_WORKERS
 from helper import get_parameters_for_dataset
 from data_loading import get_loader
 from data_partitioning import get_partitioner

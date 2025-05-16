@@ -13,15 +13,47 @@ import argparse
 import os
 import sys
 import traceback
-import multiprocessing
-multiprocessing.set_start_method('spawn', force=True)
-_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJECT_ROOT)
-sys.path.insert(0, _CURRENT_DIR)
+from directories import configure, paths
+# --- Argument Parsing ---
+parser = argparse.ArgumentParser(
+    description='Run Federated Learning experiments.'
+)
+parser.add_argument(
+    "-ds", "--dataset",
+    required=True,
+    help="Select the dataset for the experiment."
+)
+parser.add_argument(
+    "-exp", "--experiment_type",
+    required=True,
+    help="Select the type of experiment: 'learning_rate', 'reg_param', or 'evaluation'."
+)
+
+parser.add_argument(
+    "-nc", "--num_clients",
+    type=int,
+    default=2,
+    help="Number of clients"
+)
+
+parser.add_argument(
+    "-mc", "--metric",
+    type=str,
+    default='score',
+    help="Metric to evaluate the model performance."
+)
+
+args = parser.parse_args()
+
+# --- Directory Setup ---
+configure(args.metrics)
+dir_paths = paths()
+RESULTS_DIR = dir_paths.results_dir
 
 # --- Import Project Modules ---
-from configs import DEFAULT_PARAMS, DATASET_COSTS, configure_paths
+from configs import DEFAULT_PARAMS, DATASET_COSTS
 
 def run_experiments(dataset: str, experiment_type: str, num_clients_override: int = None): # MODIFIED: Added num_clients_override
     """
@@ -57,41 +89,6 @@ def main():
     """
     Parses command-line arguments and initiates the experiment run.
     """
-    # --- Argument Parsing ---
-    parser = argparse.ArgumentParser(
-        description='Run Federated Learning experiments.'
-    )
-    parser.add_argument(
-        "-ds", "--dataset",
-        required=True,
-        choices=list(DEFAULT_PARAMS.keys()),
-        help="Select the dataset for the experiment."
-    )
-    parser.add_argument(
-        "-exp", "--experiment_type",
-        required=True,
-        help="Select the type of experiment: 'learning_rate', 'reg_param', or 'evaluation'."
-    )
-
-    parser.add_argument(
-        "-nc", "--num_clients",
-        type=int,
-        default=2,
-        help="Number of clients"
-    )
-
-    parser.add_argument(
-        "-mc", "--metric",
-        type=str,
-        default='score',
-        help="Metric to evaluate the model performance."
-    )
-
-    args = parser.parse_args()
-
-    # --- Directory Setup ---
-    configure_paths(args.metric) # Configure paths based on the metric
-    from configs import RESULTS_DIR
     from pipeline import ExperimentType
     try:
         os.makedirs(RESULTS_DIR, exist_ok=True)

@@ -163,8 +163,8 @@ source ${ENV_PATH} ${ENV_NAME}
 export PYTHONUNBUFFERED=1
 
 # Run the Python script
-echo "Running: python ${DIR}/code/ot/run_ot_analysis.py -ds ${dataset} ${num_clients_arg} -mt ${model_type} -al ${loader} ${force_arg} -mc ${metric}"
-python ${DIR}/code/ot/run_ot_analysis.py -ds ${dataset} ${num_clients_arg} -mt ${model_type} -al ${loader} ${force_arg} -mc ${metric}
+echo "Running: python ${DIR}/code/run_ot_analysis.py -ds ${dataset} ${num_clients_arg} -mt ${model_type} -al ${loader} ${force_arg} -mc ${metric}"
+python ${DIR}/code/run_ot_analysis.py -ds ${dataset} ${num_clients_arg} -mt ${model_type} -al ${loader} ${force_arg} -mc ${metric}
 
 echo "Job finished with exit code \$?"
 EOF

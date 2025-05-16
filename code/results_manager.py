@@ -10,7 +10,13 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, Tuple, Optional, List, Union
 import numpy as np
 import torch
-from configs import ROOT_DIR, MODEL_SAVE_DIR, RESULTS_DIR
+import directories
+from directories import paths
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
+MODEL_SAVE_DIR = dir_paths.model_save_dir
+RESULTS_DIR = dir_paths.results_dir
+
 # Import from helper.py
 from helper import MetricKey, ExperimentType, infer_higher_is_better
 # =============================================================================
@@ -135,13 +141,17 @@ class PathBuilder:
         self.root_dir = root_dir
         self.dataset = dataset
         self.num_target_clients = num_target_clients
-        self.results_base = RESULTS_DIR
-        self.models_base = MODEL_SAVE_DIR
+        
+        # Get directory paths from directories module
+        paths = directories.paths()
+        self.results_base = paths.results_dir
+        self.models_base = paths.model_save_dir
 
         # Ensure base directories exist
         os.makedirs(self.results_base, exist_ok=True)
         os.makedirs(self.models_base, exist_ok=True)
-        print(f"[PathBuilder.__init__] Using RESULTS_DIR: {RESULTS_DIR}") 
+        print(f"[PathBuilder.__init__] Using RESULTS_DIR: {self.results_base}") 
+        
         # Mapping experiment type to subdirectory name
         self.exp_type_dirs = {
             ExperimentType.LEARNING_RATE: 'lr_tuning',

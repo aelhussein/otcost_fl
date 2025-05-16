@@ -9,15 +9,32 @@ import os
 from typing import List, Dict, Any
 import tabulate
 import time
-
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)  # Root directory containing code/ and pipeline_tools/
-_CODE_DIR = os.path.join(_PROJECT_ROOT, "code")  # Path to code/ directory
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+sys.path.insert(0, _SCRIPT_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
-sys.path.insert(0, _CODE_DIR)  # Add code/ directory specifically to import path
+from directories import configure, paths
 
+# ARGS
+parser = argparse.ArgumentParser(description="Orchestrate FL experiments for multiple datasets")
+parser.add_argument("--datasets", required=True, help="Comma-separated list of datasets or 'all'")
+parser.add_argument("--num-clients", type=str, default="2", 
+                help="Comma-separated list of client counts, or single value for all datasets")
+parser.add_argument("--metric", default="score", choices=["score", "loss"], 
+                help="Metric to use (score or loss)")
+parser.add_argument("--force", action="store_true", help="Force rerun of all phases")
+parser.add_argument("--force-phases", type=str, 
+                help="Comma-separated list of phases to force. Valid phases: learning_rate, reg_param, evaluation, ot_analysis")
+parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+parser.add_argument("--summary-only", action="store_true", 
+                help="Only print summary status without running orchestrator")
+args = parser.parse_args()
 
-from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS, configure_paths
+configure(args.metric)
+dir_paths = paths()
+ROOT_DIR = dir_paths.root_dir
+# --- Directory Setup ---
+from configs import DATASET_COSTS, DEFAULT_PARAMS
 from helper import ExperimentType
 from results_manager import ResultsManager
 
@@ -122,20 +139,6 @@ def print_summary_table(summary: Dict[str, Dict[str, Any]]):
     print("✅ = Complete, ⏳ = In Progress, ❌ = Not Started, * = Has Errors")
 
 def main():
-    parser = argparse.ArgumentParser(description="Orchestrate FL experiments for multiple datasets")
-    parser.add_argument("--datasets", required=True, help="Comma-separated list of datasets or 'all'")
-    parser.add_argument("--num-clients", type=str, default="2", 
-                    help="Comma-separated list of client counts, or single value for all datasets")
-    parser.add_argument("--metric", default="score", choices=["score", "loss"], 
-                    help="Metric to use (score or loss)")
-    parser.add_argument("--force", action="store_true", help="Force rerun of all phases")
-    parser.add_argument("--force-phases", type=str, 
-                    help="Comma-separated list of phases to force. Valid phases: learning_rate, reg_param, evaluation, ot_analysis")
-    parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
-    parser.add_argument("--summary-only", action="store_true", 
-                    help="Only print summary status without running orchestrator")
-    args = parser.parse_args()
-    configure_paths(args.metric) # Configure paths based on the metric   
     # Parse datasets
     if args.datasets.lower() == "all":
         datasets = list(DATASET_COSTS.keys())
