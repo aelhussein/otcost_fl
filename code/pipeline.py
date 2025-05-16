@@ -10,10 +10,10 @@ import torch
 import torch.nn as nn
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple, Any, Union, Callable
-
+import gc
 # Import project modules
 from configs import ROOT_DIR, ALGORITHMS, DEVICE, DEFAULT_PARAMS, DATA_DIR, REG_ALOGRITHMS
-from helper import (set_seeds, get_parameters_for_dataset, get_model_instance, # Keep necessary imports
+from helper import (set_seeds, get_parameters_for_dataset, get_model_instance, systematic_memory_cleanup, # Keep necessary imports
                     get_default_lr, get_default_reg, MetricKey, SiteData, ModelState, TrainerConfig) # Import types from helper
 # Import necessary components
 from servers import Server, FedAvgServer, FedProxServer, PFedMeServer, DittoServer # Import all server types
@@ -134,13 +134,14 @@ class SingleRunExecutor:
         return getattr(server, 'history', {'error': 'Server history attribute missing.'})
 
     def execute_trial(self,
-                      server_type: str,
-                      hyperparams: Dict,
-                      client_dataloaders: Dict,
-                      tuning: bool
-                     ) -> Tuple[Dict, Dict[str, Optional[Dict]]]:
+                    server_type: str,
+                    hyperparams: Dict,
+                    client_dataloaders: Dict,
+                    tuning: bool
+                    ) -> Tuple[Dict, Dict[str, Optional[Dict]]]:
         """
         Executes a single FL trial. Returns metrics history and model states.
+        SingleRunExecutor has full responsibility for server lifecycle management.
         """
         server: Optional[Server] = None
         metrics: Dict = {}
@@ -160,18 +161,50 @@ class SingleRunExecutor:
                     model_states['best'] = server.get_best_model_state_dict()
                     model_states['round0'] = server.round_0_state_dict
 
-            del server # Explicit cleanup
-            server = None
-
         except Exception as e:
             err_msg = f"Executor setup/run failed: {e}"
             print(err_msg); traceback.print_exc() # Keep traceback for executor errors
             metrics['error'] = err_msg
             model_states['error'] = err_msg # Also store error marker with states
-            if server: del server
+        finally:
+            # SingleRunExecutor takes full responsibility for cleaning up the server
+            if server:
+                # First clean up each client's resources
+                if hasattr(server, 'clients'):
+                    for client_id, client in list(server.clients.items()):
+                        # Clean client's dataloaders (these don't belong to us, just null the references)
+                        if hasattr(client, 'data'):
+                            if hasattr(client.data, 'train_loader'):
+                                client.data.train_loader = None
+                            if hasattr(client.data, 'val_loader'):
+                                client.data.val_loader = None
+                            if hasattr(client.data, 'test_loader'):
+                                client.data.test_loader = None
+                        
+                        # Clean client's models/optimizers
+                        if hasattr(client, 'global_state'):
+                            if hasattr(client.global_state, 'optimizer'):
+                                client.global_state.optimizer = None
+                        
+                        if hasattr(client, 'personal_state'):
+                            if hasattr(client.personal_state, 'optimizer'):
+                                client.personal_state.optimizer = None
+                    
+                    # Now clear and delete the clients dictionary
+                    server.clients.clear()
+                
+                # Clean server state
+                if hasattr(server, 'serverstate'):
+                    server.serverstate.optimizer = None
+                
+                # Delete the server
+                del server
+                server = None
+
+            # Comprehensive memory cleanup
+            systematic_memory_cleanup()
 
         return metrics, model_states
-
 # =============================================================================
 # == Experiment Orchestrator Class ==
 # =============================================================================
@@ -217,7 +250,10 @@ class Experiment:
         return self.all_trial_records
 
     def _execute_experiment_runs(self, experiment_type: str, costs: List[Any], cost_execution_func: Callable):
-        """Generic loop structure for executing multiple runs and costs."""
+        """
+        Generic loop structure for executing multiple runs and costs.
+        Experiment takes responsibility for client_dataloaders lifecycle.
+        """
         self.all_trial_records, remaining_costs, completed_runs = \
             self.results_manager.get_experiment_status(experiment_type, costs, self.default_params, MetricKey)
 
@@ -247,24 +283,49 @@ class Experiment:
 
             # --- Cost Loop ---
             for cost in costs_to_run_this_iter:
-                cost_results = None; num_actual_clients = 0
+                cost_results = None
+                num_actual_clients = 0
+                client_dataloaders = None  # Initialize to None
+                
                 try:
+                    # Experiment is responsible for getting dataloaders
                     client_dataloaders = self.data_manager.get_dataloaders(
                         cost=cost, run_seed=current_seed, num_clients_override=self.config.num_clients
                     )
-                    if not client_dataloaders: raise RuntimeError("No dataloaders.")
+                    if not client_dataloaders: 
+                        raise RuntimeError("No dataloaders.")
+                        
                     num_actual_clients = len(client_dataloaders)
                     run_cost_client_counts[cost] = num_actual_clients
-                    # Execute trials for this cost
+                    
+                    # Execute trials for this cost (SingleRunExecutor manages server)
                     cost_results = cost_execution_func(cost, current_run_idx, current_seed, client_dataloaders, num_actual_clients)
 
                 except Exception as e: # Catch errors in dataloading or cost execution
                     print(f"  ERROR processing cost {cost} in run {current_run_idx + 1}: {e}")
                     run_records.append(TrialRecord(cost=cost, run_idx=current_run_idx, server_type="N/A", error=f"Cost processing error: {e}"))
-                    if num_actual_clients > 0: run_cost_client_counts[cost] = num_actual_clients # Record client count if possible
+                    if num_actual_clients > 0: 
+                        run_cost_client_counts[cost] = num_actual_clients # Record client count if possible
+                finally:
+                    # Cost-level cleanup - Experiment is responsible for client_dataloaders
+                    if client_dataloaders:
+                        for client_id, loaders in client_dataloaders.items():
+                            # loaders is a tuple (train, val, test)
+                            for loader in loaders:
+                                if loader is not None and hasattr(loader, "_shutdown_workers"):
+                                    loader._shutdown_workers()   # safe on all torch versions
+                            client_dataloaders[client_id] = None   # drop reference to the tuple
+                        client_dataloaders.clear()
+                                        
+                    # Force comprehensive memory cleanup
+                    systematic_memory_cleanup()
 
-                if cost_results and cost_results.trial_records:
+                # Process cost results
+                if cost_results and hasattr(cost_results, 'trial_records'):
                     run_records.extend(cost_results.trial_records)
+                    # Explicitly clean up cost results to free memory
+                    cost_results.trial_records = []
+                    cost_results = None
             # --- End Cost Loop ---
 
             self.all_trial_records.extend(run_records) # Add records from this run
@@ -284,7 +345,13 @@ class Experiment:
             metadata_dict['selection_criterion_direction_overrides'] = self.default_params.get('selection_criterion_direction_overrides', {})
             
             self.results_manager.save_results(self.all_trial_records, experiment_type, metadata_dict)
-        # --- End Run Loop ---
+            
+            # Run-level cleanup
+            run_records.clear()
+            run_cost_client_counts.clear()
+            
+            # Comprehensive memory cleanup at run level
+            systematic_memory_cleanup()
     # --- Cost Processing Helpers ---
 
     def _tune_cost_for_run(self, cost: Any, run_idx: int, seed: int,

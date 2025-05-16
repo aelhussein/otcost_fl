@@ -23,8 +23,8 @@ DATA_DIR = os.path.join(ROOT_DIR, 'data')
 
 # Default directories (will be updated by configure_paths)
 RESULTS_DIR = os.path.join(ROOT_DIR, 'results_loss')
-MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models')
-ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations')
+MODEL_SAVE_DIR = os.path.join(ROOT_DIR, 'saved_models_loss')
+ACTIVATION_DIR = os.path.join(ROOT_DIR, 'activations_loss')
 
 # Function to configure paths based on metric
 def configure_paths(metric='score'):
@@ -109,7 +109,7 @@ COMMON_IMAGE_PARAMS = dict(
     reg_params_try=[1, 5e-1, 1e-1, 5e-2, 1e-2, 5e-3, 1e-3, 5e-4, 1e-4, 1e-5],
     batch_size=96,
     epochs_per_round=3,
-    rounds=60,
+    rounds=50,
     rounds_tune_inner=20,
     runs=15,
     runs_tune=3,
@@ -260,10 +260,7 @@ DEFAULT_PARAMS = {
         },
         'samples_per_client': 2000,
         'fixed_classes': 8,
-        'runs': 15,
-        'runs_tune': 1,
         'metric': 'Balanced_accuracy',
-        # max_clients removed
         'use_weighted_loss': True, # This flag will be used by client
         'criterion_type': "ISICLoss", # Explicitly set criterion
         'batch_size': 128,

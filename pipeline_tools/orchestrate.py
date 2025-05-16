@@ -19,7 +19,7 @@ sys.path.insert(0, _PROJECT_ROOT)
 sys.path.insert(0, _CODE_DIR)  # Add code/ directory specifically to import path
 
 
-from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS
+from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS, configure_paths
 from helper import ExperimentType
 from results_manager import ResultsManager
 
@@ -135,6 +135,49 @@ def submit_phase(dataset: str, num_clients: int, phase: str, metric: str,
         print(f"Error submitting jobs: {e.output}")
         return None
 
+def archive_phase_results(dataset: str, num_clients: int, phase: str, metric: str):
+    """Archives existing result files for a phase to ensure complete rerun."""
+    from datetime import datetime
+    import os
+    import shutil
+    
+    # Set results directory based on metric
+    results_base = os.path.join(ROOT_DIR, 'results' if metric == 'score' else 'results_loss')
+    
+    # Map phase to directory name
+    exp_dir_map = {
+        ExperimentType.LEARNING_RATE: "lr_tuning",
+        ExperimentType.REG_PARAM: "reg_param_tuning",
+        ExperimentType.EVALUATION: "evaluation",
+        ExperimentType.OT_ANALYSIS: "ot_analysis"
+    }
+    
+    phase_dir = exp_dir_map[phase]
+    
+    # Define base filenames for results and metadata
+    base_filename = f"{dataset}_{num_clients}clients_{phase_dir}"
+    results_path = os.path.join(results_base, phase_dir, f"{base_filename}_results.json")
+    meta_path = os.path.join(results_base, phase_dir, f"{base_filename}_meta.json")
+    
+    # Create archive directory
+    archive_dir = os.path.join(results_base, phase_dir, 'archive')
+    os.makedirs(archive_dir, exist_ok=True)
+    
+    # Generate timestamp for archive filenames
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Move results file if it exists
+    if os.path.exists(results_path):
+        archive_results = os.path.join(archive_dir, f"{base_filename}_results_{timestamp}.json")
+        shutil.move(results_path, archive_results)
+        print(f"Archived results to: {archive_results}")
+    
+    # Move metadata file if it exists
+    if os.path.exists(meta_path):
+        archive_meta = os.path.join(archive_dir, f"{base_filename}_meta_{timestamp}.json")
+        shutil.move(meta_path, archive_meta)
+        print(f"Archived metadata to: {archive_meta}")
+
 def get_progress_info(rm: ResultsManager, phase: str, costs, params) -> Dict[str, Any]:
     """Get progress information for a phase"""
     records, remaining, min_runs = rm.get_experiment_status(
@@ -174,10 +217,11 @@ def main():
     parser.add_argument("--metric", default="score", choices=["score", "loss"], 
                       help="Metric to use (score or loss)")
     parser.add_argument("--force", action="store_true", help="Force rerun of all phases")
-    parser.add_argument("--force-phases", type=str, help="Comma-separated list of phases to force (e.g., learning_rate,reg_param)")
+    parser.add_argument("--force-phases", type=str, 
+                      help="Comma-separated list of phases to force (e.g., learning_rate,reg_param,evaluation,ot_analysis)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     args = parser.parse_args()
-
+    configure_paths(args.metric)
     # Validate dataset
     if args.dataset not in DATASET_COSTS:
         print(f"Error: Dataset '{args.dataset}' not found in DATASET_COSTS.")
@@ -197,7 +241,12 @@ def main():
         # Determine if this phase should be forced
         phase_force = args.force or phase in force_phases
         
-        if not _phase_done(rm, phase, costs, dflt, force=phase_force):
+        # When forcing a phase, archive existing results first (if not dry run)
+        if phase_force and not args.dry_run:
+            print(f"Forcing phase '{phase}', archiving existing results...")
+            archive_phase_results(args.dataset, args.num_clients, phase, args.metric)
+        
+        if not _phase_done(rm, phase, costs, dflt, force=False):  # Always pass force=False as we handle forcing via archiving
             # Get progress info before submission
             progress_before = get_progress_info(rm, phase, costs, dflt)
             
@@ -220,7 +269,6 @@ def main():
             sys.exit(0)
     
     print("All phases complete for dataset:", args.dataset, f"(clients={args.num_clients}, metric={args.metric})")
-
 if __name__ == "__main__":
     main()
 

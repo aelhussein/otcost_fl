@@ -93,7 +93,7 @@ ENV_PATH="${ENV_PATH:-$DEFAULT_ENV_PATH}"
 ENV_NAME="${ENV_NAME:-$DEFAULT_ENV_NAME}"
 
 # Create log directories
-mkdir -p logs/outputs_${metric} logs/errors_${metric}
+mkdir -p ${DIR}/logs/outputs_${metric} ${DIR}/logs/errors_${metric}
 
 # Echo configuration
 echo "Running OT analysis with configuration:"
@@ -154,8 +154,8 @@ for i in "${!datasets[@]}"; do
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=40G
 #SBATCH --time=24:00:00
-#SBATCH --output=${DIR}/code/ot/logs/outputs_${metric}/${job_name}.txt
-#SBATCH --error=${DIR}/code/ot/logs/errors_${metric}/${job_name}.txt
+#SBATCH --output=${DIR}/logs/outputs_${metric}/${job_name}.txt
+#SBATCH --error=${DIR}/logs/errors_${metric}/${job_name}.txt
 
 # Activate the environment
 source ${ENV_PATH} ${ENV_NAME}

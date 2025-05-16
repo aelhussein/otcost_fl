@@ -5,6 +5,7 @@ Streamlined version focusing on essential helpers.
 REMOVED: translate_cost function.
 """
 import os
+import gc
 import random
 import numpy as np
 import torch
@@ -39,7 +40,11 @@ def gpu_scope():
     try: yield
     finally:
         with suppress(Exception):
-            if torch.cuda.is_available(): torch.cuda.empty_cache()
+            gc.collect()  # Collect Python objects first
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()   # Wait for all CUDA kernels to finish
+                torch.cuda.empty_cache()   # Release cached blocks
+                torch.cuda.ipc_collect()   # Release IPC handles (e.g., from DataLoaders)
 
 def move_to_device(batch: Any, device: torch.device) -> Any:
     """Moves a batch (tensor, list/tuple of tensors) to the specified device."""
@@ -48,6 +53,19 @@ def move_to_device(batch: Any, device: torch.device) -> Any:
     elif isinstance(batch, torch.Tensor): return batch.to(device)
     return batch
 
+def systematic_memory_cleanup():
+    """
+    Performs systematic memory cleanup of Python and GPU resources.
+    
+    Args:
+        is_gpu_active: Flag to indicate if GPU cleanup should be attempted
+    """
+    import gc
+    gc.collect()  # Collect Python objects first
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()   # Wait for all CUDA kernels to finish
+        torch.cuda.empty_cache()   # Release cached blocks
+        torch.cuda.ipc_collect()   # Release IPC handles (e.g., from DataLoaders
 
 # --- Configuration Helpers ---
 def get_parameters_for_dataset(dataset_name: str) -> Dict:

@@ -17,7 +17,7 @@ sys.path.insert(0, _PROJECT_ROOT)
 sys.path.insert(0, _CODE_DIR)  # Add code/ directory specifically to import path
 
 
-from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS
+from configs import ROOT_DIR, DATASET_COSTS, DEFAULT_PARAMS, configure_paths
 from helper import ExperimentType
 from results_manager import ResultsManager
 
@@ -67,7 +67,7 @@ def get_summary_status(datasets: List[str], num_clients_list: List[int], metric:
             for phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM, 
                          ExperimentType.EVALUATION, ExperimentType.OT_ANALYSIS]:
                 records, remaining, min_runs = rm.get_experiment_status(
-                    phase, costs, dflt, metric_key_cls=None
+                    phase, costs, dflt, metric_key_cls=None,
                 )
                 
                 # Calculate completion
@@ -135,7 +135,7 @@ def main():
     parser.add_argument("--summary-only", action="store_true", 
                     help="Only print summary status without running orchestrator")
     args = parser.parse_args()
-    
+    configure_paths(args.metric) # Configure paths based on the metric   
     # Parse datasets
     if args.datasets.lower() == "all":
         datasets = list(DATASET_COSTS.keys())

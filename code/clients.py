@@ -5,12 +5,13 @@ Uses ModelState for state, TrainingManager for utils, direct overrides for algor
 """
 import copy
 import torch
+import gc
 from torch import nn, optim
 from torch.utils.data import DataLoader
 import numpy as np
 from typing import Dict, Optional, Tuple, List, Iterator, Any, Callable, Union
 from configs import DEVICE
-from helper import (gpu_scope, TrainerConfig, SiteData, ModelState, TrainingManager, 
+from helper import (gpu_scope, systematic_memory_cleanup, TrainerConfig, SiteData, ModelState, TrainingManager, 
                     MetricsCalculator, calculate_class_weights, get_parameters_for_dataset, get_model_instance)
 
 from losses import ISICLoss, WeightedCELoss, get_dice_loss
@@ -198,56 +199,79 @@ class Client:  # only the two changed methods are shown
         # For training, we don't collect outputs/labels, just track loss
         epoch_predictions_cpu, epoch_labels_cpu = [], []
         
-        context = torch.enable_grad() if is_training else torch.no_grad()
+        # Use inference_mode for evaluation - more efficient than no_grad
+        context = torch.enable_grad() if is_training else torch.inference_mode()
 
-        with context:
-            for batch in loader:
-                prepared_batch = self.training_manager.prepare_batch(batch, self.criterion)
-                if prepared_batch is None: 
-                    continue
-                batch_x_dev, batch_y_dev, batch_y_orig_cpu = prepared_batch
-                if is_training:
-                    batch_loss = self._train_batch(model, optimizer, self.criterion, batch_x_dev, batch_y_dev)
-                    epoch_loss += batch_loss
-                else:  # Evaluation
-                    # Use autocast for eval when on GPU for consistency with training
-                    with autocast('cuda', enabled=use_amp):
-                        outputs = model(batch_x_dev)
-                        loss = self.criterion(outputs, batch_y_dev)
-                    epoch_loss += loss.item()
-                    
-                    # Store detached tensors on device
-                    device_outputs.append(outputs.detach())
-                    # Use device tensor directly
-                    device_labels.append(batch_y_dev.detach() if torch.is_tensor(batch_y_dev) else batch_y_orig_cpu)
-
-                num_batches += 1
-
-            # Only transfer to CPU once after all batches, when in evaluation mode
-            if not is_training and device_outputs:
-                # Set minimal print options to avoid truncation issues in error messages
-                torch.set_printoptions(profile="minimal")
-                
-                # Concatenate on device first, then transfer to CPU once
-                if len(device_outputs) > 0:
-                    if use_amp:
-                        # GPU path - do single batch transfer
-                        all_outputs = torch.cat(device_outputs, dim=0)
-                        epoch_predictions_cpu = [all_outputs.cpu()]  # Single tensor in a list
+        try:
+            with context:
+                for batch in loader:
+                    prepared_batch = self.training_manager.prepare_batch(batch, self.criterion)
+                    if prepared_batch is None: 
+                        continue
+                    batch_x_dev, batch_y_dev, batch_y_orig_cpu = prepared_batch
+                    if is_training:
+                        batch_loss = self._train_batch(model, optimizer, self.criterion, batch_x_dev, batch_y_dev)
+                        epoch_loss += batch_loss
+                    else:  # Evaluation
+                        # Use autocast for eval when on GPU for consistency with training
+                        with autocast('cuda', enabled=use_amp):
+                            outputs = model(batch_x_dev)
+                            loss = self.criterion(outputs, batch_y_dev)
+                        epoch_loss += loss.item()
                         
-                        # Handle labels (might be on different devices)
-                        if all(isinstance(tensor, torch.Tensor) and hasattr(tensor, 'device') and 
-                            tensor.device.type == 'cuda' for tensor in device_labels):
-                            all_labels = torch.cat([label for label in device_labels if torch.is_tensor(label)], dim=0)
-                            epoch_labels_cpu = [all_labels.cpu()]  # Single tensor in a list
+                        # Store detached tensors on device
+                        device_outputs.append(outputs.detach())
+                        # Use device tensor directly
+                        device_labels.append(batch_y_dev.detach() if torch.is_tensor(batch_y_dev) else batch_y_orig_cpu)
+
+                    num_batches += 1
+                    
+                    # Free batch data explicitly
+                    del prepared_batch, batch_x_dev, batch_y_dev, batch_y_orig_cpu
+                    del batch
+
+                # Only transfer to CPU once after all batches, when in evaluation mode
+                if not is_training and device_outputs:
+                    # Set minimal print options to avoid truncation issues in error messages
+                    torch.set_printoptions(profile="minimal")
+                    
+                    # Concatenate on device first, then transfer to CPU once
+                    if len(device_outputs) > 0:
+                        if use_amp:
+                            # GPU path - do single batch transfer
+                            all_outputs = torch.cat(device_outputs, dim=0)
+                            epoch_predictions_cpu = [all_outputs.cpu()]  # Single tensor in a list
+                            
+                            # Handle labels (might be on different devices)
+                            if all(isinstance(tensor, torch.Tensor) and hasattr(tensor, 'device') and 
+                                tensor.device.type == 'cuda' for tensor in device_labels):
+                                all_labels = torch.cat([label for label in device_labels if torch.is_tensor(label)], dim=0)
+                                epoch_labels_cpu = [all_labels.cpu()]  # Single tensor in a list
+                            else:
+                                # Fall back to per-tensor CPU transfer if needed
+                                epoch_labels_cpu = [label.cpu() if torch.is_tensor(label) else label for label in device_labels]
                         else:
-                            # Fall back to per-tensor CPU transfer if needed
+                            # CPU path - still batch transfers for memory efficiency
+                            epoch_predictions_cpu = [output.cpu() for output in device_outputs]
                             epoch_labels_cpu = [label.cpu() if torch.is_tensor(label) else label for label in device_labels]
-                    else:
-                        # CPU path - still batch transfers for memory efficiency
-                        epoch_predictions_cpu = [output.cpu() for output in device_outputs]
-                        epoch_labels_cpu = [label.cpu() if torch.is_tensor(label) else label for label in device_labels]
+        finally:
+            # Always clean up, even if exceptions occur
+            if 'device_outputs' in locals():
+                for output in device_outputs:
+                    del output
+                del device_outputs
+            if 'device_labels' in locals():
+                for label in device_labels:
+                    if isinstance(label, torch.Tensor):
+                        del label
+                del device_labels
+            if 'all_outputs' in locals():
+                del all_outputs
+            if 'all_labels' in locals():
+                del all_labels
                 
+            # Force garbage collection
+            systematic_memory_cleanup()
 
         avg_loss = epoch_loss / num_batches if num_batches > 0 else (0.0 if is_training else float('inf'))
         return avg_loss, epoch_predictions_cpu, epoch_labels_cpu

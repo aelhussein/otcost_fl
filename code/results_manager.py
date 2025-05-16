@@ -339,13 +339,42 @@ class ResultsManager:
             else:
                 # Convert to TrialRecord objects for standard experiment types
                 try:
-                    trial_records = [TrialRecord(**record_dict) for record_dict in loaded_dicts]
+                    trial_records = []
+                    for i, record_dict in enumerate(loaded_dicts):
+                        try:
+                            # Handle each record individually to identify problematic records
+                            trial_record = TrialRecord(**record_dict)
+                            trial_records.append(trial_record)
+                        except Exception as e:
+                            print(f"ERROR: Failed to convert record {i} to TrialRecord: {e}")
+                            print(f"Problematic record: {record_dict}")
+                            # Create a minimal valid TrialRecord with error information
+                            error_record = TrialRecord(
+                                cost=record_dict.get('cost', 'unknown'),
+                                run_idx=record_dict.get('run_idx', -1),
+                                server_type=record_dict.get('server_type', 'unknown'),
+                                error=f"Record conversion error: {e}"
+                            )
+                            trial_records.append(error_record)
+                    
+                    if not trial_records:
+                        raise ValueError(f"No valid TrialRecord objects could be created from {len(loaded_dicts)} records")
+                        
                     return trial_records, metadata
                 except Exception as e:
-                    print(f"WARNING: Error converting dictionaries to TrialRecord objects: {e}")
-                    print(f"Returning raw dictionaries instead - some functions may not work correctly.")
-                    
-        # Default return (empty list or unconverted dictionaries)
+                    # This is a more serious error - all records failed conversion
+                    error_msg = f"CRITICAL ERROR: Failed to convert any dictionaries to TrialRecord objects: {e}"
+                    print(error_msg)
+                    # Create an empty TrialRecord with the error information
+                    error_record = TrialRecord(
+                        cost="error", 
+                        run_idx=-1, 
+                        server_type="error",
+                        error=error_msg
+                    )
+                    return [error_record], metadata
+        
+        # Default return (empty list)
         return loaded_dicts, metadata
 
     # --- Results Analysis & Status ---
