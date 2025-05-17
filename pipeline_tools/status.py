@@ -130,7 +130,7 @@ def get_formatted_timestamp(timestamp_str: str) -> str:
         return timestamp_str
 
 def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List[Any]]:
-    """Get detailed status information for a dataset by checking individual configurations"""
+    """Get detailed status information for a dataset with accurate progress reporting"""
     rm = ResultsManager(ROOT_DIR, dataset, num_clients)
     costs = DATASET_COSTS.get(dataset, [])
     dflt = DEFAULT_PARAMS.get(dataset, {})
@@ -150,7 +150,10 @@ def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List
         
         # Calculate total configurations for this phase
         total_configs = len(costs)
-        completed_configs = 0
+        
+        # Track configs with runs and total runs
+        configs_with_runs = set()  # Use a set to avoid double counting
+        total_runs_completed = 0
         
         # Generate list of all expected configurations
         expected_configs = []
@@ -190,9 +193,15 @@ def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List
         target_runs_key = 'runs_tune' if phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM] else 'runs'
         target_runs = dflt.get(target_runs_key, 1)
         
-        # Check each configuration against records
-        for config in expected_configs:
+        # Total runs needed for all configurations
+        total_runs_needed = total_configs * target_runs
+        
+        # Check each expected configuration against records
+        for config_idx, config in enumerate(expected_configs):
             cost, server, param_name, param_value = config
+            
+            # Create a unique key for this configuration
+            config_key = f"{cost}_{server}_{param_name}_{param_value}"
             
             # Count successful runs for this config
             successful_runs = 0
@@ -200,13 +209,16 @@ def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List
                 if hasattr(r, 'matches_config') and r.matches_config(cost, server, param_name, param_value) and r.error is None:
                     successful_runs += 1
             
-            # Mark configuration as complete if it has enough runs
-            if successful_runs >= target_runs:
-                completed_configs += 1
+            # Add to completed runs count
+            total_runs_completed += successful_runs
             
-        # Calculate progress percentage
-        if total_configs > 0:
-            progress_pct = round(completed_configs / total_configs * 100, 1)
+            # Mark configuration as having at least one run
+            if successful_runs > 0:
+                configs_with_runs.add(config_key)
+            
+        # Calculate progress percentage based on runs completed
+        if total_runs_needed > 0:
+            progress_pct = round(total_runs_completed / total_runs_needed * 100, 1)
         else:
             progress_pct = 0
             
@@ -223,8 +235,8 @@ def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List
         job_time = get_formatted_timestamp(job_info.get('timestamp', 'unknown')) if job_info else "never"
         job_id = job_info.get('job_id', 'unknown') if job_info else "unknown"
         
-        # Create the progress string
-        progress = f"{completed_configs}/{total_configs} ({progress_pct}%)"
+        # Create the progress string to show both configurations and run percentages
+        progress = f"{total_runs_completed}/{total_runs_needed} runs ({progress_pct}%)"
         
         # Create row with color-coded status
         row = [

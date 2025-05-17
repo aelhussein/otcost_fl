@@ -139,7 +139,9 @@ source ${ENV_PATH} ${ENV_NAME}
 
 export PYTHONUNBUFFERED=1
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
-export PYTHON_LOG_DIR="logs/python_logs"
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-6}  
+export MKL_NUM_THREADS=$OMP_NUM_THREADS
+
 
 # Run the Python script
 echo "Running: python ${DIR}/code/run_evaluation.py -ds ${dataset} -exp ${exp_type} -nc ${num_clients} -mc ${metric}"

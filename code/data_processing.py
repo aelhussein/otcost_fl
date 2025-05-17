@@ -164,30 +164,7 @@ class DataPreprocessor:
             train_dataset = self._get_dataset_instance({'image_paths': train_paths, 'label_paths': train_labels}, 'train') if train_paths else None
             val_dataset = self._get_dataset_instance({'image_paths': val_paths, 'label_paths': val_labels}, 'val') if val_data[0] else None
             test_dataset = self._get_dataset_instance({'image_paths': test_data[0], 'label_paths': test_data[1]}, 'test') if test_data[0] else None
-            
-            # Create dataloaders
-            n_workers = self.dataset_config.get('num_workers', N_WORKERS)
-            if n_workers <= 1:
-                pin_mem = False   
-            else:
-                pin_mem = True
-            persistent_work = n_workers > 0
-            
-            train_loader = DataLoader(
-                train_dataset, batch_size=self.batch_size, shuffle=True, 
-                num_workers=n_workers, pin_memory=pin_mem, drop_last=False,
-                persistent_workers=persistent_work) if train_dataset else DataLoader([])
-                
-            val_loader = DataLoader(
-                val_dataset, batch_size=self.batch_size, shuffle=False, 
-                num_workers=n_workers, pin_memory=pin_mem,
-                persistent_workers=persistent_work) if val_dataset else DataLoader([])
-                
-            test_loader = DataLoader(
-                test_dataset, batch_size=self.batch_size, shuffle=False, 
-                num_workers=n_workers, pin_memory=pin_mem,
-                persistent_workers=persistent_work) if test_dataset else DataLoader([])
-            return train_loader, val_loader, test_loader
+        
         
         if data_type == 'subset':
             
@@ -224,8 +201,6 @@ class DataPreprocessor:
                 train_dataset = self._get_dataset_instance({'X_np': train_data[0], 'y_np': train_data[1]}, 'train') if train_data else None
                 val_dataset = self._get_dataset_instance({'X_np': val_data[0], 'y_np': val_data[1]}, 'val') if val_data else None
                 test_dataset = self._get_dataset_instance({'X_np': test_data[0], 'y_np': test_data[1]}, 'test') if test_data else None
-            else:
-                return DataLoader([]), DataLoader([]), DataLoader([])
                 
         elif data_type == 'direct':
             X, y = raw_data.get('X'), raw_data.get('y')
@@ -252,28 +227,33 @@ class DataPreprocessor:
             train_dataset = self._get_dataset_instance(train_args, 'train',) if len(X_train) > 0 else None
             val_dataset = self._get_dataset_instance(val_args, 'val',) if len(X_val) > 0 else None
             test_dataset = self._get_dataset_instance(test_args, 'test') if len(X_test) > 0 else None
-        else:
-            return DataLoader([]), DataLoader([]), DataLoader([])
+
 
         # Create DataLoaders with appropriate settings
         g_train = torch.Generator()
         g_train.manual_seed(int(torch.initial_seed()))
         n_workers = self.dataset_config.get('num_workers', N_WORKERS)
+        if n_workers <= 1:
+            pin_mem = False   
+        else:
+            pin_mem = True
+        persistent_work = n_workers > 0
+        
         train_loader = DataLoader(
-            train_dataset, batch_size=self.batch_size, shuffle=True, 
-            num_workers=n_workers, generator=g_train, drop_last=False, pin_memory=True,
-            persistent_workers=(n_workers>0)) if train_dataset else DataLoader([])
+            train_dataset, batch_size=self.batch_size, shuffle=True,  generator=g_train,
+            num_workers=n_workers, pin_memory=pin_mem, drop_last=False,
+            persistent_workers=persistent_work) if train_dataset else DataLoader([])
             
         val_loader = DataLoader(
             val_dataset, batch_size=self.batch_size, shuffle=False, 
-            num_workers=n_workers, pin_memory=True,
-            persistent_workers=(n_workers>0)) if val_dataset else DataLoader([])
+            num_workers=n_workers, pin_memory=pin_mem,
+            persistent_workers=persistent_work) if val_dataset else DataLoader([])
             
         test_loader = DataLoader(
             test_dataset, batch_size=self.batch_size, shuffle=False, 
-            num_workers=n_workers, pin_memory=True,
-            persistent_workers=(n_workers>0)) if test_dataset else DataLoader([])
-
+            num_workers=n_workers, pin_memory=pin_mem,
+            persistent_workers=persistent_work) if test_dataset else DataLoader([])
+        
         return train_loader, val_loader, test_loader
 
 # =============================================================================

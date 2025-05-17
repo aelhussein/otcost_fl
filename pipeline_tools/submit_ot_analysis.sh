@@ -161,6 +161,9 @@ for i in "${!datasets[@]}"; do
 source ${ENV_PATH} ${ENV_NAME}
 
 export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK   
+export MKL_NUM_THREADS=$OMP_NUM_THREADS
+
 
 # Run the Python script
 echo "Running: python ${DIR}/code/run_ot_analysis.py -ds ${dataset} ${num_clients_arg} -mt ${model_type} -al ${loader} ${force_arg} -mc ${metric}"

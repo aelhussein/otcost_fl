@@ -11,8 +11,8 @@ from directories import paths
 
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-if DEVICE == 'cpu':
-    torch.set_num_threads(1)
+torch.set_num_threads(6)
+
 N_WORKERS = 4 
 
 # --- Core Directories ---

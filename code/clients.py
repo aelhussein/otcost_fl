@@ -150,16 +150,19 @@ class Client:  # only the two changed methods are shown
         # More efficient memory usage with set_to_none=True
         optimizer.zero_grad(set_to_none=True)
         # Use autocast for forward pass when on GPU
-        with autocast('cuda', enabled=use_amp):
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
-        # Scale gradients and update weights when on CUDA
         if use_amp:
+            # CUDA + mixed precision
+            with autocast(device_type="cuda", dtype=torch.float16):
+                outputs = model(batch_x)
+                loss = criterion(outputs, batch_y)
+
             self.scaler.scale(loss).backward()
             self.scaler.step(optimizer)
             self.scaler.update()
         else:
-            # Standard CPU path
+            # Pure CPU (or explicit no-AMP) path
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
             loss.backward()
             optimizer.step()
         return loss.item()
@@ -456,52 +459,63 @@ class FedProxClient(Client):
                 if isinstance(param_tensor, torch.Tensor):
                     self._initial_global_params_gpu[name] = param_tensor.to(self.training_manager.compute_device)
 
-    def _train_batch(self, model: nn.Module, optimizer: optim.Optimizer, criterion: Union[nn.Module, Callable], batch_x: Any, batch_y: Any) -> float:
-        """Adds FedProx proximal term to the loss before backward."""
-        # Determine if we're on GPU
-        is_gpu = DEVICE == 'cuda' and batch_x.device.type == 'cuda'
-        
-        # Ensure reference parameters are on GPU if needed
-        if is_gpu:
+    def _train_batch(
+        self,
+        model: nn.Module,
+        optimizer: optim.Optimizer,
+        criterion: Union[nn.Module, Callable],
+        batch_x: Any,
+        batch_y: Any,
+    ) -> float:
+        """Single FedProx step with optional mixed-precision support."""
+
+        from configs import DEVICE
+        use_amp = DEVICE == 'cuda' and batch_x.device.type == 'cuda'
+        device      = batch_x.device
+
+        # ----- make sure the reference params live on the right device ----------
+        if use_amp:                       # CUDA path
             self._ensure_global_params_on_gpu()
-        
+
         optimizer.zero_grad(set_to_none=True)
-        
-        # Use autocast for forward pass when on GPU
-        with autocast('cuda', enabled=is_gpu):
-            outputs = model(batch_x)
+
+        # ---------- forward & primary task loss ---------------------------------
+        if use_amp:
+            with autocast(device_type="cuda", dtype=torch.float16):
+                outputs   = model(batch_x)
+                task_loss = criterion(outputs, batch_y)
+        else:                                              # CPU / no-AMP
+            outputs   = model(batch_x)
             task_loss = criterion(outputs, batch_y)
-        
-        # Get the appropriate module for parameters
-        param_module = model._orig_mod if hasattr(model, '_orig_mod') else model
-        proximal_term = torch.tensor(0.0, device=batch_x.device)
-        
-        # Look up parameters by name to avoid ordering assumptions
-        if is_gpu and self._initial_global_params_gpu:
-            for name, param_current in param_module.named_parameters():
-                if param_current.requires_grad and name in self._initial_global_params_gpu:
-                    param_initial = self._initial_global_params_gpu[name]
-                    proximal_term += torch.sum(torch.pow(param_current - param_initial, 2))
+
+        # ---------- proximal term -----------------------------------------------
+        param_module  = model._orig_mod if hasattr(model, "_orig_mod") else model
+        proximal_term = torch.tensor(0.0, device=device)
+
+        if use_amp and self._initial_global_params_gpu:
+            for name, p_cur in param_module.named_parameters():
+                if p_cur.requires_grad and name in self._initial_global_params_gpu:
+                    p_ref = self._initial_global_params_gpu[name]
+                    proximal_term += torch.sum((p_cur - p_ref) ** 2)
         else:
-            # CPU path - use state dict directly
-            for name, param_current in param_module.named_parameters():
-                if param_current.requires_grad and name in self._initial_global_state_dict_cpu:
-                    param_initial = self._initial_global_state_dict_cpu[name].to(param_current.device)
-                    proximal_term += torch.sum(torch.pow(param_current - param_initial, 2))
-        
-        total_loss = task_loss + (self.reg_param / 2.0) * proximal_term
-        
-        # Handle backward and optimization based on device
-        if is_gpu:
+            for name, p_cur in param_module.named_parameters():
+                if p_cur.requires_grad and name in self._initial_global_state_dict_cpu:
+                    p_ref = self._initial_global_state_dict_cpu[name].to(device)
+                    proximal_term += torch.sum((p_cur - p_ref) ** 2)
+
+        total_loss = task_loss + 0.5 * self.reg_param * proximal_term
+
+        # ---------- backward & optimiser step -----------------------------------
+        if use_amp:
             self.scaler.scale(total_loss).backward()
             self.scaler.step(optimizer)
             self.scaler.update()
         else:
-            # Standard CPU path
             total_loss.backward()
             optimizer.step()
-            
-        return task_loss.item()  # Report original task loss
+
+        return float(total_loss.detach())      
+
 
 class PFedMeClient(Client):
     """pFedMe Client: Overrides train_and_validate for k-step inner loop."""
@@ -719,73 +733,83 @@ class DittoClient(Client):
                 for p in self.global_state.model.parameters() if p.requires_grad
             ]
         return self._global_params_gpu
+    
+    def _train_batch(
+        self,
+        model: nn.Module,
+        optimizer: optim.Optimizer,
+        criterion: Union[nn.Module, Callable],
+        batch_x: Any,
+        batch_y: Any,
+    ) -> float:
+        """Ditto step — personal model gets regularised toward the global model."""
 
-    def _train_batch(self, model: nn.Module, optimizer: optim.Optimizer, criterion: Union[nn.Module, Callable], batch_x: Any, batch_y: Any) -> float:
-        """Ditto training step: Modifies gradients only for the personal model."""
-        # Check if this is the personal model being trained
-        is_personal_model = (model is self.personal_state.model) or \
-                            (hasattr(model, '_orig_mod') and model._orig_mod is self.personal_state.model)
-                            
-        # Get device info from configs
         from configs import DEVICE
         use_amp = DEVICE == 'cuda' and batch_x.device.type == 'cuda'
-        
+
+        is_personal   = (model is self.personal_state.model) or (
+            hasattr(model, "_orig_mod") and model._orig_mod is self.personal_state.model
+        )
+        device = batch_x.device
+
         optimizer.zero_grad(set_to_none=True)
-        
-        # Use autocast when on GPU
-        with autocast('cuda', enabled=use_amp):
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
-        
-        # Calculate standard gradients
+
+        # ---------- forward ------------------------------------------------------
         if use_amp:
+            with autocast(device_type="cuda", dtype=torch.float16):
+                outputs = model(batch_x)
+                loss    = criterion(outputs, batch_y)
+        else:
+            outputs = model(batch_x)
+            loss    = criterion(outputs, batch_y)
+
+        # ---------- backward -----------------------------------------------------
+        if use_amp:
+            # scale & back-prop primary loss first
             self.scaler.scale(loss).backward()
-            
-            # Special handling for personal model with regularization
-            if is_personal_model:
-                # Get appropriate module for parameters
-                target_module = model._orig_mod if hasattr(model, '_orig_mod') else model
-                
-                # Get global parameters on device
-                global_params = self._prepare_global_params_gpu(batch_x.device)
-                
-                # First unscale the gradients so we can add unscaled regularization term
+
+            if is_personal:
+                # unscale so we can add regularisation on raw grads
                 self.scaler.unscale_(optimizer)
-                
-                # Add regularization term to unscaled gradients
+
+                target_module = (
+                    model._orig_mod if hasattr(model, "_orig_mod") else model
+                )
+                global_params = self._prepare_global_params_gpu(device)
+
                 with torch.no_grad():
-                    for idx, param_personal in enumerate(target_module.parameters()):
-                        if param_personal.grad is not None and idx < len(global_params):
-                            # Apply regularization term to gradient (NO SCALING needed now)
-                            reg_term = self.reg_param * (param_personal.detach() - global_params[idx])
-                            param_personal.grad.add_(reg_term)
-                
-                # Skip scaler.step and call optimizer.step directly since we've already unscaled
-                optimizer.step()
-                # We still need to update the scaler for next iteration
+                    for p_idx, p_personal in enumerate(target_module.parameters()):
+                        if p_personal.grad is not None and p_idx < len(global_params):
+                            p_global = global_params[p_idx]
+                            p_personal.grad.add_(
+                                self.reg_param * (p_personal.detach() - p_global)
+                            )
+
+                optimizer.step()      # grads are already unscaled
                 self.scaler.update()
             else:
-                # Standard GPU path for non-personal model
                 self.scaler.step(optimizer)
                 self.scaler.update()
-        else:
-            # CPU path remains unchanged
+        else:  # ------------------- CPU / no-AMP path ----------------------------
             loss.backward()
-            
-            # Add regularization for personal model
-            if is_personal_model:
+
+            if is_personal:
                 target_module = model
-                global_params = [p.detach().clone() for p in self.global_state.model.parameters() if p.requires_grad]
-                
+                global_params = [
+                    p.detach().clone()
+                    for p in self.global_state.model.parameters()
+                    if p.requires_grad
+                ]
                 with torch.no_grad():
-                    for idx, param_personal in enumerate(target_module.parameters()):
-                        if param_personal.grad is not None and idx < len(global_params):
-                            reg_term = self.reg_param * (param_personal.detach() - global_params[idx])
-                            param_personal.grad.add_(reg_term)
-            
+                    for p_idx, p_personal in enumerate(target_module.parameters()):
+                        if p_personal.grad is not None and p_idx < len(global_params):
+                            p_personal.grad.add_(
+                                self.reg_param * (p_personal.detach() - global_params[p_idx])
+                            )
+
             optimizer.step()
-            
-        return loss.item()
+
+        return float(loss.detach())
 
     def train_and_validate(self, personal: bool) -> Dict:
         """

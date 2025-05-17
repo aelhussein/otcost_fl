@@ -198,14 +198,17 @@ def archive_phase_results(dataset: str, num_clients: int, phase: str, metric: st
         print(f"Archived metadata to: {archive_meta}")
 
 def get_progress_info(rm: ResultsManager, phase: str, costs, params) -> Dict[str, Any]:
-    """Get progress information for a phase by counting explicitly completed configurations"""
+    """Get accurate progress information for a phase"""
     records, remaining, min_runs = rm.get_experiment_status(
         phase, costs, params, metric_key_cls=None
     )
     
     # Calculate the total number of expected configurations
     total_configs = len(costs)
-    completed_configs = 0
+    completed_configs = 0  # Fully completed configs
+    
+    # Track configs with runs to avoid double counting
+    configs_with_runs = set()
     
     # List to store all expected configurations for detailed checking
     expected_configs = []
@@ -244,9 +247,16 @@ def get_progress_info(rm: ResultsManager, phase: str, costs, params) -> Dict[str
     # Determine target number of runs based on experiment type
     target_runs = params.get('runs_tune' if phase != ExperimentType.EVALUATION else 'runs', 1)
     
+    # Count total runs across all configurations
+    total_runs_completed = 0
+    total_runs_needed = total_configs * target_runs
+    
     # Check each expected configuration against records
     for config in expected_configs:
         cost, server, param_name, param_value = config
+        
+        # Create a unique key for this configuration
+        config_key = f"{cost}_{server}_{param_name}_{param_value}"
         
         # Count successful runs for this config
         successful_runs = 0
@@ -255,6 +265,13 @@ def get_progress_info(rm: ResultsManager, phase: str, costs, params) -> Dict[str
             if hasattr(r, 'matches_config') and r.matches_config(cost, server, param_name, param_value) and r.error is None:
                 successful_runs += 1
         
+        # Add to total runs completed
+        total_runs_completed += successful_runs
+        
+        # Mark configuration as having at least one run
+        if successful_runs > 0:
+            configs_with_runs.add(config_key)
+            
         # Mark configuration as complete if it has enough runs
         if successful_runs >= target_runs:
             completed_configs += 1
@@ -262,10 +279,19 @@ def get_progress_info(rm: ResultsManager, phase: str, costs, params) -> Dict[str
     # Calculate error count
     error_count = sum(1 for r in records if getattr(r, "error", None) is not None)
     
+    # Calculate percentage based on runs completed
+    if total_runs_needed > 0:
+        progress_percent = round(total_runs_completed / total_runs_needed * 100, 1)
+    else:
+        progress_percent = 0
+    
     return {
         "total": total_configs,
-        "completed": completed_configs,
-        "percent": round(completed_configs / total_configs * 100, 1) if total_configs > 0 else 0,
+        "configs_started": len(configs_with_runs),  # Number of configs with at least one run
+        "configs_completed": completed_configs,  # Fully completed configs
+        "runs_completed": total_runs_completed,  # Total individual runs completed
+        "runs_needed": total_runs_needed,  # Total runs needed
+        "percent": progress_percent,
         "errors": error_count,
         "runs_per_config": target_runs,
         "min_completed_runs": min_runs
@@ -320,57 +346,61 @@ def schedule_next_orchestrator(dataset: str,
 
 
 def main():
-    # ------------ validation ------------
+    # Validate dataset
     if args.dataset not in DATASET_COSTS:
-        print(f"Unknown dataset {args.dataset}")
+        print(f"Error: Dataset '{args.dataset}' not found in DATASET_COSTS.")
         sys.exit(1)
-
+    
     costs = DATASET_COSTS[args.dataset]
-    dflt  = DEFAULT_PARAMS[args.dataset]
-    rm    = ResultsManager(ROOT_DIR, args.dataset, args.num_clients)
-
-    force_phases = [p.strip() for p in args.force_phases.split(",")] \
-                   if args.force_phases else []
-
-    # ------------ phase loop ------------
+    dflt = DEFAULT_PARAMS[args.dataset]
+    rm = ResultsManager(ROOT_DIR, args.dataset, args.num_clients)
+    
+    # Parse force phases if provided
+    force_phases = []
+    if args.force_phases:
+        force_phases = [phase.strip() for phase in args.force_phases.split(",")]
+    
+    # Process each phase in order
     for phase in PHASES:
+        # Determine if this phase should be forced
         phase_force = args.force or phase in force_phases
-
-        # archive if forcing (skip during dry-run)
+        
+        # When forcing a phase, archive existing results first (if not dry run)
         if phase_force and not args.dry_run:
-            print(f"[Force] archiving old {phase} results …")
-            archive_phase_results(args.dataset, args.num_clients,
-                                   phase, args.metric)
-
-        # already done?
-        if _phase_done(rm, phase, costs, dflt, force=False):
-            continue
-
-        # submit jobs, then resubmit *this* script with dependency
-        job_ids = submit_phase(args.dataset, args.num_clients,
-                               phase, args.metric, args.dry_run)
-
-        if not args.dry_run:
-            log_job_submission(args.dataset, args.num_clients,
-                               phase, job_ids[0] if job_ids else None,
-                               args.metric)
-
-            # schedule next orchestrator run once these jobs finish
-            schedule_next_orchestrator(
-                dataset=args.dataset,
-                num_clients=args.num_clients,
-                metric=args.metric,
-                force=args.force,
-                force_phases=force_phases,
-                dependency_ids=job_ids,
-            )
-
-        # Stop after the first incomplete phase – the next orchestrator
-        # (scheduled above) will pick up where we leave off.
-        sys.exit(0)
-
-    print(f"All phases complete for {args.dataset} "
-          f"(clients={args.num_clients}, metric={args.metric})")
+            print(f"Forcing phase '{phase}', archiving existing results...")
+            archive_phase_results(args.dataset, args.num_clients, phase, args.metric)
+        
+        if not _phase_done(rm, phase, costs, dflt, force=False):  # Always pass force=False as we handle forcing via archiving
+            # Get progress info before submission
+            progress_before = get_progress_info(rm, phase, costs, dflt)
+            
+            # Submit the jobs for this phase
+            job_id = submit_phase(args.dataset, args.num_clients, phase, args.metric, args.dry_run)
+            
+            # Log the submission
+            if not args.dry_run:
+                log_job_submission(args.dataset, args.num_clients, phase, job_id, args.metric)
+                
+                # Show progress info with enhanced details
+                print(f"\nPhase '{phase}' status:")
+                
+                # Show more accurate configuration progress
+                
+                runs_completed = progress_before['runs_completed']
+                runs_needed = progress_before['runs_needed']
+                
+                # Display clear progress information
+                print(f"  Runs: {runs_completed}/{runs_needed} completed ({progress_before['percent']}%)")
+                
+                if progress_before['errors'] > 0:
+                    print(f"  Warning: {progress_before['errors']} records contain errors")
+                    
+                print(f"\nJobs have been submitted for incomplete configurations. Run this script again after they complete.")
+            
+            # Exit after submitting first incomplete phase
+            sys.exit(0)
+    
+    print("All phases complete for dataset:", args.dataset, f"(clients={args.num_clients}, metric={args.metric})")
 
 
 if __name__ == "__main__":
