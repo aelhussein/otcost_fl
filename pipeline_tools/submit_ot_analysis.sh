@@ -32,7 +32,7 @@ datasets=() # Initialize as empty arrays
 fl_num_clients=()
 model_types=()
 activation_loaders=()
-force_regen=false
+force_regen=true
 metric="$DEFAULT_METRIC"
 
 while [ $# -gt 0 ]; do
@@ -140,7 +140,7 @@ for i in "${!datasets[@]}"; do
                 clients_num="${num_clients_arg#*-nc }"
                 clients_suffix="_nc${clients_num}"
             fi
-            job_name="OT_${dataset}${clients_suffix}_${model_type}_${loader}_${metric}"
+            job_name="${dataset}_OT${clients_suffix}_${model_type}_${loader}_${metric}"
             
             # Create temporary submission script
             cat << EOF > temp_submit_ot_${job_name}.sh
@@ -161,7 +161,8 @@ for i in "${!datasets[@]}"; do
 source ${ENV_PATH} ${ENV_NAME}
 
 export PYTHONUNBUFFERED=1
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK   
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-6}  
 export MKL_NUM_THREADS=$OMP_NUM_THREADS
 
 

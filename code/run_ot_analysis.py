@@ -73,8 +73,6 @@ logger = logging.getLogger(__name__)
 from configs import DEFAULT_PARAMS
 from ot_pipeline_runner import OTPipelineRunner
 
-
-
 def main():
     """
     Parses command-line arguments and runs the OT analysis pipeline.
@@ -90,7 +88,13 @@ def main():
         logger.info(f"Starting OT analysis for dataset '{args.dataset}' with {num_fl_clients} FL clients")
         logger.info(f"Model type: {args.model_type}, Activation loader: {args.activation_loader}")
         logger.info(f"Performance metric: {args.metric}")
-        
+        try:
+            os.makedirs(ACTIVATION_DIR, exist_ok=True)
+            print(f"Results will be saved in subdirectories under: {ACTIVATION_DIR}")
+        except OSError as e:
+            print(f"Error creating results directories: {e}", file=sys.stderr)
+            sys.exit(1)
+            
         runner = OTPipelineRunner(
             num_target_fl_clients=num_fl_clients, 
             activation_dir=ACTIVATION_DIR
@@ -101,7 +105,7 @@ def main():
             model_type_to_analyze=args.model_type,
             activation_loader_type=args.activation_loader,
             performance_metric_key=args.metric,
-            force_activation_regen=args.force_activation_regen
+            force_activation_regen=args.force_activation_regen,
         )
         
         logger.info(f"OT analysis complete for dataset '{args.dataset}'. {len(results_df)} records processed.")

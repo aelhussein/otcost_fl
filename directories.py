@@ -53,8 +53,8 @@ def configure(metric: str = "loss") -> None:
     suffix = "" if metric == "loss" else "_score"
 
     RESULTS_DIR      = os.path.join(ROOT_DIR, f"results{suffix}")
-    MODEL_SAVE_DIR   = os.path.join(ROOT_DIR, "saved_models")      # keep flat
-    ACTIVATION_DIR   = os.path.join(ROOT_DIR, "activations")       # keep flat
+    MODEL_SAVE_DIR   = os.path.join(ROOT_DIR, f"saved_models{suffix}")      # keep flat
+    ACTIVATION_DIR   = os.path.join(ROOT_DIR, f"activations{suffix}")       # keep flat
     SELECTION_CRITERION_KEY = "val_scores" if metric == "score" else "val_losses"
 
     for d in (RESULTS_DIR, MODEL_SAVE_DIR, ACTIVATION_DIR):

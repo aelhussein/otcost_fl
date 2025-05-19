@@ -199,5 +199,110 @@ direct_ot_configs = [
     ),
 ]
 
-# Combined configuration list for convenience
-all_configs = direct_ot_configs
+subsampled_direct_ot_configs = [   
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_s400',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'max_samples': 400,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_s300',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'max_samples': 300,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_s200',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'max_samples': 200,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_s100',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'max_samples': 100,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_s50',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'max_samples': 50,
+        }
+    ),
+]
+
+reg_param_direct_ot_configs = [   
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_reg_0.05',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'reg': 0.05,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_reg_0.1',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'reg': 0.1,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_reg_0.5',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'reg': 0.5,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_s300',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'reg':1,
+
+        }
+    ),
+]
+
+all_configs = direct_ot_configs + subsampled_direct_ot_configs + reg_param_direct_ot_configs

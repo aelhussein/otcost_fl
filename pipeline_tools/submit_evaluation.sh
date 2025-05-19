@@ -130,7 +130,7 @@ ${gres_line}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=40G
-#SBATCH --time=30:00:00
+#SBATCH --time=40:00:00
 #SBATCH --output=${DIR}/logs/outputs_${metric}/${job_name}.txt
 #SBATCH --error=${DIR}/logs/errors_${metric}/${job_name}.txt
 #SBATCH --exclude=ne1dg6-004

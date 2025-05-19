@@ -51,7 +51,7 @@ class OTPipelineRunner:
         performance_metric_key: str = 'score',
         performance_aggregation: str = 'mean',
         force_activation_regen: bool = False,
-        custom_ot_configurations: Optional[List[OTConfig]] = None
+        ot_configurations: Optional[List[OTConfig]] = None
     ) -> pd.DataFrame:
         """
         Runs the full OT analysis pipeline.
@@ -82,7 +82,7 @@ class OTPipelineRunner:
         num_fl_runs = dataset_fl_params.get('runs', 1)
         base_fl_seed = dataset_fl_params.get('base_seed', 42)
         num_classes = dataset_fl_params.get('fixed_classes')  # Can be None for segmentation
-        ot_configs_to_run = custom_ot_configurations or all_configs
+        ot_configs_to_run = ot_configurations or all_configs
 
         # Storage for results
         all_ot_analysis_records = [] # Store actual OTAnalysisRecord objects, not dicts

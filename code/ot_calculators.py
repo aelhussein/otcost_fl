@@ -71,12 +71,6 @@ class BaseOTCalculator(ABC):
     Abstract Base Class for Optimal Transport similarity calculators.
     """
     def __init__(self, client_id_1: str, client_id_2: str, num_classes: int, **kwargs):
-        if num_classes < 2: # num_classes can be 1 for regression/binary tasks if p_prob becomes [N] or [N,1]
-            # For OT, typically comparing distributions, num_classes >= 2 is more common for label-based aspects.
-            # If a calculator handles num_classes=1 specifically (e.g. pure feature OT), it can override or manage.
-            # Keeping this check for general safety with label-aware methods.
-            pass # No longer raising error, individual calculators must handle num_classes=1 if applicable.
-
         self.client_id_1 = str(client_id_1)
         self.client_id_2 = str(client_id_2)
         self.num_classes = num_classes

@@ -492,8 +492,8 @@ def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_cl
     
     # Adjust layout
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    
-    return fig, axes
+    plt.show()
+    return
 
 def plot_ot_scatter(df: pd.DataFrame, dataset_name: str, num_fl_clients: int, figsize=None) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
     """
@@ -569,8 +569,9 @@ def plot_ot_scatter(df: pd.DataFrame, dataset_name: str, num_fl_clients: int, fi
     
     # Adjust layout
     plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
     
-    return fig, axes
+    return
 
 def calculate_ot_correlations(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -644,3 +645,336 @@ def calculate_ot_correlations(df: pd.DataFrame) -> pd.DataFrame:
         return correlation_df
     else:
         return pd.DataFrame()
+
+def get_tuning_summary(dataset_name: str,
+                          manager: ResultsManager,
+                          exerpiment_type: str,
+                          server_filter: Optional[str] = None,
+                          higher_is_better_metric: bool = False) -> pd.DataFrame:
+    """
+    Loads LR tuning results, calculates the average (median) performance 
+    for each (cost, server, learning_rate) across all runs,
+    and identifies the best LR per cost/server.
+
+    Args:
+        dataset_name: Name of the dataset.
+        results_root_dir: The root directory where results are stored.
+        num_target_clients: The target number of clients used for naming results files.
+        server_filter: If specified, only analyze results for this server type.
+        higher_is_better_metric: Set to True if the validation metric is score-based.
+
+    Returns:
+        pandas.DataFrame: DataFrame with cost, server_type, learning_rate,
+                          avg_val_performance (median of median val losses/scores), 
+                          and a flag indicating if it's the best LR for that cost/server.
+    """
+
+    exp_types = {'learning_rate':  ExperimentType.LEARNING_RATE, 
+                 'reg_param': ExperimentType.REG_PARAM}
+    
+    tuning_records, metadata = manager.load_results(exp_types[exerpiment_type])
+    
+    if not tuning_records:
+        return pd.DataFrame()
+
+    processed_data = []
+    
+    metric_to_use = MetricKey.VAL_SCORES if higher_is_better_metric else MetricKey.VAL_LOSSES
+    
+    for record in tuning_records:
+        if record.error is not None:
+            continue
+        if record.tuning_param_name != exerpiment_type:
+            continue
+        if server_filter and record.server_type != server_filter:
+            continue
+             
+        metrics_dict = record.metrics
+        if not metrics_dict or metric_to_use not in metrics_dict or not metrics_dict[metric_to_use]:
+            continue
+            
+        try:
+            # Get the median performance of this specific trial (run)
+            # This mirrors the logic in ResultsManager.get_best_parameters
+            trial_performance = np.nanmedian(metrics_dict[metric_to_use]) 
+            if not np.isfinite(trial_performance):
+                continue
+        except (ValueError, TypeError) as e: 
+            continue
+
+        processed_data.append({
+            'cost': record.cost,
+            'server_type': record.server_type,
+            exerpiment_type: record.tuning_param_value,
+            'run_idx': record.run_idx,
+            'trial_val_performance': float(trial_performance) # Ensure float
+        })
+
+    if not processed_data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(processed_data)
+    
+    # Group by cost, server, and learning rate, then calculate the mean of trial_val_performance (which are medians of rounds)
+    # This aggregation across runs should ideally match get_best_parameters (which uses np.mean of these trial medians)
+    agg_summary = df.groupby(['cost', 'server_type', exerpiment_type], as_index=False).agg(
+        avg_val_performance=('trial_val_performance', 'mean'), # Mean of the trial (median) performances
+        num_runs_aggregated=('run_idx', 'nunique') # Count how many runs contributed
+    )
+    
+    # Identify the best learning rate for each (cost, server_type) combination
+    if higher_is_better_metric:
+        best_indices = agg_summary.groupby(['cost', 'server_type'])['avg_val_performance'].idxmax()
+    else:
+        best_indices = agg_summary.groupby(['cost', 'server_type'])['avg_val_performance'].idxmin()
+        
+    agg_summary['is_best_param'] = False
+    if not best_indices.empty: # Check if best_lr_indices is not empty
+        agg_summary.loc[best_indices, 'is_best_param'] = True
+    
+    # Sort for better readability
+    agg_summary = agg_summary.sort_values(by=['cost', 'server_type', 'avg_val_performance' if not higher_is_better_metric else 'avg_val_performance'],
+                                          ascending=[True, True, not higher_is_better_metric if not higher_is_better_metric else False]).reset_index(drop=True)
+
+    return agg_summary
+
+def plot_reg_param_vs_cost(best_params_df: pd.DataFrame) -> None:
+    """
+    Plot the best regularization parameter against the cost for each server type.
+    Args:
+        best_params_df (pd.DataFrame): DataFrame containing the best regularization parameters and costs.
+    """
+    # Convert 'cost' and 'reg_param' columns to numeric
+    plt.figure(figsize=(12, 8))
+    scatterplot = sns.scatterplot(
+        data=best_params_df,
+        x='cost',
+        y='reg_param',
+        hue='server_type',
+        s=120,  
+        alpha=0.9, 
+        palette='deep', 
+        edgecolor='w', #
+        linewidth=0.5
+    )
+    plt.xlabel("Cost (Heterogeneity Parameter)", fontsize=14)
+    plt.ylabel("Best Regularization Parameter (reg_param)", fontsize=14)
+    plt.title("Best Regularization Parameter vs. Cost by Server Type", fontsize=16)
+    plt.legend(title="Server Type", bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0.)
+    plt.xticks(rotation=45)
+    plt.tight_layout(rect=[0, 0, 0.85, 1]) 
+    plt.show()
+    # plt.savefig("best_reg_param_vs_cost.png", dpi=300, bbox_inches='tight')
+
+def smooth_curve(points, window_size=5, poly_order=1):
+    """
+    Applies Savitzky-Golay filter for smoothing a time series.
+    
+    Args:
+        points (np.ndarray): Array of data points
+        window_size (int): Window size for the filter
+        poly_order (int): Polynomial order for the filter
+        
+    Returns:
+        np.ndarray: Smoothed data points
+    """
+    import numpy as np
+    from scipy.signal import savgol_filter
+    
+    # Convert to numpy array if needed
+    points = np.array(points)
+    
+    # Handle case with too few points
+    if len(points) < window_size:
+        return points
+    
+    # Handle NaN values through interpolation
+    nan_indices = np.isnan(points)
+    if np.any(nan_indices):
+        points_no_nan = points.copy()
+        non_nan_indices = ~nan_indices
+        
+        # Use interpolation to fill NaN values
+        points_no_nan[nan_indices] = np.interp(
+            np.flatnonzero(nan_indices), 
+            np.flatnonzero(non_nan_indices), 
+            points_no_nan[non_nan_indices]
+        )
+        points = points_no_nan
+    
+    # Ensure window_size is odd
+    window_size = window_size if window_size % 2 == 1 else window_size + 1
+    # Ensure poly_order < window_size
+    poly_order = min(poly_order, window_size - 1)
+    
+    # Apply Savitzky-Golay filter
+    smoothed = savgol_filter(points, window_size, poly_order)
+    return smoothed
+
+def get_diversity_summary(results_manager, dataset_name, experiment_type, server_filter=None):
+    """
+    Extracts diversity metrics from experiment results into a pandas DataFrame.
+    
+    Args:
+        results_manager (ResultsManager): Instance of ResultsManager
+        dataset_name (str): Name of the dataset
+        experiment_type (str): Type of experiment (e.g., 'evaluation')
+        server_filter (List[str], optional): List of server types to include. If None, includes fedavg.
+        
+    Returns:
+        pandas.DataFrame: DataFrame with diversity metrics
+    """
+    import pandas as pd
+    import numpy as np
+    
+    # Load TrialRecords using the results_manager
+    records, _ = results_manager.load_results(experiment_type)
+    
+    # If no server filter provided, default to FedAvg which has diversity metrics
+    if not server_filter:
+        server_filter = ['fedavg']
+    
+    # Filter records
+    records = [r for r in records if r.server_type in server_filter]
+    
+    # Extract metrics into a list of dictionaries
+    data = []
+    for record in records:
+        if record.metrics is None or record.error is not None:
+            continue
+        
+        # Get basic record info
+        cost = record.cost
+        server_type = record.server_type
+        run_idx = record.run_idx
+        
+        # Extract the metrics we're interested in
+        train_losses = record.metrics.get('train_losses', [])
+        val_losses = record.metrics.get('val_losses', [])
+        weight_div = record.metrics.get('weight_div', [])
+        weight_orient = record.metrics.get('weight_orient', [])
+        
+        # Add a row for each round
+        max_rounds = max(
+            len(train_losses), 
+            len(val_losses), 
+            len(weight_div) if weight_div is not None else 0, 
+            len(weight_orient) if weight_orient is not None else 0
+        )
+        
+        for round_num in range(max_rounds):
+            row = {
+                'dataset': dataset_name,
+                'cost': cost,
+                'server_type': server_type,
+                'run_idx': run_idx,
+                'round_num': round_num,
+                'train_loss': train_losses[round_num] if round_num < len(train_losses) else np.nan,
+                'val_loss': val_losses[round_num] if round_num < len(val_losses) else np.nan,
+                'weight_div': weight_div[round_num] if weight_div and round_num < len(weight_div) else np.nan,
+                'weight_orient': weight_orient[round_num] if weight_orient and round_num < len(weight_orient) else np.nan
+            }
+            data.append(row)
+    
+    # Create DataFrame
+    df = pd.DataFrame(data)
+    
+    return df
+
+def plot_diversity_metrics(df, dataset_name, costs=None, window_size=5, poly_order=1, figsize=(10, 6)):
+    """
+    Plots diversity metrics over rounds for specified costs.
+    
+    Args:
+        df (pandas.DataFrame): DataFrame from get_diversity_summary
+        dataset_name (str): Name of the dataset for plot title
+        costs (List[Any], optional): List of costs to plot. If None, plots all costs.
+        window_size (int): Window size for smoothing
+        poly_order (int): Polynomial order for smoothing
+        figsize (tuple): Figure size (width, height)
+        
+    Returns:
+        matplotlib.figure.Figure: The created figure
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    # Filter costs if specified
+    if costs is not None:
+        df = df[df['cost'].isin(costs)].copy()
+    else:
+        costs = sorted(df['cost'].unique())
+    
+    # Setup figure and grid
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    axes = axes.flatten()
+    
+    # Define plot titles and metrics to extract
+    plot_configs = [
+        {'title': 'Weight Update Divergence', 'metric': 'weight_div', 'ax_idx': 0},
+        {'title': 'Update Direction Similarity', 'metric': 'weight_orient', 'ax_idx': 1},
+    ]
+    
+    # Define a list of colors for different costs
+    colors = plt.cm.viridis(np.linspace(0, 1, len(costs)))
+    
+    # Plot each metric
+    for config in plot_configs:
+        ax = axes[config['ax_idx']]
+        
+        # Set plot title and labels
+        ax.set_title(config['title'], fontsize=14)
+        ax.set_xlabel('Round', fontsize=12)
+        ax.set_ylabel(config['title'], fontsize=12)
+        
+        legend_handles = []
+        legend_labels = []
+        
+        # Plot each cost
+        for idx, cost in enumerate(costs):
+            # Get data for this cost
+            cost_df = df[df['cost'] == cost]
+            
+            # Skip if no data for this cost
+            if cost_df.empty:
+                continue
+                
+            # Group by round_num and compute mean of the metric across runs
+            round_data = cost_df.groupby('round_num')[config['metric']].mean().reset_index()
+            
+            # Get x and y data
+            x = round_data['round_num'].values
+            y = round_data[config['metric']].values
+            
+            # Skip if no valid data
+            if len(y) == 0 or np.all(np.isnan(y)):
+                continue
+            
+            # Apply smoothing
+            y_smooth = smooth_curve(y, window_size, poly_order)
+            
+            # Plot the smoothed line
+            line, = ax.plot(x, y_smooth, color=colors[idx], linewidth=2)
+            
+            # Add to legend
+            legend_handles.append(line)
+            legend_labels.append(f"Cost = {cost}")
+            
+            # Plot original points with lower alpha
+            ax.scatter(x, y, color=colors[idx], alpha=0.2)
+        
+        # Add legend
+        if legend_handles:
+            ax.legend(legend_handles, legend_labels, fontsize=10, loc='best')
+        
+        # Add grid
+        ax.grid(True, linestyle='--', alpha=0.7)
+    
+    # Set overall title
+    fig.suptitle(f"Diversity Metrics for {dataset_name}", fontsize=16)
+    
+    # Adjust layout
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+    
+    return
