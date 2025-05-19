@@ -13,63 +13,11 @@ from scipy import stats
 # These imports should be adjusted based on your actual project structure
 try:
     from results_manager import ResultsManager, TrialRecord,  OTAnalysisRecord
-    from helper import MetricKey, ExperimentType
+    from helper import MetricKey, ExperimentType, infer_higher_is_better
 except ImportError:
     # For fallback or testing - these might need to be adjusted
     pass
 
-# =============================================================================
-# == Statistical Utility Functions ==
-# =============================================================================
-
-def mean_ci_bootstrap(values: np.ndarray, confidence: float = 0.95, n_bootstrap: int = 1000, seed: int = 42) -> Tuple[float, float, float]:
-    """
-    Return mean and bootstrapped CI at the specified confidence level.
-    Optimized version using vectorized operations.
-    
-    Args:
-        values: Array of values to compute CI for
-        confidence: Confidence level (default: 0.95 for 95% CI)
-        n_bootstrap: Number of bootstrap samples (default: 1000)
-        seed: Random seed for reproducibility
-        
-    Returns:
-        Tuple of (mean, lower_ci, upper_ci)
-    """
-    # Handle edge cases
-    if isinstance(values, list) and len(values) == 0:
-        return np.nan, np.nan, np.nan
-    
-    if isinstance(values, np.ndarray) and (values.size == 0 or np.isnan(values).all()):
-        return np.nan, np.nan, np.nan
-        
-    if isinstance(values, np.ndarray) and values.ndim == 0:
-        values = values[None]
-    
-    n = len(values)
-    mean = np.mean(values)
-    
-    # Handle special case of single value
-    if n == 1:
-        return mean, mean, mean
-    
-    # Set random seed
-    np.random.seed(seed)
-    
-    # Generate all bootstrap indices at once (shape: n_bootstrap x n)
-    # This creates a 2D array where each row is a bootstrap sample's indices
-    bootstrap_indices = np.random.randint(0, n, size=(n_bootstrap, n))
-    
-    # Use advanced indexing to get all bootstrap samples at once
-    # Then compute means along axis 1 (row-wise)
-    bootstrap_means = np.mean(values[bootstrap_indices], axis=1)
-    
-    # Compute percentiles for confidence interval
-    alpha = (1 - confidence) / 2
-    lower_ci = np.percentile(bootstrap_means, 100 * alpha)
-    upper_ci = np.percentile(bootstrap_means, 100 * (1 - alpha))
-    
-    return mean, lower_ci, upper_ci
 
 # =============================================================================
 # == FL Results Aggregation Functions ==
@@ -339,6 +287,41 @@ def plot_losses_per_cost(
     
     return fig, axes
 
+def mean_ci_bootstrap(values: np.ndarray, confidence: float = 0.95, n_bootstrap: int = 1000, seed: int = 42) -> Tuple[float, float, float]:
+    """
+    Return mean and bootstrapped CI at the specified confidence level.
+    Args:
+        values: Array of values to compute CI for
+        confidence: Confidence level (default: 0.95 for 95% CI)
+        n_bootstrap: Number of bootstrap samples (default: 1000)
+        seed: Random seed for reproducibility
+        
+    Returns:
+        Tuple of (mean, lower_ci, upper_ci)
+    """
+    if isinstance(values, list) and len(values) == 0:
+        return np.nan, np.nan, np.nan
+    
+    if isinstance(values, np.ndarray) and (values.size == 0 or np.isnan(values).all()):
+        return np.nan, np.nan, np.nan
+        
+    if isinstance(values, np.ndarray) and values.ndim == 0:
+        values = values[None]
+    
+    n = len(values)
+    mean = np.mean(values)
+    if n == 1:
+        return mean, mean, mean
+    np.random.seed(seed)
+    bootstrap_indices = np.random.randint(0, n, size=(n_bootstrap, n))
+    bootstrap_means = np.mean(values[bootstrap_indices], axis=1)
+    alpha = (1 - confidence) * 2
+    lower_ci = np.percentile(bootstrap_means, 100 * alpha)
+    upper_ci = np.percentile(bootstrap_means, 100 * (1 - alpha))
+    
+    return mean, lower_ci, upper_ci
+
+
 # =============================================================================
 # == OT Analysis Functions ==
 # =============================================================================
@@ -369,16 +352,21 @@ def load_ot_results(results_mgr: ResultsManager, filter_status: str = "Success")
     
     return df, ot_metadata
 
-def aggregate_ot_data(df: pd.DataFrame, grouping_keys: List[str] = None) -> pd.DataFrame:
+def aggregate_ot_data(df: pd.DataFrame, grouping_keys: List[str] = None, 
+                     include_percentages: bool = True, 
+                     metric_type: str = 'score') -> pd.DataFrame:
     """
     Aggregate OT data by grouping keys with confidence intervals.
+    Now includes percentage change relative to local performance.
     
     Args:
         df: DataFrame with OT results
         grouping_keys: Keys to group by (default: ['ot_method_name', 'fl_cost_param'])
+        include_percentages: Whether to calculate percentage change
+        metric_type: Type of metric ('score' or 'loss') to determine percentage calculation
         
     Returns:
-        DataFrame with aggregated statistics
+        DataFrame with aggregated statistics including both absolute and percentage changes
     """
     if df.empty:
         return pd.DataFrame()
@@ -387,27 +375,95 @@ def aggregate_ot_data(df: pd.DataFrame, grouping_keys: List[str] = None) -> pd.D
     if grouping_keys is None:
         grouping_keys = ['ot_method_name', 'fl_cost_param']
     
-    # Group and aggregate
-    aggregated_data = df.groupby(grouping_keys).apply(lambda g: pd.Series({
-        'ot_cost_mean': g['ot_cost_value'].mean(),
-        'ot_cost_low': mean_ci_bootstrap(g['ot_cost_value'].dropna().values)[1] if not g['ot_cost_value'].dropna().empty else np.nan,
-        'ot_cost_high': mean_ci_bootstrap(g['ot_cost_value'].dropna().values)[2] if not g['ot_cost_value'].dropna().empty else np.nan,
-        'delta_mean': g['fl_performance_delta'].mean(),
-        'delta_low': mean_ci_bootstrap(g['fl_performance_delta'].dropna().values)[1] if not g['fl_performance_delta'].dropna().empty else np.nan,
-        'delta_high': mean_ci_bootstrap(g['fl_performance_delta'].dropna().values)[2] if not g['fl_performance_delta'].dropna().empty else np.nan,
-        'num_points': len(g)
-    })).reset_index()
+    # Calculate percentage changes if requested and not already present
+    if include_percentages and 'fl_performance_percent' not in df.columns:
+        # Create a temp column for percentage change
+        if metric_type.lower() == 'score':
+            # For scores (higher is better): (performance_delta / local_metric) * 100
+            df['fl_performance_percent'] = (df['fl_performance_delta'] / df['fl_local_metric']) * 100
+        else:
+            # For losses (lower is better): (performance_delta / local_metric) * 100
+            # Note: delta is already calculated as local - algorithm
+            df['fl_performance_percent'] = (df['fl_performance_delta'] / df['fl_local_metric']) * 100
+    
+    # Create an empty DataFrame to store results
+    aggregated_data = pd.DataFrame()
+    
+    # For each group, calculate the statistics manually
+    for name, group in df.groupby(grouping_keys):
+        # Create a dictionary for this group's results
+        result = {}
+        
+        # If grouping_keys is a list, name will be a tuple
+        if isinstance(name, tuple):
+            for i, key in enumerate(grouping_keys):
+                result[key] = name[i]
+        else:
+            # If only one grouping key, name will be a scalar
+            result[grouping_keys[0]] = name
+        
+        # Calculate OT cost statistics
+        ot_values = group['ot_cost_value'].dropna().values
+        if len(ot_values) > 0:
+            result['ot_cost_mean'] = np.mean(ot_values)
+            ci_low, ci_high = mean_ci_bootstrap(ot_values, 0.8)[1:3]
+            result['ot_cost_low'] = ci_low
+            result['ot_cost_high'] = ci_high
+        else:
+            result['ot_cost_mean'] = np.nan
+            result['ot_cost_low'] = np.nan
+            result['ot_cost_high'] = np.nan
+        
+        # Calculate delta statistics
+        delta_values = group['fl_performance_delta'].dropna().values
+        if len(delta_values) > 0:
+            result['delta_mean'] = np.mean(delta_values)
+            ci_low, ci_high = mean_ci_bootstrap(delta_values, 0.8)[1:3]
+            result['delta_low'] = ci_low
+            result['delta_high'] = ci_high
+        else:
+            result['delta_mean'] = np.nan
+            result['delta_low'] = np.nan
+            result['delta_high'] = np.nan
+        
+        # Calculate percentage statistics if requested
+        if include_percentages and 'fl_performance_percent' in group.columns:
+            percent_values = group['fl_performance_percent'].dropna().values
+            if len(percent_values) > 0:
+                result['percent_delta_mean'] = np.mean(percent_values)
+                ci_low, ci_high = mean_ci_bootstrap(percent_values)[1:3]
+                result['percent_delta_low'] = ci_low
+                result['percent_delta_high'] = ci_high
+            else:
+                result['percent_delta_mean'] = np.nan
+                result['percent_delta_low'] = np.nan
+                result['percent_delta_high'] = np.nan
+        
+        # Count number of points
+        result['num_points'] = len(group)
+        
+        # Append to aggregated data
+        aggregated_data = pd.concat([aggregated_data, pd.DataFrame([result])], ignore_index=True)
     
     # Calculate error bar values for plotting
     if not aggregated_data.empty:
-        aggregated_data['x_err_lower'] = (aggregated_data['ot_cost_mean'] - aggregated_data['ot_cost_low']).apply(lambda x: max(0, x))
-        aggregated_data['x_err_upper'] = (aggregated_data['ot_cost_high'] - aggregated_data['ot_cost_mean']).apply(lambda x: max(0, x))
-        aggregated_data['y_err_lower'] = (aggregated_data['delta_mean'] - aggregated_data['delta_low']).apply(lambda x: max(0, x))
-        aggregated_data['y_err_upper'] = (aggregated_data['delta_high'] - aggregated_data['delta_mean']).apply(lambda x: max(0, x))
+        # X-axis error bars
+        aggregated_data['x_err_lower'] = (aggregated_data['ot_cost_mean'] - aggregated_data['ot_cost_low']).apply(lambda x: max(0, x) if not np.isnan(x) else 0)
+        aggregated_data['x_err_upper'] = (aggregated_data['ot_cost_high'] - aggregated_data['ot_cost_mean']).apply(lambda x: max(0, x) if not np.isnan(x) else 0)
+        
+        # Y-axis error bars for absolute delta
+        aggregated_data['y_err_lower'] = (aggregated_data['delta_mean'] - aggregated_data['delta_low']).apply(lambda x: max(0, x) if not np.isnan(x) else 0)
+        aggregated_data['y_err_upper'] = (aggregated_data['delta_high'] - aggregated_data['delta_mean']).apply(lambda x: max(0, x) if not np.isnan(x) else 0)
+        
+        # Y-axis error bars for percentage delta
+        if include_percentages and 'percent_delta_mean' in aggregated_data.columns:
+            aggregated_data['percent_y_err_lower'] = (aggregated_data['percent_delta_mean'] - aggregated_data['percent_delta_low']).apply(lambda x: max(0, x) if not np.isnan(x) else 0)
+            aggregated_data['percent_y_err_upper'] = (aggregated_data['percent_delta_high'] - aggregated_data['percent_delta_mean']).apply(lambda x: max(0, x) if not np.isnan(x) else 0)
     
     return aggregated_data
 
-def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_clients: int, figsize=None) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
+def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_clients: int, 
+                    use_percentage: bool = True, figsize=None) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
     """
     Create an error bar plot of OT cost vs. performance delta.
     
@@ -415,6 +471,7 @@ def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_cl
         aggregated_data: DataFrame with aggregated OT statistics
         dataset_name: Name of the dataset for the title
         num_fl_clients: Number of FL clients for the title
+        use_percentage: Whether to use percentage change (True) or absolute delta (False)
         figsize: Optional figure size tuple
     
     Returns:
@@ -433,38 +490,72 @@ def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_cl
     fig, axes = plt.subplots(1, n_methods, figsize=figsize, sharey=True, squeeze=False)
     axes = axes.flatten()
     
-    # Color map for different cost parameters
-    unique_costs = sorted(aggregated_data['fl_cost_param'].unique())
-    colors = plt.cm.viridis(np.linspace(0, 1, len(unique_costs)))
-    cost_to_color = dict(zip(unique_costs, colors))
+    # Check if we can use percentages
+    can_use_percentage = use_percentage and 'percent_delta_mean' in aggregated_data.columns
+    
+    # Set color scheme based on algorithms rather than costs
+    if 'algorithm' in aggregated_data.columns:
+        unique_algorithms = sorted(aggregated_data['algorithm'].unique())
+        # Use distinct color scheme appropriate for categorical data
+        colors = plt.cm.tab10(np.linspace(0, 1, len(unique_algorithms)))
+        algorithm_to_color = dict(zip(unique_algorithms, colors))
+        color_by = 'algorithm'
+        legend_title = "Algorithm"
+    else:
+        # Fall back to original coloring by cost if algorithm column not present
+        unique_costs = sorted(aggregated_data['fl_cost_param'].unique())
+        colors = plt.cm.viridis(np.linspace(0, 1, len(unique_costs)))
+        algorithm_to_color = dict(zip(unique_costs, colors))
+        color_by = 'fl_cost_param'
+        legend_title = "Cost"
     
     # Plot each OT method
     for i, method_name in enumerate(unique_ot_methods):
         ax = axes[i]
         method_df = aggregated_data[aggregated_data['ot_method_name'] == method_name]
         
-        # Sort by FL cost parameter for better visualization
-        method_df = method_df.sort_values('fl_cost_param')
+        # Track which items we've already plotted (for legend)
+        plotted_items = set()
         
-        # Plot each cost parameter point with error bars
-        for j, (_, row) in enumerate(method_df.iterrows()):
-            cost_param = row['fl_cost_param']
-            label = f"Cost: {cost_param}"
-            color = cost_to_color[cost_param]
+        # Plot each data point with error bars
+        for _, row in method_df.iterrows():
+            item_key = row[color_by]
+            
+            # Only include label for first occurrence of each algorithm/cost
+            label = str(item_key) if item_key not in plotted_items else None
+            color = algorithm_to_color[item_key]
+            
+            # Determine which values to use (percentage or absolute)
+            if can_use_percentage:
+                # Use percentage values
+                y_value = row['percent_delta_mean']
+                yerr = [[row.get('percent_y_err_lower', 0)], [row.get('percent_y_err_upper', 0)]]
+            else:
+                # Use absolute delta values
+                y_value = row['delta_mean']
+                yerr = [[row.get('y_err_lower', 0)], [row.get('y_err_upper', 0)]]
+            
+            # X error bars are always the same
+            xerr = [[row.get('x_err_lower', 0)], [row.get('x_err_upper', 0)]]
             
             ax.errorbar(
-                row['ot_cost_mean'], row['delta_mean'],
-                xerr=[[row['x_err_lower']], [row['x_err_upper']]],
-                yerr=[[row['y_err_lower']], [row['y_err_upper']]],
+                row['ot_cost_mean'], y_value,
+                xerr=xerr, yerr=yerr,
                 fmt='o', capsize=5, label=label, markersize=8, elinewidth=1.5,
                 color=color
             )
+            
+            plotted_items.add(item_key)
         
         # Set title and labels
         ax.set_title(f"{method_name}", fontsize=14)
         ax.set_xlabel("Mean OT Cost", fontsize=12)
         if i == 0:
-            ax.set_ylabel("Mean Performance Delta (FedAvg - Local)", fontsize=12)
+            if can_use_percentage:
+                y_label = "% Change Relative to Local"
+            else:
+                y_label = "Mean Performance Delta (Algorithm - Local)" if color_by == 'algorithm' else "Mean Performance Delta (FedAvg - Local)"
+            ax.set_ylabel(y_label, fontsize=12)
         
         # Add grid and reference lines
         ax.grid(True, linestyle='--', alpha=0.7)
@@ -482,27 +573,31 @@ def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_cl
             x_max = max(x_means) + max(method_df['x_err_upper']) if not method_df['x_err_upper'].empty else max(x_means)
             x_padding = (x_max - x_min) * 0.1
             ax.set_xlim(max(0, x_min - x_padding), x_max + x_padding)
+        
+        # Add legend to the subplot
+        if plotted_items:
+            ax.legend(title=legend_title)
     
-    # Add legend to last subplot if not too many items
-    if len(unique_costs) <= 10:
-        axes[-1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    
-    # Add overall title
-    fig.suptitle(f"OT Cost vs. Performance Delta for {dataset_name} ({num_fl_clients} FL Clients)", fontsize=16)
+    # Add overall title with indication of percentage or absolute
+    title_type = "% Change Relative to Local" if can_use_percentage else "Performance Delta"
+    fig.suptitle(f"OT Cost vs. {title_type} for {dataset_name} ({num_fl_clients} FL Clients)", fontsize=16)
     
     # Adjust layout
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
     return
 
-def plot_ot_scatter(df: pd.DataFrame, dataset_name: str, num_fl_clients: int, figsize=None) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
+def plot_ot_scatter(df: pd.DataFrame, dataset_name: str, num_fl_clients: int, 
+                   use_percentage: bool = True, figsize=None) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
     """
-    Create a scatter plot with trend lines for OT cost vs. performance delta.
+    Create a scatter plot with trend lines for OT cost vs. performance delta,
+    organized by algorithm (rows) and OT method (columns).
     
     Args:
-        df: DataFrame with OT results
+        df: DataFrame with OT results (must contain 'algorithm' column)
         dataset_name: Name of the dataset for the title
         num_fl_clients: Number of FL clients for the title
+        use_percentage: Whether to use percentage change (True) or absolute delta (False)
         figsize: Optional figure size tuple
     
     Returns:
@@ -511,67 +606,184 @@ def plot_ot_scatter(df: pd.DataFrame, dataset_name: str, num_fl_clients: int, fi
     if df.empty:
         return None, None
     
-    # Get unique OT methods
+    # Get unique OT methods and algorithms
     unique_ot_methods = df['ot_method_name'].unique()
+    
+    # Check if 'algorithm' column exists, otherwise use just fedavg
+    if 'algorithm' not in df.columns:
+        df['algorithm'] = 'fedavg'  # Add default algorithm column
+        print("No 'algorithm' column found, assuming all data is for 'fedavg'")
+        
+    unique_algorithms = df['algorithm'].unique()
+    
     n_methods = len(unique_ot_methods)
+    n_algorithms = len(unique_algorithms)
     
-    # Create figure
+    # Create figure with rows=algorithms, columns=methods
     if figsize is None:
-        figsize = (7 * n_methods, 6)
-    fig, axes = plt.subplots(1, n_methods, figsize=figsize, sharey=True, squeeze=False)
-    axes = axes.flatten()
+        figsize = (7 * n_methods, 5 * n_algorithms)
+    fig, axes = plt.subplots(n_algorithms, n_methods, figsize=figsize, 
+                             sharex='col', sharey='row', squeeze=False)
     
-    # Plot each OT method
-    for i, method_name in enumerate(unique_ot_methods):
-        ax = axes[i]
-        method_df = df[df['ot_method_name'] == method_name]
-        
-        # Create scatter plot
-        sns.scatterplot(
-            data=method_df,
-            x='ot_cost_value',
-            y='fl_performance_delta',
-            hue='fl_cost_param',
-            palette='viridis',
-            alpha=0.7,
-            ax=ax
-        )
-        
-        # Add regression line if enough points
-        if len(method_df) > 2:
-            valid_data = method_df.dropna(subset=['ot_cost_value', 'fl_performance_delta'])
-            if len(valid_data) > 2:
-                sns.regplot(
-                    data=valid_data,
+    # Check if we can use percentages
+    can_use_percentage = use_percentage and 'fl_performance_percent' in df.columns
+    
+    # Determine which y-column to use
+    y_column = 'fl_performance_percent' if can_use_percentage else 'fl_performance_delta'
+    
+    # Plot each combination of algorithm and OT method
+    for row_idx, algorithm in enumerate(unique_algorithms):
+        for col_idx, method_name in enumerate(unique_ot_methods):
+            # Get current axis
+            ax = axes[row_idx, col_idx]
+            
+            # Filter data for this algorithm and method
+            filtered_df = df[(df['algorithm'] == algorithm) & (df['ot_method_name'] == method_name)]
+            
+            if not filtered_df.empty:
+                # Create scatter plot
+                scatter = sns.scatterplot(
+                    data=filtered_df,
                     x='ot_cost_value',
-                    y='fl_performance_delta',
-                    scatter=False,
-                    line_kws={'color': 'red', 'lw': 2},
+                    y=y_column,
+                    hue='fl_cost_param',
+                    palette='viridis',
+                    alpha=0.7,
                     ax=ax
                 )
-        
-        # Set title and labels
-        ax.set_title(f"{method_name}", fontsize=14)
-        ax.set_xlabel("OT Cost", fontsize=12)
-        if i == 0:
-            ax.set_ylabel("Performance Delta (FedAvg - Local)", fontsize=12)
-        
-        # Add grid and reference line
-        ax.grid(True, linestyle='--', alpha=0.7)
-        ax.axhline(0, color='grey', linestyle='--', linewidth=0.8)
-        
-        # Hide legend for all but last subplot
-        if i < n_methods - 1 and ax.get_legend() is not None:
-            ax.get_legend().remove()
+                
+                # Add regression line if enough points
+                valid_data = filtered_df.dropna(subset=['ot_cost_value', y_column])
+                if len(valid_data) > 2:
+                    sns.regplot(
+                        data=valid_data,
+                        x='ot_cost_value',
+                        y=y_column,
+                        scatter=False,
+                        line_kws={'color': 'red', 'lw': 2},
+                        ax=ax
+                    )
+            
+            # Set title (OT method at top of column, algorithm at start of row)
+            if row_idx == 0:
+                ax.set_title(f"{method_name}", fontsize=14)
+            
+            # Set x-axis label for bottom row only
+            if row_idx == n_algorithms - 1:
+                ax.set_xlabel("OT Cost", fontsize=12)
+            
+            # Set y-axis label for first column only
+            if col_idx == 0:
+                y_label = "% Change vs. Local" if can_use_percentage else f"{algorithm.upper()} - Local"
+                ax.set_ylabel(y_label, fontsize=12)
+            
+            # Add algorithm label on the right side of each row
+            if col_idx == n_methods - 1:
+                ax.text(1.02, 0.5, algorithm.upper(), 
+                        transform=ax.transAxes, 
+                        fontsize=14, fontweight='bold',
+                        va='center', rotation=-90)
+            
+            # Add grid and reference line
+            ax.grid(True, linestyle='--', alpha=0.7)
+            ax.axhline(0, color='grey', linestyle='--', linewidth=0.8)
+            
+            # Keep legend only for the rightmost plot in each row
+            if col_idx < n_methods - 1 and ax.get_legend() is not None:
+                ax.get_legend().remove()
     
     # Add overall title
-    fig.suptitle(f"OT Cost vs. Performance Delta for {dataset_name} ({num_fl_clients} FL Clients)", fontsize=16)
+    title_type = "% Performance Change vs. Local" if can_use_percentage else "Performance Delta"
+    fig.suptitle(f"OT Cost vs. {title_type} for {dataset_name} ({num_fl_clients} FL Clients)", 
+                 fontsize=16, y=0.98)
     
-    # Adjust layout
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    # Adjust layout with more space for row labels
+    plt.tight_layout(rect=[0, 0, 0.98, 0.95])
     plt.show()
-    
     return
+
+def add_algorithm_results_to_ot(results_manager: ResultsManager, ot_df: pd.DataFrame, metric_type: str = 'score') -> pd.DataFrame:
+    """
+    Enriches OT analysis DataFrame with metrics from all algorithms (FedAvg, FedProx, PFedMe, Ditto)
+    while preserving run-level granularity for confidence interval calculation.
+    
+    Args:
+        results_manager: ResultsManager instance to load evaluation results
+        ot_df: Original OT analysis DataFrame with fl_cost_param, fl_run_idx, etc.
+        metric_type: Type of metric ('score' or 'loss')
+        
+    Returns:
+        Expanded DataFrame with algorithm column and deltas for all algorithms
+    """
+    # Load evaluation results
+    eval_records, _ = results_manager.load_results(ExperimentType.EVALUATION)
+    
+    # Create a list to store expanded records
+    expanded_records = []
+    
+    # First, organize eval_records by (cost, run_idx, server_type) for efficient lookup
+    eval_lookup = {}
+    for rec in eval_records:
+        if rec.error is None and rec.metrics:
+            key = (rec.cost, rec.run_idx, rec.server_type)
+            eval_lookup[key] = rec
+    
+    # Set the metric key based on metric_type
+    metric_key = 'test_scores' if metric_type == 'score' else 'test_losses'
+    
+    # Process each OT record
+    for _, ot_row in ot_df.iterrows():
+        cost_param = ot_row['fl_cost_param']
+        run_idx = ot_row['fl_run_idx']
+        
+        # Get the local performance for this specific run and cost
+        local_key = (cost_param, run_idx, 'local')
+        if local_key not in eval_lookup:
+            continue  # Skip if we don't have local performance for this run/cost
+        
+        local_rec = eval_lookup[local_key]
+        if metric_key not in local_rec.metrics or not local_rec.metrics[metric_key]:
+            continue  # Skip if local metrics are missing
+            
+        local_val = local_rec.metrics[metric_key][-1]  # Use final value
+        
+        # Create a record for each algorithm if data is available
+        for algo in ['fedavg', 'fedprox', 'pfedme', 'ditto']:
+            algo_key = (cost_param, run_idx, algo)
+            if algo_key not in eval_lookup:
+                continue  # Skip if this algorithm doesn't have data for this run/cost
+                
+            algo_rec = eval_lookup[algo_key]
+            if metric_key not in algo_rec.metrics or not algo_rec.metrics[metric_key]:
+                continue  # Skip if algorithm metrics are missing
+                
+            algo_val = algo_rec.metrics[metric_key][-1]  # Use final value
+            
+            # Compute delta based on metric type (scores or losses)
+            if metric_type == 'score':
+                # For scores, higher is better: algo - local (positive means algo better)
+                delta = algo_val - local_val
+            else:
+                # For losses, lower is better: local - algo (positive means algo better)
+                delta = local_val - algo_val
+            
+            # Create a new row with all fields from the original OT row
+            new_row = ot_row.copy()
+            new_row['algorithm'] = algo
+            new_row['fl_performance_delta'] = delta
+            new_row['fl_local_metric'] = local_val
+            new_row['fl_algo_metric'] = algo_val
+            
+            # Also add percentage calculation
+            if abs(local_val) > 1e-10:  # Avoid division by zero
+                new_row['fl_performance_percent'] = (delta / abs(local_val)) * 100
+            else:
+                new_row['fl_performance_percent'] = np.nan
+                
+            expanded_records.append(new_row)
+    
+    # Convert to DataFrame
+    return pd.DataFrame(expanded_records)
 
 def calculate_ot_correlations(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -646,8 +858,7 @@ def calculate_ot_correlations(df: pd.DataFrame) -> pd.DataFrame:
     else:
         return pd.DataFrame()
 
-def get_tuning_summary(dataset_name: str,
-                          manager: ResultsManager,
+def get_tuning_summary(   manager: ResultsManager,
                           exerpiment_type: str,
                           server_filter: Optional[str] = None,
                           higher_is_better_metric: bool = False) -> pd.DataFrame:
