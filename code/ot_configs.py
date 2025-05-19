@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 VERBOSE = True # Assuming VERBOSE is defined elsewhere or set directly. If not, set to True/False.
 
 # --- Constants ---
-DEFAULT_OT_REG = 0.01
+DEFAULT_OT_REG = 0.001
 DEFAULT_OT_MAX_ITER = 5000
 DEFAULT_EPS = 1e-10
 
@@ -78,7 +78,7 @@ COMMON_WC_COSINE_HELLINGER_PARAMS = {
     **COMMON_WITHIN_CLASS_PARAMS,
     'normalize_cost': True,
     'normalize_activations': True,
-    'distance_method': 'cosine',
+    'feature_distance': 'cosine',
     'label_distance': 'hellinger',
 }
 
@@ -90,7 +90,7 @@ direct_ot_configs = [
         params={
             **ABSOLUTE_COMMON_PARAMS, # Base common parameters
             'normalize_activations': False,
-            'distance_method': 'euclidean',
+            'feature_distance': 'euclidean',
             'label_distance': 'wasserstein_gaussian',
             'feature_weight': 1.0,
             'label_weight': 1.0,
@@ -104,7 +104,7 @@ direct_ot_configs = [
         params={
             **COMMON_WITHIN_CLASS_PARAMS, # Base within-class parameters
             'normalize_activations': False,
-            'distance_method': 'euclidean',
+            'feature_distance': 'euclidean',
             'label_distance': 'wasserstein_gaussian',
             'feature_weight': 1.0,
             'label_weight': 1.0,
@@ -183,7 +183,7 @@ direct_ot_configs = [
         params={
             **COMMON_WITHIN_CLASS_PARAMS, # Base within-class parameters
             'normalize_activations': True,
-            'distance_method': 'cosine',
+            'feature_distance': 'cosine',
             'label_distance': None, # No label distance component
         }
     ),
@@ -193,7 +193,7 @@ direct_ot_configs = [
         params={
             **COMMON_WITHIN_CLASS_PARAMS, # Base within-class parameters
             'normalize_activations': False,
-            'distance_method': 'euclidean',
+            'feature_distance': 'euclidean',
             'label_distance': None, # No label distance component
         }
     ),
@@ -264,6 +264,26 @@ subsampled_direct_ot_configs = [
 reg_param_direct_ot_configs = [   
     OTConfig(
         method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_reg_0.005',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'reg': 0.005,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_reg_0.01',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'reg': 0.01,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
         name='WC_Direct_Hellinger_4:1_reg_0.05',
         params={
             **COMMON_WC_COSINE_HELLINGER_PARAMS,
@@ -274,27 +294,29 @@ reg_param_direct_ot_configs = [
     ),
     OTConfig(
         method_type='direct_ot',
-        name='WC_Direct_Hellinger_4:1_reg_0.1',
+        name='WC_Direct_Hellinger_4:1_0.1',
         params={
             **COMMON_WC_COSINE_HELLINGER_PARAMS,
             'feature_weight': 4.0,
             'label_weight': 1.0,
-            'reg': 0.1,
+            'reg':0.1,
+
         }
     ),
     OTConfig(
         method_type='direct_ot',
-        name='WC_Direct_Hellinger_4:1_reg_0.5',
+        name='WC_Direct_Hellinger_4:1_0.5',
         params={
             **COMMON_WC_COSINE_HELLINGER_PARAMS,
             'feature_weight': 4.0,
             'label_weight': 1.0,
-            'reg': 0.5,
+            'reg':0.5,
+
         }
     ),
     OTConfig(
         method_type='direct_ot',
-        name='WC_Direct_Hellinger_4:1_s300',
+        name='WC_Direct_Hellinger_4:1_1',
         params={
             **COMMON_WC_COSINE_HELLINGER_PARAMS,
             'feature_weight': 4.0,

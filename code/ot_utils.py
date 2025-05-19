@@ -180,7 +180,7 @@ def compute_ot_cost(
         Gs = ot.sinkhorn(a, b, cost_matrix_np_cont, reg=reg, stopThr=sinkhorn_thresh,
                          numItermax=sinkhorn_max_iter, method='sinkhorn_stabilized',
                          warn=False, verbose=False)
-
+        print(f"Stabilized Sinkhorn result: {Gs}")
         if Gs is None or np.any(np.isnan(Gs)):
             # Fallback to standard Sinkhorn
             if Gs is None: 
@@ -203,6 +203,180 @@ def compute_ot_cost(
 
     except Exception as e:
         logger.warning(f"Error during OT computation (ot.sinkhorn): {e}")
+        ot_cost = np.nan
+        Gs = None
+
+    return float(ot_cost), Gs
+def compute_ot_cost(
+    cost_matrix: Union[torch.Tensor, np.ndarray],
+    a: Optional[np.ndarray] = None,
+    b: Optional[np.ndarray] = None,
+    reg: float = DEFAULT_OT_REG,
+    sinkhorn_thresh: float = 1e-3,
+    sinkhorn_max_iter: int = DEFAULT_OT_MAX_ITER,
+    eps_num: float = DEFAULT_EPS
+) -> Tuple[float, Optional[np.ndarray]]:
+    """
+    Computes OT cost using Sinkhorn algorithm from POT library.
+    Handles input validation, NaN/Inf values, and marginal normalization.
+
+    Args:
+        cost_matrix: The (N, M) cost matrix (Tensor or Numpy array).
+        a: Source marginal weights (N,). Defaults to uniform.
+        b: Target marginal weights (M,). Defaults to uniform.
+        reg: Entropy regularization term for Sinkhorn.
+        sinkhorn_thresh: Stop threshold for Sinkhorn iterations.
+        sinkhorn_max_iter: Max iterations for Sinkhorn.
+        eps_num: Small epsilon for numerical stability checks.
+
+    Returns:
+        Tuple containing:
+            - float: Computed OT cost (np.nan if failed).
+            - np.ndarray or None: Transport plan (Gs).
+    """
+    if cost_matrix is None:
+        logger.warning("OT computation skipped: Cost matrix is None.")
+        return np.nan, None
+
+    # Ensure cost matrix is a numpy float64 array
+    if isinstance(cost_matrix, torch.Tensor):
+        cost_matrix_np = cost_matrix.detach().cpu().numpy().astype(np.float64)
+    elif isinstance(cost_matrix, np.ndarray):
+        cost_matrix_np = cost_matrix.astype(np.float64)
+    else:
+        try:
+            cost_matrix_np = np.array(cost_matrix, dtype=np.float64)
+        except Exception as e:
+            logger.warning(f"Could not convert cost matrix to numpy array: {e}")
+            return np.nan, None
+
+    if cost_matrix_np.size == 0:
+        N, M = cost_matrix_np.shape
+        return 0.0, np.zeros((N, M))
+
+    N, M = cost_matrix_np.shape
+    if N == 0 or M == 0:
+        return 0.0, np.zeros((N, M))
+
+    # Handle non-finite values in cost matrix
+    if not np.all(np.isfinite(cost_matrix_np)):
+        max_finite_cost = np.nanmax(cost_matrix_np[np.isfinite(cost_matrix_np)])
+        replacement_val = 1e6
+        if np.isfinite(max_finite_cost):
+            replacement_val = max(1.0, abs(max_finite_cost)) * 10.0
+        cost_matrix_np[~np.isfinite(cost_matrix_np)] = replacement_val
+        logger.warning(f"NaN/Inf detected in cost matrix. Replaced non-finite values with {replacement_val:.2e}.")
+
+    # Prepare Marginals a and b
+    if a is None:
+        a = np.ones((N,), dtype=np.float64) / N
+    else:
+        a = np.asarray(a, dtype=np.float64)
+        if not np.all(np.isfinite(a)):
+            a = np.ones_like(a) / max(1, len(a))
+            logger.warning("NaN/Inf in marginal 'a'. Using uniform.")
+        sum_a = a.sum()
+        if sum_a <= eps_num:
+            a = np.ones_like(a) / max(1, len(a))
+            logger.warning("Marginal 'a' sums to zero or less. Using uniform.")
+        elif not np.isclose(sum_a, 1.0):
+            a /= sum_a
+
+    if b is None:
+        b = np.ones((M,), dtype=np.float64) / M
+    else:
+        b = np.asarray(b, dtype=np.float64)
+        if not np.all(np.isfinite(b)):
+            b = np.ones_like(b) / max(1, len(b))
+            logger.warning("NaN/Inf in marginal 'b'. Using uniform.")
+        sum_b = b.sum()
+        if sum_b <= eps_num:
+            b = np.ones_like(b) / max(1, len(b))
+            logger.warning("Marginal 'b' sums to zero or less. Using uniform.")
+        elif not np.isclose(sum_b, 1.0):
+            b /= sum_b
+
+    # NEW: Pre-scale the cost matrix to avoid numerical issues
+    original_scale = cost_matrix_np.max()
+    if original_scale > 1.0:  # If max cost is greater than 1.0, scale it down
+        scaling_factor = 1.0 / original_scale
+        cost_matrix_np = cost_matrix_np * scaling_factor
+        logger.info(f"Pre-scaled cost matrix by factor {scaling_factor:.4f} to avoid numerical issues")
+    
+    # Convert to contiguous array for better performance
+    cost_matrix_np_cont = np.ascontiguousarray(cost_matrix_np)
+    
+    # Compute OT using POT
+    Gs = None
+    ot_cost = np.nan
+    
+    # Determine if we need to adjust regularization based on cost matrix values
+    cost_max = np.max(cost_matrix_np_cont)
+    effective_reg = reg  # Start with specified reg parameter
+    
+    # Adjust regularization if costs are high
+    if cost_max > 1.0:
+        effective_reg = max(reg, cost_max / 100)  # Increase reg parameter proportionally
+        logger.info(f"Adjusted regularization to {effective_reg:.6f} based on cost matrix values")
+    
+    try:
+        # Try stabilized Sinkhorn first
+        with np.errstate(divide='ignore', invalid='ignore'):  # Suppress numpy warnings
+            Gs = ot.sinkhorn(a, b, cost_matrix_np_cont, reg=effective_reg, stopThr=sinkhorn_thresh,
+                            numItermax=sinkhorn_max_iter, method='sinkhorn_stabilized',
+                            warn=False, verbose=False)
+
+        if Gs is None or np.any(np.isnan(Gs)):
+            # Fallback to standard Sinkhorn
+            if Gs is None: 
+                logger.warning("Stabilized Sinkhorn failed. Trying standard Sinkhorn.")
+            else: 
+                logger.warning("Stabilized Sinkhorn resulted in NaN plan. Trying standard Sinkhorn.")
+            
+            with np.errstate(divide='ignore', invalid='ignore'):  # Suppress numpy warnings
+                Gs = ot.sinkhorn(a, b, cost_matrix_np_cont, reg=effective_reg, stopThr=sinkhorn_thresh,
+                                numItermax=sinkhorn_max_iter, method='sinkhorn',
+                                warn=False, verbose=False)
+
+        if Gs is None or np.any(np.isnan(Gs)):
+            logger.warning("Both Sinkhorn methods failed. Trying with increased regularization.")
+            # Try one more time with significantly higher regularization
+            increased_reg = effective_reg * 5
+            with np.errstate(divide='ignore', invalid='ignore'):  # Suppress numpy warnings
+                Gs = ot.sinkhorn(a, b, cost_matrix_np_cont, reg=increased_reg, stopThr=sinkhorn_thresh * 10,
+                                numItermax=sinkhorn_max_iter, method='sinkhorn_stabilized',
+                                warn=False, verbose=False)
+                
+        if Gs is None or np.any(np.isnan(Gs)):
+            # Final fallback: try an alternate algorithm (EMD for small problems)
+            if N <= 100 and M <= 100:  # Only for reasonably small problems
+                logger.warning("All Sinkhorn attempts failed. Trying exact EMD (may be slow).")
+                try:
+                    Gs = ot.emd(a, b, cost_matrix_np_cont)
+                except Exception as e:
+                    logger.warning(f"EMD computation failed: {e}")
+                    Gs = None
+            else:
+                logger.warning("All Sinkhorn attempts failed. Problem too large for EMD fallback.")
+                Gs = None
+
+        if Gs is None or np.any(np.isnan(Gs)):
+            logger.warning("All OT computation methods failed.")
+            return np.nan, None
+            
+        # Calculate OT cost
+        ot_cost = np.sum(Gs * cost_matrix_np_cont)
+        
+        # If we scaled the cost matrix, we need to re-scale the OT cost
+        if original_scale > 1.0:
+            ot_cost = ot_cost / scaling_factor
+            
+        if not np.isfinite(ot_cost):
+            logger.warning(f"Calculated OT cost is not finite ({ot_cost}). Returning NaN.")
+            ot_cost = np.nan
+
+    except Exception as e:
+        logger.warning(f"Error during OT computation: {e}")
         ot_cost = np.nan
         Gs = None
 

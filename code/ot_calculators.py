@@ -190,12 +190,11 @@ class DirectOTCalculator(BaseOTCalculator):
         self.results = {
             'direct_ot_cost': np.nan,
             'transport_plan': None,
-            'feature_distance_method': None,
-            'label_hellinger_used': False,
+            'feature_distance': None,
             'weighting_used': None,
-            'label_hellinger_weight': np.nan,
             'feature_weight': np.nan,
-            'label_costs': []
+            'label_costs': [],
+            'label_distance': None,
         }
         self.cost_matrices = {
             'direct_ot': None,
@@ -277,7 +276,7 @@ class DirectOTCalculator(BaseOTCalculator):
             'verbose': params.get('verbose', False),
             'normalize_activations': params.get('normalize_activations', True),
             'normalize_cost': params.get('normalize_cost', True),
-            'distance_method': params.get('distance_method', 'euclidean'),
+            'feature_distance': params.get('feature_distance', 'euclidean'),
             'use_loss_weighting': params.get('use_loss_weighting', False),
             'label_distance': params.get('label_distance', None),  # Only check for the new parameter
             'feature_weight': params.get('feature_weight', 2.0),
@@ -294,10 +293,10 @@ class DirectOTCalculator(BaseOTCalculator):
     
     def _store_config_in_results(self, params: Dict[str, Any]) -> None:
         """Store configuration in results dictionary."""
-        self.results['feature_distance_method'] = params['distance_method']
-        self.results['label_distribution_distance_method'] = params['label_distance']
+        self.results['feature_distance'] = params['feature_distance']
+        self.results['label_distance'] = params['label_distance']
         self.results['feature_weight'] = params['feature_weight']
-        self.results['label_distribution_weight'] = params['label_weight']
+        self.results['label_weight'] = params['label_weight']
         self.results['within_class_only'] = params['within_class_only']
         
         
@@ -365,11 +364,11 @@ class DirectOTCalculator(BaseOTCalculator):
         
         # Compute feature cost matrix
         feature_cost_matrix, max_feature_cost = self._calculate_feature_cost(
-            h1_norm, h2_norm, params['distance_method'], params['normalize_activations']
+            h1_norm, h2_norm, params['feature_distance'], params['normalize_activations']
         )
         
         if feature_cost_matrix is None:
-            logger.warning(f"Failed to compute feature cost matrix with method: {params['distance_method']}")
+            logger.warning(f"Failed to compute feature cost matrix with method: {params['feature_distance']}")
             return None
                 
         # Normalize feature cost matrix if requested
@@ -512,7 +511,7 @@ class DirectOTCalculator(BaseOTCalculator):
                     for (label1, label2), dist in self.results['label_costs']:
                         logger.info(f"    Labels ({label1},{label2}): {dist:.4f}")
                 else:
-                    logger.info(f"  Using only feature distances ({params['distance_method']})")
+                    logger.info(f"  Using only feature distances ({params['feature_distance']})")
         
         return np.isfinite(ot_cost)
     def _calculate_similarity_within_class(self, h1, h2, y1, y2, w1, w2, N, M, params):
@@ -625,7 +624,7 @@ class DirectOTCalculator(BaseOTCalculator):
         
         # Compute feature cost matrix for this class
         feature_cost_matrix_k, max_feature_cost_k = self._calculate_feature_cost(
-            h1_k_norm, h2_k_norm, params['distance_method'], params['normalize_activations']
+            h1_k_norm, h2_k_norm, params['feature_distance'], params['normalize_activations']
         )
         
         if feature_cost_matrix_k is None:
@@ -687,6 +686,11 @@ class DirectOTCalculator(BaseOTCalculator):
                 # Combine costs - multiply by whole matrix to maintain tensor shape
                 cost_matrix_k = (norm_feature_weight * cost_matrix_k + 
                                 norm_label_weight * label_distance_k)
+                
+                self.results['label_hellinger_weight'] = norm_label_weight
+                # Record the label distance for this class pair
+                self.results.setdefault('label_costs', []).append(((class_label, class_label), label_distance_k))
+                
                 if verbose:
                     compression_str = f"(compressed from {vector_dim})" if was_compressed else ""
                     logger.info(f"Class {class_label}: Combined cost matrix using feature cost (weight {norm_feature_weight:.2f}) "
@@ -868,7 +872,6 @@ class DirectOTCalculator(BaseOTCalculator):
             total_weight = feature_weight + label_weight
             norm_feature_weight = feature_weight / total_weight
             norm_label_weight = label_weight / total_weight
-            
             # Combine costs
             combined_cost_matrix = (norm_feature_weight * feature_cost_matrix + 
                                 norm_label_weight * label_cost_matrix)

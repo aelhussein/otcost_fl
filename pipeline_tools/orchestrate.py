@@ -26,6 +26,7 @@ parser.add_argument("--metric", default="score", choices=["score", "loss"],
 parser.add_argument("--force", action="store_true", help="Force rerun of all phases")
 parser.add_argument("--force-phases", type=str, 
                     help="Comma-separated list of phases to force (e.g., learning_rate,reg_param,evaluation,ot_analysis)")
+parser.add_argument("-generate-activations", action="store_true", help="Force generation of activations for OT analysis")
 parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
 args = parser.parse_args()
 configure(args.metric)
@@ -125,6 +126,8 @@ def submit_phase(dataset: str,
             f"--fl-num-clients={num_clients}",
             f"--metric={metric}",
         ]
+        if args.generate_activations:
+                cmd = cmd + [f"--force-activation-regen"]
 
     print("Command:", " ".join(cmd))
     if dry_run:

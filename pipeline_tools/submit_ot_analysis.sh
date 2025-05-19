@@ -32,7 +32,7 @@ datasets=() # Initialize as empty arrays
 fl_num_clients=()
 model_types=()
 activation_loaders=()
-force_regen=true
+force_regen=false
 metric="$DEFAULT_METRIC"
 
 while [ $# -gt 0 ]; do

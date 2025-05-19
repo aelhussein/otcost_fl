@@ -25,6 +25,7 @@ parser.add_argument("--metric", default="score", choices=["score", "loss"],
 parser.add_argument("--force", action="store_true", help="Force rerun of all phases")
 parser.add_argument("--force-phases", type=str, 
                 help="Comma-separated list of phases to force. Valid phases: learning_rate, reg_param, evaluation, ot_analysis")
+parser.add_argument("-generate-activations", action="store_true", help="Force generation of activations for OT analysis")
 parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
 parser.add_argument("--summary-only", action="store_true", 
                 help="Only print summary status without running orchestrator")
@@ -48,8 +49,10 @@ def run_orchestrator(dataset: str, num_clients: int, metric: str,
         "python", orchestrate_script,
         "-ds", dataset,
         "-nc", str(num_clients),
-        "--metric", metric
+        "--metric", metric,
     ]
+    if args.generate_activations:
+       cmd.append("--generate-activations")
     
     if force:
         cmd.append("--force")

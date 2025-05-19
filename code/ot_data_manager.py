@@ -420,7 +420,7 @@ class OTDataManager:
             return None, None, num_clients # Return target num_clients
             
         try:
-            model_state_dict = torch.load(model_path, map_location=self.device)
+            model_state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
             logger.info(f"Loaded {model_type} model state from: {os.path.basename(model_path)}")
             
             
@@ -594,7 +594,7 @@ class OTDataManager:
             return None
         
         try:
-            data = torch.load(path, map_location='cpu') # Always load to CPU
+            data = torch.load(path, map_location='cpu', weights_only = True) # Always load to CPU
             # Basic validation of cached structure
             if isinstance(data, tuple) and len(data) == 6:
                  # Further check if first element (h1) and fourth (h2) are not None,
