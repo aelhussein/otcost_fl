@@ -146,85 +146,157 @@ def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List
         status_symbol = "✅" if done else "❌"
         
         # Count errors
-        errors = sum(1 for r in records if getattr(r, "error", None) is not None)
+        errors = 0
         
-        # Calculate total configurations for this phase
-        total_configs = len(costs)
-        
-        # Track configs with runs and total runs
-        configs_with_runs = set()  # Use a set to avoid double counting
-        total_runs_completed = 0
-        
-        # Generate list of all expected configurations
-        expected_configs = []
-        
-        if phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM]:
-            # For tuning phases, multiply by number of parameters to try
-            param_key = 'learning_rates_try' if phase == ExperimentType.LEARNING_RATE else 'reg_params_try'
-            param_name = 'learning_rate' if phase == ExperimentType.LEARNING_RATE else 'reg_param' 
-            servers_key = 'servers_tune_lr' if phase == ExperimentType.LEARNING_RATE else 'servers_tune_reg'
-            params_to_try = dflt.get(param_key, [])
-            servers_to_try = dflt.get(servers_key, [])
+        # Calculate progress based on experiment type
+        if phase == ExperimentType.OT_ANALYSIS:
+            # For OT Analysis, we need more detailed progress calculation
+            # Each unit of work is: (fl_cost_param, fl_run_idx, client_pair, ot_method_name)
             
-            # Calculate total configurations
-            total_configs *= len(params_to_try) * len(servers_to_try)
+            # Get expected run count
+            target_fl_runs = dflt.get('runs', 1)
             
-            # Generate all expected configurations
-            for cost in costs:
-                for server in servers_to_try:
-                    for param_val in params_to_try:
-                        expected_configs.append((cost, server, param_name, param_val))
+            # Calculate client pairs
+            num_total_clients = num_clients
+            client_ids = [f'client_{i+1}' for i in range(num_total_clients)]
+            client_pairs = []
+            for i in range(len(client_ids)):
+                for j in range(i+1, len(client_ids)):
+                    client_pairs.append(f"{client_ids[i]}_vs_{client_ids[j]}")
+            
+            # Get OT method names from records
+            ot_method_names = set()
+            for record in records:
+                if isinstance(record, dict) and 'ot_method_name' in record:
+                    ot_method_names.add(record.get('ot_method_name'))
+            
+            # Fallback if no methods found in records
+            if not ot_method_names:
+                try:
+                    from ot_configs import all_configs
+                    ot_method_names = set([config.name for config in all_configs])
+                except ImportError:
+                    ot_method_names = {"Direct_Wasserstein", "WC_Direct_Hellinger_4:1"}
+            
+            # Calculate total expected work units
+            total_runs_needed = len(costs) * target_fl_runs * len(client_pairs) * len(ot_method_names)
+            
+            # Count successfully completed work units
+            completed_units = set()
+            for record in records:
+                if isinstance(record, dict):
+                    if record.get('error_message'):
+                        errors += 1
+                    
+                    if record.get('status') == 'Success':
+                        cost = record.get('fl_cost_param')
+                        run_idx = record.get('fl_run_idx')
+                        client_pair = record.get('client_pair')
+                        method_name = record.get('ot_method_name')
                         
-        elif phase == ExperimentType.EVALUATION:
-            # For evaluation, multiply by algorithms
-            algorithms = dflt.get('algorithms', ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto'])
-            total_configs *= len(algorithms)
+                        if all(x is not None for x in [cost, run_idx, client_pair, method_name]):
+                            key = (cost, run_idx, client_pair, method_name)
+                            completed_units.add(key)
             
-            # Generate all expected configurations
-            for cost in costs:
-                for algorithm in algorithms:
-                    expected_configs.append((cost, algorithm, None, None))
+            total_runs_completed = len(completed_units)
+            
+            # Calculate progress percentage
+            if total_runs_needed > 0:
+                progress_pct = round(total_runs_completed / total_runs_needed * 100, 1)
+            else:
+                progress_pct = 0
+                
+            # Adjust status symbol if in progress
+            if total_runs_completed > 0 and not done:
+                status_symbol = "⏳"
+                
+            # Create progress string
+            progress = f"{total_runs_completed}/{total_runs_needed} units ({progress_pct}%)"
+            
         else:
-            # For other phases, just use costs
-            for cost in costs:
-                expected_configs.append((cost, None, None, None))
-        
-        # Determine target number of runs for this phase
-        target_runs_key = 'runs_tune' if phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM] else 'runs'
-        target_runs = dflt.get(target_runs_key, 1)
-        
-        # Total runs needed for all configurations
-        total_runs_needed = total_configs * target_runs
-        
-        # Check each expected configuration against records
-        for config_idx, config in enumerate(expected_configs):
-            cost, server, param_name, param_value = config
+            # Original progress calculation for non-OT phases
+            # ... [the original progress calculation for other experiment types remains here]
+            # Calculate total configurations for this phase
+            total_configs = len(costs)
             
-            # Create a unique key for this configuration
-            config_key = f"{cost}_{server}_{param_name}_{param_value}"
+            # Track configs with runs and total runs
+            configs_with_runs = set()  # Use a set to avoid double counting
+            total_runs_completed = 0
             
-            # Count successful runs for this config
-            successful_runs = 0
-            for r in records:
-                if hasattr(r, 'matches_config') and r.matches_config(cost, server, param_name, param_value) and r.error is None:
-                    successful_runs += 1
+            # Generate list of all expected configurations
+            expected_configs = []
             
-            # Add to completed runs count
-            total_runs_completed += successful_runs
+            if phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM]:
+                # For tuning phases, multiply by number of parameters to try
+                param_key = 'learning_rates_try' if phase == ExperimentType.LEARNING_RATE else 'reg_params_try'
+                param_name = 'learning_rate' if phase == ExperimentType.LEARNING_RATE else 'reg_param' 
+                servers_key = 'servers_tune_lr' if phase == ExperimentType.LEARNING_RATE else 'servers_tune_reg'
+                params_to_try = dflt.get(param_key, [])
+                servers_to_try = dflt.get(servers_key, [])
+                
+                # Calculate total configurations
+                total_configs *= len(params_to_try) * len(servers_to_try)
+                
+                # Generate all expected configurations
+                for cost in costs:
+                    for server in servers_to_try:
+                        for param_val in params_to_try:
+                            expected_configs.append((cost, server, param_name, param_val))
+                            
+            elif phase == ExperimentType.EVALUATION:
+                # For evaluation, multiply by algorithms
+                algorithms = dflt.get('algorithms', ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto'])
+                total_configs *= len(algorithms)
+                
+                # Generate all expected configurations
+                for cost in costs:
+                    for algorithm in algorithms:
+                        expected_configs.append((cost, algorithm, None, None))
+            else:
+                # For other phases, just use costs
+                for cost in costs:
+                    expected_configs.append((cost, None, None, None))
             
-            # Mark configuration as having at least one run
-            if successful_runs > 0:
-                configs_with_runs.add(config_key)
+            # Determine target number of runs for this phase
+            target_runs_key = 'runs_tune' if phase in [ExperimentType.LEARNING_RATE, ExperimentType.REG_PARAM] else 'runs'
+            target_runs = dflt.get(target_runs_key, 1)
             
-        # Calculate progress percentage based on runs completed
-        if total_runs_needed > 0:
-            progress_pct = round(total_runs_completed / total_runs_needed * 100, 1)
-        else:
-            progress_pct = 0
+            # Total runs needed for all configurations
+            total_runs_needed = total_configs * target_runs
             
-        # Adjust status symbol if in progress
-        if len(records) > 0 and not done:
-            status_symbol = "⏳"
+            # Check each expected configuration against records
+            for config_idx, config in enumerate(expected_configs):
+                cost, server, param_name, param_value = config
+                
+                # Create a unique key for this configuration
+                config_key = f"{cost}_{server}_{param_name}_{param_value}"
+                
+                # Count successful runs for this config
+                successful_runs = 0
+                for r in records:
+                    if hasattr(r, 'matches_config') and r.matches_config(cost, server, param_name, param_value) and r.error is None:
+                        successful_runs += 1
+                        errors += 0 if r.error is None else 1
+                
+                # Add to completed runs count
+                total_runs_completed += successful_runs
+                
+                # Mark configuration as having at least one run
+                if successful_runs > 0:
+                    configs_with_runs.add(config_key)
+            
+            # Calculate progress percentage based on runs completed
+            if total_runs_needed > 0:
+                progress_pct = round(total_runs_completed / total_runs_needed * 100, 1)
+            else:
+                progress_pct = 0
+                
+            # Adjust status symbol if in progress
+            if len(records) > 0 and not done:
+                status_symbol = "⏳"
+                
+            # Create progress string to show both configurations and run percentages
+            progress = f"{total_runs_completed}/{total_runs_needed} runs ({progress_pct}%)"
             
         # Get timestamp information
         timestamp = get_timestamp_from_metadata(dataset, phase, num_clients)
@@ -234,9 +306,6 @@ def get_dataset_status(dataset: str, num_clients: int, metric: str) -> List[List
         job_info = get_job_info(dataset, num_clients, phase, metric)
         job_time = get_formatted_timestamp(job_info.get('timestamp', 'unknown')) if job_info else "never"
         job_id = job_info.get('job_id', 'unknown') if job_info else "unknown"
-        
-        # Create the progress string to show both configurations and run percentages
-        progress = f"{total_runs_completed}/{total_runs_needed} runs ({progress_pct}%)"
         
         # Create row with color-coded status
         row = [

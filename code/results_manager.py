@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, Tuple, Optional, List, Union
+from collections import defaultdict
 import numpy as np
 import torch
 import directories
@@ -137,14 +138,17 @@ class OTAnalysisRecord:
 
 class PathBuilder:
     """Helper class to construct standardized file paths."""
-    def __init__(self, root_dir: str, dataset: str, num_target_clients: int):
+    def __init__(self, root_dir: str, dataset: str, num_target_clients: int, results_dir: str = None):
         self.root_dir = root_dir
         self.dataset = dataset
         self.num_target_clients = num_target_clients
         
         # Get directory paths from directories module
         paths = directories.paths()
-        self.results_base = paths.results_dir
+        if results_dir is not None:
+            self.results_base = results_dir
+        else:
+            self.results_base = paths.results_dir
         self.models_base = paths.model_save_dir
 
         # Ensure base directories exist
@@ -197,14 +201,15 @@ class PathBuilder:
 class ResultsManager:
     """Handles saving/loading of results (List[TrialRecord]) and models."""
 
-    def __init__(self, root_dir: str, dataset: str, num_target_clients: int):
+    def __init__(self, root_dir: str, dataset: str, num_target_clients: int, results_dir: str = None):
         """
         Args:
             root_dir (str): Project root containing 'results', 'saved_models'.
             dataset (str): Name of the dataset.
             num_target_clients (int): Target client count for filename structure.
+            results_dir (str): Optional custom results directory.
         """
-        self.path_builder = PathBuilder(root_dir, dataset, num_target_clients)
+        self.path_builder = PathBuilder(root_dir, dataset, num_target_clients, results_dir)
         self.algorithm_list = ['local', 'fedavg', 'fedprox', 'pfedme', 'ditto']  # Default algorithms
 
     # --- Model Saving/Loading ---
@@ -466,25 +471,98 @@ class ResultsManager:
         return best_param
 
     def get_experiment_status(self, experiment_type: str,
-                             expected_costs: List[Any],
-                             default_params: Dict,
-                             metric_key_cls: type  # Kept for interface compatibility
-                             ) -> Tuple[List[TrialRecord], List[Any], int]:
+                            expected_costs: List[Any],
+                            default_params: Dict,
+                            metric_key_cls: type  # Kept for interface compatibility
+                            ) -> Tuple[List[Any], List[Any], int]:
         """
         Analyzes existing results to determine what needs to be processed.
         
         Returns:
-            - The loaded list of TrialRecords
+            - The loaded list of records (either TrialRecord objects or dictionaries for OT_ANALYSIS)
             - List of costs that need processing
             - Number of completed runs across ALL configs
         """
         records, metadata = self.load_results(experiment_type)
         
-        # Always re-run if there are errors
+        # Always re-run if there are errors in metadata
         if metadata and metadata.get('contains_errors', False):
             print(f"Warning: Previous errors found in {experiment_type} results. Will reprocess.")
             return records or [], list(expected_costs), 0
+        
+        # Handle OT analysis differently since records are dictionaries, not TrialRecord objects
+        if experiment_type == ExperimentType.OT_ANALYSIS:
+            # For OT Analysis, we need to track completion at a more granular level
+            # Each unit of work is: (fl_cost_param, fl_run_idx, client_pair, ot_method_name)
             
+            # Get expected run count from parameters
+            target_fl_runs = default_params.get('runs', 1)
+            
+            # Calculate client pairs based on client count
+            num_clients = self.path_builder.num_target_clients
+            client_ids = [f'client_{i+1}' for i in range(num_clients)]
+            client_pairs = []
+            for i in range(len(client_ids)):
+                for j in range(i+1, len(client_ids)):
+                    client_pairs.append(f"{client_ids[i]}_vs_{client_ids[j]}")
+            
+            # Get OT method names from loaded records or use a default set
+            ot_method_names = set()
+            for record in records:
+                if isinstance(record, dict) and 'ot_method_name' in record:
+                    ot_method_names.add(record.get('ot_method_name'))
+            
+            # Fallback if no methods found in records
+            if not ot_method_names:
+                # Try to infer from known method names
+                from ot_configs import all_configs
+                ot_method_names = set([config.name for config in all_configs])
+                # If still empty, use a default
+                if not ot_method_names:
+                    ot_method_names = {"Direct_Wasserstein", "WC_Direct_Hellinger_4:1"}
+            
+            # Build a set of successfully completed work units
+            completed_units = set()
+            for record in records:
+                if isinstance(record, dict) and record.get('status') == 'Success':
+                    cost = record.get('fl_cost_param')
+                    run_idx = record.get('fl_run_idx')
+                    client_pair = record.get('client_pair')
+                    method_name = record.get('ot_method_name')
+                    
+                    # Create a unique key for this work unit
+                    if all(x is not None for x in [cost, run_idx, client_pair, method_name]):
+                        key = (cost, run_idx, client_pair, method_name)
+                        completed_units.add(key)
+            
+            # Check completion status for each cost
+            incomplete_costs = set()
+            total_work_units = 0
+            
+            for cost in expected_costs:
+                cost_is_complete = True
+                
+                # Check all combinations for this cost
+                for run_idx in range(target_fl_runs):
+                    for client_pair in client_pairs:
+                        for method_name in ot_method_names:
+                            # Each expected work unit
+                            total_work_units += 1
+                            key = (cost, run_idx, client_pair, method_name)
+                            
+                            if key not in completed_units:
+                                cost_is_complete = False
+                
+                if not cost_is_complete:
+                    incomplete_costs.add(cost)
+            
+            # Determine effective min_runs value for orchestration
+            # Return target_fl_runs if complete, otherwise 0
+            min_complete_runs = target_fl_runs if not incomplete_costs else 0
+            
+            return records, sorted(list(incomplete_costs)), min_complete_runs
+        
+        # Original logic for non-OT experiments (using TrialRecord objects)
         # Determine run count target based on experiment type
         is_tuning = experiment_type != ExperimentType.EVALUATION
         target_runs_key = 'runs_tune' if is_tuning else 'runs'
@@ -514,15 +592,21 @@ class ResultsManager:
             for server in expected_servers:
                 for param_val in params_to_try:
                     # Find matching records for this configuration
-                    matching_records = [
-                        r for r in records 
+                    matching_records = []
+                    for r in records:
+                        # Check if record has required attributes
+                        if not hasattr(r, 'matches_config'):
+                            # This could happen if we have a mix of objects or there was an error
+                            print(f"Warning: Record doesn't have 'matches_config' method. Type: {type(r)}")
+                            continue
+                            
                         if r.matches_config(
                             cost=cost, 
                             server_type=server,
                             param_name=param_name,
                             param_value=param_val
-                        )
-                    ]
+                        ):
+                            matching_records.append(r)
                     
                     # Count successful runs
                     valid_run_count = sum(1 for r in matching_records if r.error is None)

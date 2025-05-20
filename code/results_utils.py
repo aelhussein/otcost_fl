@@ -19,6 +19,92 @@ except ImportError:
     pass
 
 
+def get_averaged_ot_costs(
+    ot_df: pd.DataFrame,
+    target_ot_method_name: Optional[str] = 'WC_Direct_Hellinger_4:1',
+    target_client_pair: Optional[str] = 'client_1_vs_client_2'
+) -> pd.DataFrame:
+    """
+    Extract and aggregate OT costs per (fl_cost_param, fl_run_idx) pair.
+    
+    Args:
+        ot_df: DataFrame with OT analysis results
+        target_ot_method_name: OT method to filter by
+        target_client_pair: Client pair to filter by
+        
+    Returns:
+        DataFrame with columns ['fl_cost_param', 'fl_run_idx', 'avg_ot_cost', 'ot_cost_std', 'num_points']
+    """
+    if ot_df.empty:
+        return pd.DataFrame()
+    
+    # Filter by target OT method and client pair
+    filtered_df = ot_df.copy()
+    if target_ot_method_name:
+        filtered_df = filtered_df[filtered_df['ot_method_name'] == target_ot_method_name]
+    if target_client_pair:
+        filtered_df = filtered_df[filtered_df['client_pair'] == target_client_pair]
+    
+    if filtered_df.empty:
+        logger.warning(f"No OT data found for method '{target_ot_method_name}' and client pair '{target_client_pair}'")
+        return pd.DataFrame()
+    
+    # Group by cost parameter and run index
+    grouped = filtered_df.groupby(['fl_cost_param', 'fl_run_idx'])
+    
+    # Aggregate OT costs
+    aggregated = grouped.agg(
+        avg_ot_cost=('ot_cost_value', 'mean'),
+        ot_cost_std=('ot_cost_value', 'std'),
+        num_points=('ot_cost_value', 'count')
+    ).reset_index()
+    
+    return aggregated
+def smooth_curve(points, window_size=5, poly_order=1):
+    """
+    Applies Savitzky-Golay filter for smoothing a time series.
+    
+    Args:
+        points (np.ndarray): Array of data points
+        window_size (int): Window size for the filter
+        poly_order (int): Polynomial order for the filter
+        
+    Returns:
+        np.ndarray: Smoothed data points
+    """
+    import numpy as np
+    from scipy.signal import savgol_filter
+    
+    # Convert to numpy array if needed
+    points = np.array(points)
+    
+    # Handle case with too few points
+    if len(points) < window_size:
+        return points
+    
+    # Handle NaN values through interpolation
+    nan_indices = np.isnan(points)
+    if np.any(nan_indices):
+        points_no_nan = points.copy()
+        non_nan_indices = ~nan_indices
+        
+        # Use interpolation to fill NaN values
+        points_no_nan[nan_indices] = np.interp(
+            np.flatnonzero(nan_indices), 
+            np.flatnonzero(non_nan_indices), 
+            points_no_nan[non_nan_indices]
+        )
+        points = points_no_nan
+    
+    # Ensure window_size is odd
+    window_size = window_size if window_size % 2 == 1 else window_size + 1
+    # Ensure poly_order < window_size
+    poly_order = min(poly_order, window_size - 1)
+    
+    # Apply Savitzky-Golay filter
+    smoothed = savgol_filter(points, window_size, poly_order)
+    return smoothed
+
 # =============================================================================
 # == FL Results Aggregation Functions ==
 # =============================================================================
@@ -105,22 +191,47 @@ def aggregate_test(records: List[TrialRecord], conf: float = 0.95) -> Optional[D
 def plot_losses_per_cost(
     results_manager: ResultsManager,
     target_costs: List[Any],
+    algorithms: List[str] = None,
     confidence_level: float = 0.95,
     start_round: int = 1,
     plot_losses: bool = False,
+    color_map: Dict[str, str] = None,
+    auto_y_limits: bool = True,  # New parameter to control y-axis limits
+    y_limit_padding: float = 0.1,  # Padding percentage for y-axis limits
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
-    Create a composite figure of curves + bar plots for target_costs.
+    Create a composite figure of curves + bar plots for target_costs with multiple algorithms.
     
     Args:
         results_manager: ResultsManager instance
         target_costs: List of cost values to plot
+        algorithms: List of algorithm/server_type names to include (default: ["local", "fedavg"])
         confidence_level: Confidence level for intervals (default: 0.95)
         start_round: Starting round for training curves (default: 1)
+        plot_losses: Whether to include loss curves (default: False)
+        color_map: Dictionary mapping algorithm names to colors (default: None, will use automatic colors)
+        auto_y_limits: Whether to automatically adjust y-axis limits (default: True)
+        y_limit_padding: Padding percentage for y-axis limits (default: 0.1)
         
     Returns:
         Tuple of (Figure, Axes)
     """
+    # Set default algorithms list if not provided
+    if algorithms is None:
+        algorithms = ["local", "fedavg"]
+    
+    # Set up default color map if not provided
+    if color_map is None:
+        # Default colors for common algorithms
+        color_map = {
+            "local": 'tab:blue',
+            "fedavg": 'green',
+            "fedprox": 'red',
+            "pfedme": 'purple',
+            "ditto": 'orange',
+        }
+        # For any algorithm not in the default map, we'll assign colors later
+    
     # Load & pre-filter records
     all_records, _ = results_manager.load_results(ExperimentType.EVALUATION)
     all_records = [r for r in all_records if r.error is None]
@@ -130,101 +241,209 @@ def plot_losses_per_cost(
     for rec in all_records:
         records_by_cs[rec.cost][rec.server_type].append(rec)
 
-    # Aggregate metrics per cost & server
+    # Aggregate metrics per cost & algorithm
     agg_curves = {}
     agg_test = {}
     min_rounds_per_cost = {}
 
     for cost in target_costs:
-        recs_local = records_by_cs[cost]["local"]
-        recs_fed = records_by_cs[cost]["fedavg"]
-        if not recs_local or not recs_fed:
-            continue  # need both servers to compare
-
-        # find common min # rounds
-        min_r = min(
-            min(len(r.metrics.get(MetricKey.TRAIN_LOSSES, [])) for r in recs_local),
-            min(len(r.metrics.get(MetricKey.TRAIN_LOSSES, [])) for r in recs_fed),
-        )
-        if min_r < start_round:
+        # Check if we have data for all algorithms at this cost
+        has_all_algorithms = True
+        available_algorithms = []
+        
+        for algo in algorithms:
+            if not records_by_cs[cost][algo]:
+                has_all_algorithms = False
+            else:
+                available_algorithms.append(algo)
+        
+        if not available_algorithms:
+            continue  # Skip this cost if no data for any algorithm
+            
+        # Find minimum number of rounds across all algorithms for this cost
+        min_r = float('inf')
+        for algo in available_algorithms:
+            for r in records_by_cs[cost][algo]:
+                train_len = len(r.metrics.get(MetricKey.TRAIN_LOSSES, []))
+                min_r = min(min_r, train_len)
+        
+        if min_r == float('inf') or min_r < start_round:
             continue
+            
         min_rounds_per_cost[cost] = min_r
+        
+        # Aggregate metrics for each algorithm
+        agg_curves[cost] = {}
+        agg_test[cost] = {}
+        
+        for algo in available_algorithms:
+            agg_curves[cost][algo] = aggregate_train_val(records_by_cs[cost][algo], min_r, confidence_level)
+            agg_test[cost][algo] = aggregate_test(records_by_cs[cost][algo], confidence_level)
 
-        agg_curves[cost] = {
-            "local": aggregate_train_val(recs_local, min_r, confidence_level),
-            "fedavg": aggregate_train_val(recs_fed, min_r, confidence_level),
-        }
-        agg_test[cost] = {
-            "local": aggregate_test(recs_local, confidence_level),
-            "fedavg": aggregate_test(recs_fed, confidence_level),
-        }
-
+    # Filter costs for which we have valid data
     costs = [c for c in target_costs if c in agg_curves]
     if not costs:
         print("No valid data found – nothing to plot.")
         return None, None
 
-    # Figure layout (rows = 1 + |costs|, cols = 2)
-    n_rows = 1 
+    # Figure layout 
+    n_rows = 1
     if plot_losses:
         n_rows += len(costs)
     fig, axes = plt.subplots(n_rows, 2, figsize=(12, 4.5 * n_rows), sharey=False)
 
+    # Ensure axes is always a 2D array
+    if n_rows == 1 and not plot_losses:
+        axes = np.array([axes]).reshape(1, 2)
+
     # Final-test metrics – row 0
     x = np.arange(len(costs))
-    width = 0.35
+    width = 0.8 / len(algorithms)  # Adjust bar width based on number of algorithms
     
-    # Capture local color (typically blue) and fedavg color (green)
-    local_color = 'tab:blue'  # Using standard matplotlib color
-    fedavg_color = 'green'
+    # Assign colors for any algorithm not in the default map
+    all_algos_with_data = set()
+    for cost in costs:
+        all_algos_with_data.update(agg_test[cost].keys())
+    
+    unassigned_algos = [algo for algo in all_algos_with_data if algo not in color_map]
+    if unassigned_algos:
+        # Generate distinct colors for unassigned algorithms
+        additional_colors = plt.cm.tab10(np.linspace(0, 1, len(unassigned_algos)))
+        for i, algo in enumerate(unassigned_algos):
+            color_map[algo] = additional_colors[i]
 
+    # Bar plot helper function
     def _bar(ax, vals, yerr, label, offset=0, color=None):
         bars = ax.bar(x + offset, vals, width, yerr=yerr, label=label, capsize=4, alpha=0.8, color=color)
         return bars[0].get_facecolor() if not color else color  # Return actual color used
 
-    # Loss
-    ax_loss = axes[0, 0] if plot_losses else axes[0]
-    loc_loss = [agg_test[c]["local"]["mean_loss"] for c in costs]
-    fed_loss = [agg_test[c]["fedavg"]["mean_loss"] for c in costs]
-    loc_loss_err = [
-        [agg_test[c]["local"]["mean_loss"] - agg_test[c]["local"]["lower_loss"],
-         agg_test[c]["local"]["upper_loss"] - agg_test[c]["local"]["mean_loss"]]
-        for c in costs
-    ]
-    fed_loss_err = [
-        [agg_test[c]["fedavg"]["mean_loss"] - agg_test[c]["fedavg"]["lower_loss"],
-         agg_test[c]["fedavg"]["upper_loss"] - agg_test[c]["fedavg"]["mean_loss"]]
-        for c in costs
-    ]
-    local_color = _bar(ax_loss, loc_loss, np.transpose(loc_loss_err), "Local", -width/2, color=local_color)
-    fedavg_color = _bar(ax_loss, fed_loss, np.transpose(fed_loss_err), "FedAvg", width/2, color=fedavg_color)
+    # Dictionaries to store min/max values for y-axis limits
+    loss_min_vals = []
+    loss_max_vals = []
+    score_min_vals = []
+    score_max_vals = []
+    
+    # Plot loss bars
+    ax_loss = axes[0, 0]
+    for i, algo in enumerate(algorithms):
+        # Calculate offset for this algorithm's bars
+        offset = (i - len(algorithms)/2 + 0.5) * width
+        
+        # Create arrays for values and error bars
+        losses = []
+        loss_errs = []
+        
+        for c in costs:
+            if algo in agg_test[c]:
+                mean_loss = agg_test[c][algo]["mean_loss"]
+                lower_loss = agg_test[c][algo]["lower_loss"]
+                upper_loss = agg_test[c][algo]["upper_loss"]
+                
+                losses.append(mean_loss)
+                loss_errs.append([
+                    mean_loss - lower_loss,
+                    upper_loss - mean_loss
+                ])
+                
+                # Update min/max values for y-axis limits
+                loss_min_vals.append(lower_loss)
+                loss_max_vals.append(upper_loss)
+            else:
+                # Add NaN for missing data
+                losses.append(np.nan)
+                loss_errs.append([0, 0])
+        
+        # Convert to numpy arrays for transpose
+        losses = np.array(losses)
+        loss_errs = np.array(loss_errs)
+        
+        # Skip if all values are NaN
+        if np.isnan(losses).all():
+            continue
+            
+        # Plot bars with algorithm color
+        _bar(ax_loss, losses, np.transpose(loss_errs), algo, offset, color=color_map.get(algo))
+    
     ax_loss.set_title("Final Test Loss")
-    ax_loss.set_xticks(x, [str(c) for c in costs])
+    ax_loss.set_xticks(x, [str(c) for c in costs], rotation=30)
     ax_loss.set_ylabel("Loss")
     ax_loss.grid(True, ls="--", alpha=0.3)
     ax_loss.legend()
+    
+    # Adjust y-axis limits for loss plot
+    if auto_y_limits and loss_min_vals and loss_max_vals:
+        y_min = min(loss_min_vals)
+        y_max = max(loss_max_vals)
+        y_range = y_max - y_min
+        
+        # Add padding to the limits
+        y_min = y_min - y_range * y_limit_padding
+        y_max = y_max + y_range * y_limit_padding
+        
+        # Set the limits (ensure we don't set negative lower limit for loss if values are very close to 0)
+        ax_loss.set_ylim(max(0, y_min), y_max)
 
-    # Score
-    ax_score = axes[0, 1] if plot_losses else axes[1]
-    loc_score = [agg_test[c]["local"]["mean_score"] for c in costs]
-    fed_score = [agg_test[c]["fedavg"]["mean_score"] for c in costs]
-    loc_score_err = [
-        [agg_test[c]["local"]["mean_score"] - agg_test[c]["local"]["lower_score"],
-         agg_test[c]["local"]["upper_score"] - agg_test[c]["local"]["mean_score"]]
-        for c in costs
-    ]
-    fed_score_err = [
-        [agg_test[c]["fedavg"]["mean_score"] - agg_test[c]["fedavg"]["lower_score"],
-         agg_test[c]["fedavg"]["upper_score"] - agg_test[c]["fedavg"]["mean_score"]]
-        for c in costs
-    ]
-    _bar(ax_score, loc_score, np.transpose(loc_score_err), "Local", -width/2, color=local_color)
-    _bar(ax_score, fed_score, np.transpose(fed_score_err), "FedAvg", width/2, color=fedavg_color)
+    # Plot score bars
+    ax_score = axes[0, 1]
+    for i, algo in enumerate(algorithms):
+        # Calculate offset for this algorithm's bars
+        offset = (i - len(algorithms)/2 + 0.5) * width
+        
+        # Create arrays for values and error bars
+        scores = []
+        score_errs = []
+        
+        for c in costs:
+            if algo in agg_test[c]:
+                mean_score = agg_test[c][algo]["mean_score"]
+                lower_score = agg_test[c][algo]["lower_score"]
+                upper_score = agg_test[c][algo]["upper_score"]
+                
+                scores.append(mean_score)
+                score_errs.append([
+                    mean_score - lower_score,
+                    upper_score - mean_score
+                ])
+                
+                # Update min/max values for y-axis limits
+                score_min_vals.append(lower_score)
+                score_max_vals.append(upper_score)
+            else:
+                # Add NaN for missing data
+                scores.append(np.nan)
+                score_errs.append([0, 0])
+        
+        # Convert to numpy arrays for transpose
+        scores = np.array(scores)
+        score_errs = np.array(score_errs)
+        
+        # Skip if all values are NaN
+        if np.isnan(scores).all():
+            continue
+            
+        # Plot bars with algorithm color
+        _bar(ax_score, scores, np.transpose(score_errs), algo, offset, color=color_map.get(algo))
+    
     ax_score.set_title("Final Test Score")
-    ax_score.set_xticks(x, [str(c) for c in costs])
+    ax_score.set_xticks(x, [str(c) for c in costs], rotation=30)
     ax_score.set_ylabel("Score")
     ax_score.grid(True, ls="--", alpha=0.3)
     ax_score.legend()
+    
+    # Adjust y-axis limits for score plot
+    if auto_y_limits and score_min_vals and score_max_vals:
+        y_min = min(score_min_vals)
+        y_max = max(score_max_vals)
+        y_range = y_max - y_min
+        
+        # Add padding to the limits
+        y_min = y_min - y_range * y_limit_padding
+        y_max = y_max + y_range * y_limit_padding
+        
+        # Set the limits (don't set negative lower limit for scores if values are close to 0)
+        ax_score.set_ylim(max(0, y_min), y_max)
+
+    # Plot training and validation loss curves if requested
     if plot_losses:
         for row_idx, cost in enumerate(costs, start=1):
             min_r = min_rounds_per_cost[cost]
@@ -232,24 +451,33 @@ def plot_losses_per_cost(
             
             # Training loss curves (left column)
             ax_train = axes[row_idx, 0]
-            loc_data = agg_curves[cost]["local"]
-            fed_data = agg_curves[cost]["fedavg"]
             
-            # Plot local training
-            ax_train.plot(rounds, loc_data["mean_train"][start_round:min_r], color=local_color, 
-                        linestyle='-', label="Local")
-            ax_train.fill_between(rounds, 
-                                loc_data["lower_train"][start_round:min_r], 
-                                loc_data["upper_train"][start_round:min_r], 
-                                color=local_color, alpha=0.2)
+            # Variables to track min/max values for y-axis limits
+            train_min_vals = []
+            train_max_vals = []
             
-            # Plot fedavg training
-            ax_train.plot(rounds, fed_data["mean_train"][start_round:min_r], color=fedavg_color, 
-                        linestyle='-', label="FedAvg")
-            ax_train.fill_between(rounds, 
-                                fed_data["lower_train"][start_round:min_r], 
-                                fed_data["upper_train"][start_round:min_r], 
-                                color=fedavg_color, alpha=0.2)
+            # Plot training curves for each algorithm
+            for algo in algorithms:
+                if algo not in agg_curves[cost]:
+                    continue
+                    
+                algo_data = agg_curves[cost][algo]
+                color = color_map.get(algo)
+                
+                # Get relevant slices
+                mean_vals = algo_data["mean_train"][start_round:min_r]
+                lower_vals = algo_data["lower_train"][start_round:min_r]
+                upper_vals = algo_data["upper_train"][start_round:min_r]
+                
+                # Plot training curve
+                ax_train.plot(rounds, mean_vals, color=color, linestyle='-', label=algo)
+                             
+                # Plot confidence intervals
+                ax_train.fill_between(rounds, lower_vals, upper_vals, color=color, alpha=0.2)
+                
+                # Track min/max values for y-axis limits
+                train_min_vals.extend(lower_vals)
+                train_max_vals.extend(upper_vals)
             
             ax_train.set_title(f"Training Loss for Cost = {cost}")
             ax_train.set_xlabel("Round")
@@ -257,35 +485,72 @@ def plot_losses_per_cost(
             ax_train.grid(True, ls="--", alpha=0.3)
             ax_train.legend()
             
+            # Adjust y-axis limits for training plot
+            if auto_y_limits and train_min_vals and train_max_vals:
+                y_min = min(train_min_vals)
+                y_max = max(train_max_vals)
+                y_range = y_max - y_min
+                
+                # Add padding to the limits
+                y_min = y_min - y_range * y_limit_padding
+                y_max = y_max + y_range * y_limit_padding
+                
+                # Set the limits (ensure we don't set negative lower limit if values are close to 0)
+                ax_train.set_ylim(max(0, y_min), y_max)
+            
             # Validation loss curves (right column)
             ax_val = axes[row_idx, 1]
             
-            # Plot local validation
-            ax_val.plot(rounds, loc_data["mean_val"][start_round:min_r], color=local_color, 
-                        linestyle='--', label="Local")
-            ax_val.fill_between(rounds, 
-                            loc_data["lower_val"][start_round:min_r], 
-                            loc_data["upper_val"][start_round:min_r], 
-                            color=local_color, alpha=0.2)
+            # Variables to track min/max values for y-axis limits
+            val_min_vals = []
+            val_max_vals = []
             
-            # Plot fedavg validation
-            ax_val.plot(rounds, fed_data["mean_val"][start_round:min_r], color=fedavg_color, 
-                        linestyle='--', label="FedAvg")
-            ax_val.fill_between(rounds, 
-                            fed_data["lower_val"][start_round:min_r], 
-                            fed_data["upper_val"][start_round:min_r], 
-                            color=fedavg_color, alpha=0.2)
+            # Plot validation curves for each algorithm
+            for algo in algorithms:
+                if algo not in agg_curves[cost]:
+                    continue
+                    
+                algo_data = agg_curves[cost][algo]
+                color = color_map.get(algo)
+                
+                # Get relevant slices
+                mean_vals = algo_data["mean_val"][start_round:min_r]
+                lower_vals = algo_data["lower_val"][start_round:min_r]
+                upper_vals = algo_data["upper_val"][start_round:min_r]
+                
+                # Plot validation curve
+                ax_val.plot(rounds, mean_vals, color=color, linestyle='--', label=algo)
+                           
+                # Plot confidence intervals
+                ax_val.fill_between(rounds, lower_vals, upper_vals, color=color, alpha=0.2)
+                
+                # Track min/max values for y-axis limits
+                val_min_vals.extend(lower_vals)
+                val_max_vals.extend(upper_vals)
             
             ax_val.set_title(f"Validation Loss for Cost = {cost}")
             ax_val.set_xlabel("Round")
             ax_val.set_ylabel("Validation Loss")
             ax_val.grid(True, ls="--", alpha=0.3)
             ax_val.legend()
+            
+            # Adjust y-axis limits for validation plot
+            if auto_y_limits and val_min_vals and val_max_vals:
+                y_min = min(val_min_vals)
+                y_max = max(val_max_vals)
+                y_range = y_max - y_min
+                
+                # Add padding to the limits
+                y_min = y_min - y_range * y_limit_padding
+                y_max = y_max + y_range * y_limit_padding
+                
+                # Set the limits (ensure we don't set negative lower limit if values are close to 0)
+                ax_val.set_ylim(max(0, y_min), y_max)
 
-        # Adjust layout
-        plt.tight_layout()
-    
-    return fig, axes
+    # Adjust layout
+    plt.tight_layout()
+    plt.show()
+    return agg_test
 
 def mean_ci_bootstrap(values: np.ndarray, confidence: float = 0.95, n_bootstrap: int = 1000, seed: int = 42) -> Tuple[float, float, float]:
     """
@@ -559,7 +824,7 @@ def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_cl
         
         # Add grid and reference lines
         ax.grid(True, linestyle='--', alpha=0.7)
-        ax.axhline(0, color='grey', linestyle='--', linewidth=0.8)
+        ax.axhline(0, color='black', linestyle='-', linewidth=1, label = 'Change relative to Local = 0%')
         
         # Add median OT cost vertical line if available
         x_means = method_df['ot_cost_mean']
@@ -858,32 +1123,33 @@ def calculate_ot_correlations(df: pd.DataFrame) -> pd.DataFrame:
     else:
         return pd.DataFrame()
 
-def get_tuning_summary(   manager: ResultsManager,
-                          exerpiment_type: str,
-                          server_filter: Optional[str] = None,
-                          higher_is_better_metric: bool = False) -> pd.DataFrame:
+def get_tuning_summary(
+    manager: ResultsManager,
+    experiment_type: str,
+    server_filter: Optional[str] = None,
+    higher_is_better_metric: bool = False,
+    averaged_ot_costs_df: Optional[pd.DataFrame] = None
+) -> pd.DataFrame:
     """
     Loads LR tuning results, calculates the average (median) performance 
     for each (cost, server, learning_rate) across all runs,
     and identifies the best LR per cost/server.
 
     Args:
-        dataset_name: Name of the dataset.
-        results_root_dir: The root directory where results are stored.
-        num_target_clients: The target number of clients used for naming results files.
-        server_filter: If specified, only analyze results for this server type.
-        higher_is_better_metric: Set to True if the validation metric is score-based.
+        manager: ResultsManager instance
+        experiment_type: Type of experiment ('learning_rate' or 'reg_param')
+        server_filter: If specified, only analyze results for this server type
+        higher_is_better_metric: Set to True if the validation metric is score-based
+        averaged_ot_costs_df: Optional DataFrame with averaged OT costs per (fl_cost_param, fl_run_idx)
 
     Returns:
-        pandas.DataFrame: DataFrame with cost, server_type, learning_rate,
-                          avg_val_performance (median of median val losses/scores), 
-                          and a flag indicating if it's the best LR for that cost/server.
+        pandas.DataFrame: DataFrame with cost, server_type, learning_rate/reg_param,
+                        avg_val_performance, is_best_param flag, and optionally avg_ot_cost
     """
-
     exp_types = {'learning_rate':  ExperimentType.LEARNING_RATE, 
                  'reg_param': ExperimentType.REG_PARAM}
     
-    tuning_records, metadata = manager.load_results(exp_types[exerpiment_type])
+    tuning_records, metadata = manager.load_results(exp_types[experiment_type])
     
     if not tuning_records:
         return pd.DataFrame()
@@ -895,7 +1161,7 @@ def get_tuning_summary(   manager: ResultsManager,
     for record in tuning_records:
         if record.error is not None:
             continue
-        if record.tuning_param_name != exerpiment_type:
+        if record.tuning_param_name != experiment_type:
             continue
         if server_filter and record.server_type != server_filter:
             continue
@@ -916,7 +1182,7 @@ def get_tuning_summary(   manager: ResultsManager,
         processed_data.append({
             'cost': record.cost,
             'server_type': record.server_type,
-            exerpiment_type: record.tuning_param_value,
+            experiment_type: record.tuning_param_value,
             'run_idx': record.run_idx,
             'trial_val_performance': float(trial_performance) # Ensure float
         })
@@ -926,114 +1192,126 @@ def get_tuning_summary(   manager: ResultsManager,
 
     df = pd.DataFrame(processed_data)
     
-    # Group by cost, server, and learning rate, then calculate the mean of trial_val_performance (which are medians of rounds)
-    # This aggregation across runs should ideally match get_best_parameters (which uses np.mean of these trial medians)
-    agg_summary = df.groupby(['cost', 'server_type', exerpiment_type], as_index=False).agg(
-        avg_val_performance=('trial_val_performance', 'mean'), # Mean of the trial (median) performances
-        num_runs_aggregated=('run_idx', 'nunique') # Count how many runs contributed
-    )
+    # Merge with OT costs if provided
+    if averaged_ot_costs_df is not None and not averaged_ot_costs_df.empty:
+        df = pd.merge(
+            df, 
+            averaged_ot_costs_df, 
+            left_on=['cost', 'run_idx'], 
+            right_on=['fl_cost_param', 'fl_run_idx'], 
+            how='left'
+        )
+        # Drop duplicate columns
+        if 'fl_cost_param' in df.columns:
+            df.drop(columns=['fl_cost_param'], inplace=True)
+        if 'fl_run_idx' in df.columns:
+            df.drop(columns=['fl_run_idx'], inplace=True)
     
-    # Identify the best learning rate for each (cost, server_type) combination
+    # Group by cost, server, and tuning parameter, then calculate the mean
+    # of trial_val_performance (which are medians of rounds)
+    agg_summary = df.groupby(['cost', 'server_type', experiment_type], as_index=False).agg({
+        'trial_val_performance': 'mean',
+        'run_idx': 'nunique'
+    })
+    
+    # Rename columns for clarity
+    agg_summary.rename(columns={
+        'trial_val_performance': 'avg_val_performance',
+        'run_idx': 'num_runs_aggregated'
+    }, inplace=True)
+    
+    # If we merged with OT costs, include the average OT cost in the groupby
+    if averaged_ot_costs_df is not None and 'avg_ot_cost' in df.columns:
+        # Calculate mean OT cost for each (cost, server_type, experiment_type) group
+        ot_costs = df.groupby(['cost', 'server_type', experiment_type])['avg_ot_cost'].mean().reset_index()
+        agg_summary = pd.merge(agg_summary, ot_costs, on=['cost', 'server_type', experiment_type], how='left')
+    
+    # Identify the best parameter for each (cost, server_type) combination
     if higher_is_better_metric:
         best_indices = agg_summary.groupby(['cost', 'server_type'])['avg_val_performance'].idxmax()
     else:
         best_indices = agg_summary.groupby(['cost', 'server_type'])['avg_val_performance'].idxmin()
         
     agg_summary['is_best_param'] = False
-    if not best_indices.empty: # Check if best_lr_indices is not empty
+    if not best_indices.empty: # Check if best_indices is not empty
         agg_summary.loc[best_indices, 'is_best_param'] = True
     
     # Sort for better readability
-    agg_summary = agg_summary.sort_values(by=['cost', 'server_type', 'avg_val_performance' if not higher_is_better_metric else 'avg_val_performance'],
-                                          ascending=[True, True, not higher_is_better_metric if not higher_is_better_metric else False]).reset_index(drop=True)
+    sort_direction = not higher_is_better_metric if not higher_is_better_metric else False
+    agg_summary = agg_summary.sort_values(
+        by=['cost', 'server_type', 'avg_val_performance'],
+        ascending=[True, True, sort_direction]
+    ).reset_index(drop=True)
 
     return agg_summary
 
-def plot_reg_param_vs_cost(best_params_df: pd.DataFrame) -> None:
+def plot_reg_param_vs_cost(
+    best_params_df: pd.DataFrame, 
+    x_axis_key: str = 'cost',
+    ot_method_name: str = 'WC_Direct_Hellinger_4:1',
+    client_pair: str = 'client_1_vs_client_2',
+    figsize: Tuple[int, int] = (6, 4)
+) -> None:
     """
-    Plot the best regularization parameter against the cost for each server type.
+    Plot the best regularization parameter against either cost or OT cost for each server type.
+    
     Args:
-        best_params_df (pd.DataFrame): DataFrame containing the best regularization parameters and costs.
+        best_params_df: DataFrame containing the best regularization parameters and costs
+        x_axis_key: Column to use for x-axis: 'cost' or 'avg_ot_cost'
+        ot_method_name: Name of the OT method (used for plot title when x_axis_key is 'avg_ot_cost')
+        client_pair: Client pair (used for plot title when x_axis_key is 'avg_ot_cost')
     """
-    # Convert 'cost' and 'reg_param' columns to numeric
-    plt.figure(figsize=(12, 8))
+    # Check if requested x_axis_key exists
+    if x_axis_key not in best_params_df.columns:
+        x_axis_key = 'cost'
+    
+    # Create the plot
+    plt.figure(figsize=figsize)
     scatterplot = sns.scatterplot(
         data=best_params_df,
-        x='cost',
+        x=x_axis_key,
         y='reg_param',
         hue='server_type',
-        s=120,  
-        alpha=0.9, 
+        s=80,  
+        alpha=0.7, 
         palette='deep', 
-        edgecolor='w', #
+        edgecolor='w',
         linewidth=0.5
     )
-    plt.xlabel("Cost (Heterogeneity Parameter)", fontsize=14)
-    plt.ylabel("Best Regularization Parameter (reg_param)", fontsize=14)
-    plt.title("Best Regularization Parameter vs. Cost by Server Type", fontsize=16)
-    plt.legend(title="Server Type", bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0.)
+    
+    # Dynamic x-axis label
+    if x_axis_key == 'avg_ot_cost':
+        plt.xlabel(f"OT Cost", fontsize=10)
+    else:
+        plt.xlabel("Cost (Heterogeneity Parameter)", fontsize=10)
+        
+    plt.ylabel("Best Regularization Parameter", fontsize=10)
+    # plt.title("Best Regularization Parameter vs. " + 
+    #          ("OT Cost" if x_axis_key == 'avg_ot_cost' else "Cost"), fontsize=8)
+    plt.legend(title="Server Type")
     plt.xticks(rotation=45)
     plt.tight_layout(rect=[0, 0, 0.85, 1]) 
     plt.show()
-    # plt.savefig("best_reg_param_vs_cost.png", dpi=300, bbox_inches='tight')
 
-def smooth_curve(points, window_size=5, poly_order=1):
-    """
-    Applies Savitzky-Golay filter for smoothing a time series.
-    
-    Args:
-        points (np.ndarray): Array of data points
-        window_size (int): Window size for the filter
-        poly_order (int): Polynomial order for the filter
-        
-    Returns:
-        np.ndarray: Smoothed data points
-    """
-    import numpy as np
-    from scipy.signal import savgol_filter
-    
-    # Convert to numpy array if needed
-    points = np.array(points)
-    
-    # Handle case with too few points
-    if len(points) < window_size:
-        return points
-    
-    # Handle NaN values through interpolation
-    nan_indices = np.isnan(points)
-    if np.any(nan_indices):
-        points_no_nan = points.copy()
-        non_nan_indices = ~nan_indices
-        
-        # Use interpolation to fill NaN values
-        points_no_nan[nan_indices] = np.interp(
-            np.flatnonzero(nan_indices), 
-            np.flatnonzero(non_nan_indices), 
-            points_no_nan[non_nan_indices]
-        )
-        points = points_no_nan
-    
-    # Ensure window_size is odd
-    window_size = window_size if window_size % 2 == 1 else window_size + 1
-    # Ensure poly_order < window_size
-    poly_order = min(poly_order, window_size - 1)
-    
-    # Apply Savitzky-Golay filter
-    smoothed = savgol_filter(points, window_size, poly_order)
-    return smoothed
-
-def get_diversity_summary(results_manager, dataset_name, experiment_type, server_filter=None):
+def get_diversity_summary(
+    results_manager, 
+    dataset_name, 
+    experiment_type, 
+    server_filter=None,
+    averaged_ot_costs_df=None
+):
     """
     Extracts diversity metrics from experiment results into a pandas DataFrame.
     
     Args:
-        results_manager (ResultsManager): Instance of ResultsManager
-        dataset_name (str): Name of the dataset
-        experiment_type (str): Type of experiment (e.g., 'evaluation')
-        server_filter (List[str], optional): List of server types to include. If None, includes fedavg.
+        results_manager: Instance of ResultsManager
+        dataset_name: Name of the dataset
+        experiment_type: Type of experiment (e.g., 'evaluation')
+        server_filter: List of server types to include. If None, includes fedavg
+        averaged_ot_costs_df: Optional DataFrame with averaged OT costs per (fl_cost_param, fl_run_idx)
         
     Returns:
-        pandas.DataFrame: DataFrame with diversity metrics
+        pandas.DataFrame: DataFrame with diversity metrics, optionally including OT costs
     """
     import pandas as pd
     import numpy as np
@@ -1090,19 +1368,50 @@ def get_diversity_summary(results_manager, dataset_name, experiment_type, server
     # Create DataFrame
     df = pd.DataFrame(data)
     
+    # Merge with OT costs if provided
+    if averaged_ot_costs_df is not None and not averaged_ot_costs_df.empty and not df.empty:
+        df = pd.merge(
+            df, 
+            averaged_ot_costs_df, 
+            left_on=['cost', 'run_idx'], 
+            right_on=['fl_cost_param', 'fl_run_idx'], 
+            how='left'
+        )
+        # Drop duplicate columns
+        if 'fl_cost_param' in df.columns:
+            df.drop(columns=['fl_cost_param'], inplace=True)
+        if 'fl_run_idx' in df.columns:
+            df.drop(columns=['fl_run_idx'], inplace=True)
+    
     return df
 
-def plot_diversity_metrics(df, dataset_name, costs=None, window_size=5, poly_order=1, figsize=(10, 6)):
+def plot_diversity_metrics(
+    df, 
+    dataset_name, 
+    costs=None, 
+    window_size=5, 
+    poly_order=1, 
+    figsize=(10, 6),
+    x_axis_source='cost',
+    ot_method_name='WC_Direct_Hellinger_4:1',
+    client_pair='client_1_vs_client_2',
+    metrics_to_plot=None
+):
     """
-    Plots diversity metrics over rounds for specified costs.
+    Plots diversity metrics over rounds, with colors based on either cost or OT cost.
     
     Args:
-        df (pandas.DataFrame): DataFrame from get_diversity_summary
-        dataset_name (str): Name of the dataset for plot title
-        costs (List[Any], optional): List of costs to plot. If None, plots all costs.
-        window_size (int): Window size for smoothing
-        poly_order (int): Polynomial order for smoothing
-        figsize (tuple): Figure size (width, height)
+        df: DataFrame from get_diversity_summary
+        dataset_name: Name of the dataset for plot title
+        costs: List of costs to plot. If None, plots all costs.
+        window_size: Window size for smoothing
+        poly_order: Polynomial order for smoothing
+        figsize: Figure size (width, height)
+        x_axis_source: Source for coloring lines: 'cost' or 'avg_ot_cost'
+        ot_method_name: Name of the OT method (for title when x_axis_source='avg_ot_cost')
+        client_pair: Client pair (for title when x_axis_source='avg_ot_cost')
+        metrics_to_plot: List of metrics to plot. Options: ['weight_div', 'weight_orient']. 
+                         If None, plots both metrics.
         
     Returns:
         matplotlib.figure.Figure: The created figure
@@ -1110,28 +1419,70 @@ def plot_diversity_metrics(df, dataset_name, costs=None, window_size=5, poly_ord
     import matplotlib.pyplot as plt
     import numpy as np
     
+    if df.empty:
+        return None
+    
+    # Check if we have necessary columns for the requested x_axis_source
+    if x_axis_source == 'avg_ot_cost' and 'avg_ot_cost' not in df.columns:
+
+        x_axis_source = 'cost'
+    
     # Filter costs if specified
     if costs is not None:
         df = df[df['cost'].isin(costs)].copy()
-    else:
-        costs = sorted(df['cost'].unique())
     
-    # Setup figure and grid
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
-    axes = axes.flatten()
-    
-    # Define plot titles and metrics to extract
-    plot_configs = [
+    # Define all available metrics with their configurations
+    all_metrics = [
         {'title': 'Weight Update Divergence', 'metric': 'weight_div', 'ax_idx': 0},
         {'title': 'Update Direction Similarity', 'metric': 'weight_orient', 'ax_idx': 1},
     ]
     
-    # Define a list of colors for different costs
-    colors = plt.cm.viridis(np.linspace(0, 1, len(costs)))
+    # Filter metrics based on metrics_to_plot
+    if metrics_to_plot:
+        plot_configs = [m for m in all_metrics if m['metric'] in metrics_to_plot]
+        if not plot_configs:
+            plot_configs = all_metrics
+    else:
+        plot_configs = all_metrics
+    
+    # Determine number of subplots and create figure
+    n_plots = len(plot_configs)
+    fig, axes = plt.subplots(1, n_plots, figsize=figsize)
+    
+    # Ensure axes is always a list-like object, even for a single subplot
+    if n_plots == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+    
+    # Determine the grouping strategy and color scheme
+    if x_axis_source == 'cost':
+        # Group by original cost parameter
+        if costs is None:
+            costs = sorted(df['cost'].unique())
+        group_column = 'cost'
+        group_values = costs
+        legend_prefix = "Cost = "
+    else:  # x_axis_source == 'avg_ot_cost'
+        # Group by discrete ot costs from the original costs
+        # Get the average OT cost for each original cost
+        ot_by_cost = df.groupby('cost')['avg_ot_cost'].mean().reset_index()
+        group_column = 'cost'
+        group_values = ot_by_cost['cost'].tolist()
+        
+        # Create mapping from cost to average OT cost for legend and coloring
+        cost_to_ot = dict(zip(ot_by_cost['cost'], ot_by_cost['avg_ot_cost']))
+        legend_prefix = "OT Cost = "
+        
+        # Create a continuous color scale based on OT costs
+        min_ot = min(cost_to_ot.values())
+        max_ot = max(cost_to_ot.values())
+        norm = plt.Normalize(min_ot, max_ot)
+        cmap = plt.cm.viridis  # A good sequential colormap
     
     # Plot each metric
-    for config in plot_configs:
-        ax = axes[config['ax_idx']]
+    for i, config in enumerate(plot_configs):
+        ax = axes[i]
         
         # Set plot title and labels
         ax.set_title(config['title'], fontsize=14)
@@ -1141,17 +1492,22 @@ def plot_diversity_metrics(df, dataset_name, costs=None, window_size=5, poly_ord
         legend_handles = []
         legend_labels = []
         
-        # Plot each cost
-        for idx, cost in enumerate(costs):
-            # Get data for this cost
-            cost_df = df[df['cost'] == cost]
+        # Sort group values to ensure consistent color mapping
+        if x_axis_source == 'avg_ot_cost':
+            # Sort by OT cost value for consistent gradient
+            group_values = sorted(group_values, key=lambda x: cost_to_ot[x])
+        
+        # Plot each group
+        for idx, group_value in enumerate(group_values):
+            # Get data for this group
+            group_df = df[df[group_column] == group_value]
             
-            # Skip if no data for this cost
-            if cost_df.empty:
+            # Skip if no data for this group
+            if group_df.empty:
                 continue
                 
             # Group by round_num and compute mean of the metric across runs
-            round_data = cost_df.groupby('round_num')[config['metric']].mean().reset_index()
+            round_data = group_df.groupby('round_num')[config['metric']].mean().reset_index()
             
             # Get x and y data
             x = round_data['round_num'].values
@@ -1164,15 +1520,31 @@ def plot_diversity_metrics(df, dataset_name, costs=None, window_size=5, poly_ord
             # Apply smoothing
             y_smooth = smooth_curve(y, window_size, poly_order)
             
+            # Determine color based on coloring scheme
+            if x_axis_source == 'cost':
+                # Use categorical colors for cost
+                color = plt.cm.tab10(idx % 10) if len(group_values) <= 10 else plt.cm.tab20(idx % 20)
+            else:  # x_axis_source == 'avg_ot_cost'
+                # Use gradient color based on OT cost value
+                ot_value = cost_to_ot[group_value]
+                color = cmap(1- norm(ot_value))
+            
             # Plot the smoothed line
-            line, = ax.plot(x, y_smooth, color=colors[idx], linewidth=2)
+            line, = ax.plot(x, y_smooth, color=color, linewidth=2)
             
             # Add to legend
             legend_handles.append(line)
-            legend_labels.append(f"Cost = {cost}")
+            
+            # Format legend label based on grouping
+            if x_axis_source == 'cost':
+                legend_labels.append(f"{legend_prefix}{group_value}")
+            else:  # x_axis_source == 'avg_ot_cost'
+                # Use the mapped OT cost value instead of original cost
+                ot_value = cost_to_ot[group_value]
+                legend_labels.append(f"{legend_prefix}{ot_value:.2f}")
             
             # Plot original points with lower alpha
-            ax.scatter(x, y, color=colors[idx], alpha=0.2)
+            ax.scatter(x, y, color=color, alpha=0.2)
         
         # Add legend
         if legend_handles:
@@ -1181,8 +1553,15 @@ def plot_diversity_metrics(df, dataset_name, costs=None, window_size=5, poly_ord
         # Add grid
         ax.grid(True, linestyle='--', alpha=0.7)
     
-    # Set overall title
-    fig.suptitle(f"Diversity Metrics for {dataset_name}", fontsize=16)
+    # # Set overall title based on grouping strategy
+    # if x_axis_source == 'cost':
+    #     fig.suptitle(f"Diversity Metrics for {dataset_name}", fontsize=16)
+    # else:  # x_axis_source == 'avg_ot_cost'
+    #     fig.suptitle(
+    #         f"Diversity Metrics for {dataset_name}\n" +
+    #         f"Colored by OT Cost ({ot_method_name}, {client_pair})",
+    #         fontsize=16
+    #     )
     
     # Adjust layout
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])

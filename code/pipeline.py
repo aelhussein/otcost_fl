@@ -409,16 +409,31 @@ class Experiment:
         return CostExecutionResult(cost=cost, trial_records=trial_records)
 
     def _evaluate_cost_for_run(self, cost: Any, run_idx: int, seed: int,
-                            client_dataloaders: Dict, num_actual_clients: int
-                            ) -> CostExecutionResult:
-        """Executes all evaluation trials (servers) for a single cost and run.""" 
+                        client_dataloaders: Dict, num_actual_clients: int
+                        ) -> CostExecutionResult:
+        """Executes only missing evaluation trials (servers) for a single cost and run.""" 
         trial_records: List[TrialRecord] = []
         
         # Get selection criteria from default params
         selection_criterion_key = self.default_params.get('selection_criterion_key', 'val_losses')
         selection_criterion_direction_overrides = self.default_params.get('selection_criterion_direction_overrides', {})
 
-        for server_type in ALGORITHMS: # Use global ALGORITHMS list
+        # Check existing records to find which algorithms are already complete
+        completed_algos = set()
+        for record in self.all_trial_records:
+            if record.cost == cost and record.run_idx == run_idx and record.error is None:
+                completed_algos.add(record.server_type)
+        
+        # Only run algorithms that haven't been completed yet
+        algorithms_to_run = [algo for algo in ALGORITHMS if algo not in completed_algos]
+        
+        if not algorithms_to_run:
+            print(f"All algorithms already complete for cost {cost}, run {run_idx+1}")
+            return CostExecutionResult(cost=cost, trial_records=[])
+            
+        print(f"Running missing algorithms for cost {cost}, run {run_idx+1}: {algorithms_to_run}")
+
+        for server_type in algorithms_to_run:
             # For personalized algorithms, use FedAvg's best learning rate
             if server_type in REG_ALOGRITHMS:
                 # Get FedAvg's best learning rate

@@ -31,7 +31,7 @@ class DirPaths:
     selection_criterion_key: str
 
 
-def configure(metric: str = "loss") -> None:
+def configure(metric: str = "loss", force: bool = False) -> None:
     """
     Build all directories and set the global constants exactly *once*.
 
@@ -44,7 +44,7 @@ def configure(metric: str = "loss") -> None:
     global ROOT_DIR, DATA_DIR, RESULTS_DIR, MODEL_SAVE_DIR, ACTIVATION_DIR, SELECTION_CRITERION_KEY
     global _configured, _metric
 
-    if _configured:
+    if _configured and not force:
         logging.warning("directories.configure() called twice – ignored.")
         return
 

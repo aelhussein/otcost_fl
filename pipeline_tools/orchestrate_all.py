@@ -94,13 +94,66 @@ def get_summary_status(datasets: List[str], num_clients_list: List[int], metric:
                 done = len(remaining) == 0
                 
                 # Count errors
-                errors = sum(1 for r in records if getattr(r, "error", None) is not None)
+                if phase == ExperimentType.OT_ANALYSIS:
+                    # For OT Analysis, count records with error_message
+                    errors = sum(1 for r in records if isinstance(r, dict) and r.get('error_message') is not None)
+                    
+                    # Special handling for OT_ANALYSIS progress counting
+                    if records:
+                        # Calculate client pairs
+                        client_ids = [f'client_{i+1}' for i in range(num_clients)]
+                        client_pairs = []
+                        for i in range(len(client_ids)):
+                            for j in range(i+1, len(client_ids)):
+                                client_pairs.append(f"{client_ids[i]}_vs_{client_ids[j]}")
+                        
+                        # Get OT method names from records
+                        ot_method_names = set()
+                        for record in records:
+                            if isinstance(record, dict) and 'ot_method_name' in record:
+                                ot_method_names.add(record.get('ot_method_name'))
+                        
+                        # Fallback if no methods found
+                        if not ot_method_names:
+                            try:
+                                from ot_configs import all_configs
+                                ot_method_names = set([config.name for config in all_configs])
+                            except ImportError:
+                                ot_method_names = {"Direct_Wasserstein", "WC_Direct_Hellinger_4:1"}
+                        
+                        # Calculate total expected work units
+                        target_fl_runs = dflt.get('runs', 1)
+                        total_units = len(costs) * target_fl_runs * len(client_pairs) * len(ot_method_names)
+                        
+                        # Count successfully completed work units
+                        completed_units = set()
+                        for record in records:
+                            if isinstance(record, dict) and record.get('status') == 'Success':
+                                cost = record.get('fl_cost_param')
+                                run_idx = record.get('fl_run_idx')
+                                client_pair = record.get('client_pair')
+                                method_name = record.get('ot_method_name')
+                                
+                                if all(x is not None for x in [cost, run_idx, client_pair, method_name]):
+                                    key = (cost, run_idx, client_pair, method_name)
+                                    completed_units.add(key)
+                        
+                        record_count = len(completed_units)
+                        remaining_count = total_units - record_count
+                    else:
+                        record_count = 0
+                        remaining_count = 0  # We can't calculate without records
+                else:
+                    # Standard error counting for other phases
+                    errors = sum(1 for r in records if getattr(r, "error", None) is not None)
+                    record_count = len(records)
+                    remaining_count = len(remaining)
                 
                 status[phase] = {
                     "done": done,
-                    "records": len(records),
+                    "records": record_count,
                     "errors": errors,
-                    "remaining": len(remaining)
+                    "remaining": remaining_count
                 }
             
             summary[dataset][num_clients] = status
