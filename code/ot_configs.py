@@ -202,51 +202,22 @@ direct_ot_configs = [
 subsampled_direct_ot_configs = [   
     OTConfig(
         method_type='direct_ot',
-        name='WC_Direct_Hellinger_4:1',
-        params={
-            **COMMON_WC_COSINE_HELLINGER_PARAMS,
-            'feature_weight': 4.0,
-            'label_weight': 1.0,
-        }
-    ),
-    OTConfig(
-        method_type='direct_ot',
-        name='WC_Direct_Hellinger_4:1_s400',
-        params={
-            **COMMON_WC_COSINE_HELLINGER_PARAMS,
-            'feature_weight': 4.0,
-            'label_weight': 1.0,
-            'max_samples': 400,
-        }
-    ),
-    OTConfig(
-        method_type='direct_ot',
-        name='WC_Direct_Hellinger_4:1_s300',
-        params={
-            **COMMON_WC_COSINE_HELLINGER_PARAMS,
-            'feature_weight': 4.0,
-            'label_weight': 1.0,
-            'max_samples': 300,
-        }
-    ),
-    OTConfig(
-        method_type='direct_ot',
-        name='WC_Direct_Hellinger_4:1_s200',
-        params={
-            **COMMON_WC_COSINE_HELLINGER_PARAMS,
-            'feature_weight': 4.0,
-            'label_weight': 1.0,
-            'max_samples': 200,
-        }
-    ),
-    OTConfig(
-        method_type='direct_ot',
         name='WC_Direct_Hellinger_4:1_s100',
         params={
             **COMMON_WC_COSINE_HELLINGER_PARAMS,
             'feature_weight': 4.0,
             'label_weight': 1.0,
             'max_samples': 100,
+        }
+    ),
+        OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_s75',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'max_samples': 75,
         }
     ),
     OTConfig(
@@ -256,7 +227,17 @@ subsampled_direct_ot_configs = [
             **COMMON_WC_COSINE_HELLINGER_PARAMS,
             'feature_weight': 4.0,
             'label_weight': 1.0,
-            'max_samples': 50,
+            'max_samples':50,
+        }
+    ),
+    OTConfig(
+        method_type='direct_ot',
+        name='WC_Direct_Hellinger_4:1_s25',
+        params={
+            **COMMON_WC_COSINE_HELLINGER_PARAMS,
+            'feature_weight': 4.0,
+            'label_weight': 1.0,
+            'max_samples': 25,
         }
     ),
 ]

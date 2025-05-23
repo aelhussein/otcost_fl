@@ -278,3 +278,18 @@ DATASET_COSTS = {
     #          'vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',
     #          'vmod_msk', 'vmod_vienna','rose_msk', 'rose_vienna','msk_vienna'], # Using string keys
 }
+
+
+DATASET_COSTS = {
+    'Synthetic_Label': [1000.0, 10.0, 2.0, 1.0, 0.75, 0.5, 0.2, 0.1],
+    'Synthetic_Feature': [0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0],
+    'Credit': [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0],
+    'EMNIST': [0.0, 0.1, 0.25, 0.4, 0.6, 0.7, 0.9],
+    'CIFAR': [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+    'Synthetic_Concept': [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+    'IXITiny': ['guys_hh', 'iop_guys', 'iop_hh'],
+    'ISIC': ['bcn_vmole','vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',], 
+    # 'ISIC': ['bcn_vmole', 'bcn_vmod', 'bcn_rose', 'bcn_msk', 'bcn_vienna',
+    #          'vmole_vmod', 'vmole_rose', 'vmole_msk', 'vmole_vienna','vmod_rose',
+    #          'vmod_msk', 'vmod_vienna','rose_msk', 'rose_vienna','msk_vienna'], # Using string keys
+}

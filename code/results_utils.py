@@ -8,14 +8,12 @@ import seaborn as sns
 from collections import defaultdict
 from typing import List, Dict, Tuple, Any, Optional, Union
 from scipy import stats
-
-# We need to import the necessary classes and constants
-# These imports should be adjusted based on your actual project structure
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 try:
     from results_manager import ResultsManager, TrialRecord,  OTAnalysisRecord
     from helper import MetricKey, ExperimentType, infer_higher_is_better
 except ImportError:
-    # For fallback or testing - these might need to be adjusted
     pass
 
 
@@ -46,11 +44,10 @@ def get_averaged_ot_costs(
         filtered_df = filtered_df[filtered_df['client_pair'] == target_client_pair]
     
     if filtered_df.empty:
-        logger.warning(f"No OT data found for method '{target_ot_method_name}' and client pair '{target_client_pair}'")
         return pd.DataFrame()
     
     # Group by cost parameter and run index
-    grouped = filtered_df.groupby(['fl_cost_param', 'fl_run_idx'])
+    grouped = filtered_df.groupby(['fl_cost_param'])
     
     # Aggregate OT costs
     aggregated = grouped.agg(
@@ -614,7 +611,8 @@ def load_ot_results(results_mgr: ResultsManager, filter_status: str = "Success")
     # Filter by status if requested
     if filter_status and 'status' in df.columns:
         df = df[df['status'] == filter_status]
-    
+    df.drop(columns=['ot_method_specific_results'], inplace=True, errors='ignore')
+    df = df.drop_duplicates()
     return df, ot_metadata
 
 def aggregate_ot_data(df: pd.DataFrame, grouping_keys: List[str] = None, 
@@ -671,7 +669,7 @@ def aggregate_ot_data(df: pd.DataFrame, grouping_keys: List[str] = None,
         ot_values = group['ot_cost_value'].dropna().values
         if len(ot_values) > 0:
             result['ot_cost_mean'] = np.mean(ot_values)
-            ci_low, ci_high = mean_ci_bootstrap(ot_values, 0.8)[1:3]
+            ci_low, ci_high = mean_ci_bootstrap(ot_values, 0.95)[1:3]
             result['ot_cost_low'] = ci_low
             result['ot_cost_high'] = ci_high
         else:
@@ -683,7 +681,7 @@ def aggregate_ot_data(df: pd.DataFrame, grouping_keys: List[str] = None,
         delta_values = group['fl_performance_delta'].dropna().values
         if len(delta_values) > 0:
             result['delta_mean'] = np.mean(delta_values)
-            ci_low, ci_high = mean_ci_bootstrap(delta_values, 0.8)[1:3]
+            ci_low, ci_high = mean_ci_bootstrap(delta_values, 0.85)[1:3]
             result['delta_low'] = ci_low
             result['delta_high'] = ci_high
         else:
@@ -696,7 +694,7 @@ def aggregate_ot_data(df: pd.DataFrame, grouping_keys: List[str] = None,
             percent_values = group['fl_performance_percent'].dropna().values
             if len(percent_values) > 0:
                 result['percent_delta_mean'] = np.mean(percent_values)
-                ci_low, ci_high = mean_ci_bootstrap(percent_values)[1:3]
+                ci_low, ci_high = mean_ci_bootstrap(percent_values,0.85)[1:3]
                 result['percent_delta_low'] = ci_low
                 result['percent_delta_high'] = ci_high
             else:
@@ -727,8 +725,16 @@ def aggregate_ot_data(df: pd.DataFrame, grouping_keys: List[str] = None,
     
     return aggregated_data
 
-def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_clients: int, 
-                    use_percentage: bool = True, figsize=None) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
+def plot_ot_errorbar(dataset_name: str,
+                    RESULTS_DIR: str,
+                    aggregated_data: pd.DataFrame, 
+                    algorithms: List[str],
+                    use_percentage: bool = True,
+                    figsize: Optional[Tuple] = None,
+                    ylim: Optional[Tuple] = None,
+                    xlim: Optional[Tuple] = None,
+                    save_figure: Optional[bool] = None,
+                    wasserstein: Optional[bool] = False) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
     """
     Create an error bar plot of OT cost vs. performance delta.
     
@@ -758,62 +764,129 @@ def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_cl
     # Check if we can use percentages
     can_use_percentage = use_percentage and 'percent_delta_mean' in aggregated_data.columns
     
-    # Set color scheme based on algorithms rather than costs
-    if 'algorithm' in aggregated_data.columns:
-        unique_algorithms = sorted(aggregated_data['algorithm'].unique())
-        # Use distinct color scheme appropriate for categorical data
-        colors = plt.cm.tab10(np.linspace(0, 1, len(unique_algorithms)))
-        algorithm_to_color = dict(zip(unique_algorithms, colors))
-        color_by = 'algorithm'
-        legend_title = "Algorithm"
-    else:
-        # Fall back to original coloring by cost if algorithm column not present
-        unique_costs = sorted(aggregated_data['fl_cost_param'].unique())
-        colors = plt.cm.viridis(np.linspace(0, 1, len(unique_costs)))
-        algorithm_to_color = dict(zip(unique_costs, colors))
-        color_by = 'fl_cost_param'
-        legend_title = "Cost"
+    # Define the desired legend order
+    legend_order = ['fedavg', 'fedprox', 'pfedme', 'ditto']
     
+    # Set color scheme based on algorithms rather than costs
+    # Use distinct color scheme appropriate for categorical data
+    colors =  [
+            '#1f77b4',  # blue
+            '#d62728',  # red
+            '#2ca02c',  # green
+            '#9467bd',  # purple
+            '#ff7f0e',  # orange
+            '#8c564b',  # brown
+            '#e377c2',  # pink
+            '#17becf',  # cyan
+            '#bcbd22',  # olive
+            '#7f7f7f'   # gray
+        ]
+    algorithm_to_color = dict(zip(algorithms, colors))
+    color_by = 'algorithm'
+    legend_title = "Algorithm"
+
     # Plot each OT method
     for i, method_name in enumerate(unique_ot_methods):
         ax = axes[i]
         method_df = aggregated_data[aggregated_data['ot_method_name'] == method_name]
         
-        # Track which items we've already plotted (for legend)
+        # Track which items we've plotted (for legend)
         plotted_items = set()
         
-        # Plot each data point with error bars
-        for _, row in method_df.iterrows():
-            item_key = row[color_by]
+        # First, plot all algorithms in the desired legend order
+        for algorithm in legend_order:
+            if algorithm in method_df[color_by].values:
+                algorithm_rows = method_df[method_df[color_by] == algorithm]
+                
+                for _, row in algorithm_rows.iterrows():
+                    item_key = row[color_by]
+                    
+                    # Only include label for first occurrence of each algorithm
+                    label = str(item_key) if item_key not in plotted_items else None
+                    color = algorithm_to_color[item_key]
+                    
+                    # Determine which values to use (percentage or absolute)
+                    if can_use_percentage:
+                        # Use percentage values
+                        y_value = row['percent_delta_mean']
+                        yerr = [[row.get('percent_y_err_lower', 0)], [row.get('percent_y_err_upper', 0)]]
+                    else:
+                        # Use absolute delta values
+                        y_value = row['delta_mean']
+                        yerr = [[row.get('y_err_lower', 0)], [row.get('y_err_upper', 0)]]
+                    
+                    # X error bars are always the same
+                    xerr = [[row.get('x_err_lower', 0)], [row.get('x_err_upper', 0)]]
+                    if item_key == 'fedavg':
+                        color = 'black'
+                        alpha = 1
+                        capsize = 5
+                        markersize = 8
+                        elinewidth = 1.5
+                    else:
+                        alpha = 0.5
+                        capsize = 3
+                        markersize = 4
+                        elinewidth = 0.5
+                    ax.errorbar(
+                        row['ot_cost_mean'], y_value,
+                        xerr=xerr, yerr=yerr,
+                        fmt='o', capsize=capsize, 
+                        label=label, 
+                        markersize=markersize, elinewidth=elinewidth,
+                        color=color, alpha = alpha
+                    )
+                    
+                    plotted_items.add(item_key)
+        
+        # Then plot any remaining algorithms not in the legend_order
+        remaining_algorithms = set(method_df[color_by].unique()) - set(legend_order)
+        for algorithm in remaining_algorithms:
+            algorithm_rows = method_df[method_df[color_by] == algorithm]
             
-            # Only include label for first occurrence of each algorithm/cost
-            label = str(item_key) if item_key not in plotted_items else None
-            color = algorithm_to_color[item_key]
-            
-            # Determine which values to use (percentage or absolute)
-            if can_use_percentage:
-                # Use percentage values
-                y_value = row['percent_delta_mean']
-                yerr = [[row.get('percent_y_err_lower', 0)], [row.get('percent_y_err_upper', 0)]]
-            else:
-                # Use absolute delta values
-                y_value = row['delta_mean']
-                yerr = [[row.get('y_err_lower', 0)], [row.get('y_err_upper', 0)]]
-            
-            # X error bars are always the same
-            xerr = [[row.get('x_err_lower', 0)], [row.get('x_err_upper', 0)]]
-            
-            ax.errorbar(
-                row['ot_cost_mean'], y_value,
-                xerr=xerr, yerr=yerr,
-                fmt='o', capsize=5, label=label, markersize=8, elinewidth=1.5,
-                color=color
-            )
-            
-            plotted_items.add(item_key)
+            for _, row in algorithm_rows.iterrows():
+                item_key = row[color_by]
+                
+                # Only include label for first occurrence of each algorithm
+                label = str(item_key) if item_key not in plotted_items else None
+                color = algorithm_to_color[item_key]
+                
+                # Determine which values to use (percentage or absolute)
+                if can_use_percentage:
+                    # Use percentage values
+                    y_value = row['percent_delta_mean']
+                    yerr = [[row.get('percent_y_err_lower', 0)], [row.get('percent_y_err_upper', 0)]]
+                else:
+                    # Use absolute delta values
+                    y_value = row['delta_mean']
+                    yerr = [[row.get('y_err_lower', 0)], [row.get('y_err_upper', 0)]]
+                
+                # X error bars are always the same
+                xerr = [[row.get('x_err_lower', 0)], [row.get('x_err_upper', 0)]]
+                if item_key == 'fedavg':
+                    color = 'black'
+                    alpha = 1
+                    capsize = 5
+                    markersize = 8
+                    elinewidth = 1.5
+                else:
+                    alpha = 0.4
+                    capsize = 3
+                    markersize = 4
+                    elinewidth = 0.5
+                ax.errorbar(
+                    row['ot_cost_mean'], y_value,
+                    xerr=xerr, yerr=yerr,
+                    fmt='o', capsize=capsize, 
+                    label=label, 
+                    markersize=markersize, elinewidth=elinewidth,
+                    color=color, alpha = alpha
+                )
+                
+                plotted_items.add(item_key)
         
         # Set title and labels
-        ax.set_title(f"{method_name}", fontsize=14)
+        #ax.set_title(f"{method_name}", fontsize=14)
         ax.set_xlabel("Mean OT Cost", fontsize=12)
         if i == 0:
             if can_use_percentage:
@@ -824,13 +897,10 @@ def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_cl
         
         # Add grid and reference lines
         ax.grid(True, linestyle='--', alpha=0.7)
-        ax.axhline(0, color='black', linestyle='-', linewidth=1, label = 'Change relative to Local = 0%')
+        ax.axhline(0, color='black', linestyle='--', linewidth=1.5, label = 'Change relative to Local = 0%')
         
         # Add median OT cost vertical line if available
         x_means = method_df['ot_cost_mean']
-        if not x_means.empty and not pd.isna(x_means).all():
-            median_ot_cost = x_means.median()
-            ax.axvline(median_ot_cost, color='lightgrey', linestyle=':', linewidth=0.8)
         
         # Ensure axes are appropriate
         if not x_means.empty and not pd.isna(x_means).all():
@@ -838,19 +908,38 @@ def plot_ot_errorbar(aggregated_data: pd.DataFrame, dataset_name: str, num_fl_cl
             x_max = max(x_means) + max(method_df['x_err_upper']) if not method_df['x_err_upper'].empty else max(x_means)
             x_padding = (x_max - x_min) * 0.1
             ax.set_xlim(max(0, x_min - x_padding), x_max + x_padding)
-        
+        if ylim is not None:
+            ax.set_ylim(ylim[0], ylim[1])
+        if xlim is not None:
+            ax.set_xlim(xlim[0], xlim[1])
         # Add legend to the subplot
         if plotted_items:
             ax.legend(title=legend_title)
+
+        # Save figure if requested
+    if save_figure:
+        import os
+        # Create directory if it doesn't exist
+        save_dir = f'{RESULTS_DIR}/ot_analysis_figures'
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Save with high resolution for paper
+        filename = f'{dataset_name}_scores_change.pdf'
+        if wasserstein:
+            filename = f'wasserstein_{dataset_name}_scores_change.pdf'
+        filepath = os.path.join(save_dir, filename)
+        fig.savefig(filepath, 
+                   dpi=300,           # High resolution
+                   bbox_inches='tight', # Remove extra whitespace
+                   format='pdf',       # PDF format for papers
+                   facecolor='white',  # White background
+                   edgecolor='none')   # No edge color
+        print(f"Figure saved to: {filepath}")
     
-    # Add overall title with indication of percentage or absolute
-    title_type = "% Change Relative to Local" if can_use_percentage else "Performance Delta"
-    fig.suptitle(f"OT Cost vs. {title_type} for {dataset_name} ({num_fl_clients} FL Clients)", fontsize=16)
-    
-    # Adjust layout
+    plt.show()
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
-    return
+    return ax , fig
 
 def plot_ot_scatter(df: pd.DataFrame, dataset_name: str, num_fl_clients: int, 
                    use_percentage: bool = True, figsize=None) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
@@ -971,6 +1060,7 @@ def add_algorithm_results_to_ot(results_manager: ResultsManager, ot_df: pd.DataF
     """
     Enriches OT analysis DataFrame with metrics from all algorithms (FedAvg, FedProx, PFedMe, Ditto)
     while preserving run-level granularity for confidence interval calculation.
+    Optimized for performance using vectorized operations.
     
     Args:
         results_manager: ResultsManager instance to load evaluation results
@@ -980,75 +1070,92 @@ def add_algorithm_results_to_ot(results_manager: ResultsManager, ot_df: pd.DataF
     Returns:
         Expanded DataFrame with algorithm column and deltas for all algorithms
     """
+    ot_df = ot_df[['dataset_name', 'fl_cost_param', 'fl_run_idx', 'ot_method_name', 'ot_cost_value']]
     # Load evaluation results
     eval_records, _ = results_manager.load_results(ExperimentType.EVALUATION)
-    
-    # Create a list to store expanded records
-    expanded_records = []
-    
-    # First, organize eval_records by (cost, run_idx, server_type) for efficient lookup
-    eval_lookup = {}
-    for rec in eval_records:
-        if rec.error is None and rec.metrics:
-            key = (rec.cost, rec.run_idx, rec.server_type)
-            eval_lookup[key] = rec
-    
-    # Set the metric key based on metric_type
+    # Convert eval records to DataFrame in one operation
+    eval_data = []
     metric_key = 'test_scores' if metric_type == 'score' else 'test_losses'
     
-    # Process each OT record
-    for _, ot_row in ot_df.iterrows():
-        cost_param = ot_row['fl_cost_param']
-        run_idx = ot_row['fl_run_idx']
-        
-        # Get the local performance for this specific run and cost
-        local_key = (cost_param, run_idx, 'local')
-        if local_key not in eval_lookup:
-            continue  # Skip if we don't have local performance for this run/cost
-        
-        local_rec = eval_lookup[local_key]
-        if metric_key not in local_rec.metrics or not local_rec.metrics[metric_key]:
-            continue  # Skip if local metrics are missing
-            
-        local_val = local_rec.metrics[metric_key][-1]  # Use final value
-        
-        # Create a record for each algorithm if data is available
-        for algo in ['fedavg', 'fedprox', 'pfedme', 'ditto']:
-            algo_key = (cost_param, run_idx, algo)
-            if algo_key not in eval_lookup:
-                continue  # Skip if this algorithm doesn't have data for this run/cost
-                
-            algo_rec = eval_lookup[algo_key]
-            if metric_key not in algo_rec.metrics or not algo_rec.metrics[metric_key]:
-                continue  # Skip if algorithm metrics are missing
-                
-            algo_val = algo_rec.metrics[metric_key][-1]  # Use final value
-            
-            # Compute delta based on metric type (scores or losses)
-            if metric_type == 'score':
-                # For scores, higher is better: algo - local (positive means algo better)
-                delta = algo_val - local_val
-            else:
-                # For losses, lower is better: local - algo (positive means algo better)
-                delta = local_val - algo_val
-            
-            # Create a new row with all fields from the original OT row
-            new_row = ot_row.copy()
-            new_row['algorithm'] = algo
-            new_row['fl_performance_delta'] = delta
-            new_row['fl_local_metric'] = local_val
-            new_row['fl_algo_metric'] = algo_val
-            
-            # Also add percentage calculation
-            if abs(local_val) > 1e-10:  # Avoid division by zero
-                new_row['fl_performance_percent'] = (delta / abs(local_val)) * 100
-            else:
-                new_row['fl_performance_percent'] = np.nan
-                
-            expanded_records.append(new_row)
+    for rec in eval_records:
+        if rec.error is None and rec.metrics and metric_key in rec.metrics and rec.metrics[metric_key]:
+            eval_data.append({
+                'cost_param': rec.cost,
+                'run_idx': rec.run_idx,
+                'server_type': rec.server_type,
+                'metric_value': rec.metrics[metric_key][-1]  # Use final value
+            })
     
-    # Convert to DataFrame
-    return pd.DataFrame(expanded_records)
+    if not eval_data:
+        return pd.DataFrame()  # Return empty DataFrame if no valid records
+    
+    # Convert to DataFrame for efficient filtering
+    eval_df = pd.DataFrame(eval_data)
+    
+    # Filter for local algorithm first
+    local_df = eval_df[eval_df['server_type'] == 'local'].copy()
+    local_df.rename(columns={'metric_value': 'local_metric'}, inplace=True)
+    
+    # Create list of algorithm DataFrames to concatenate
+    algo_dfs = []
+    
+    # Process each algorithm in vectorized fashion
+    for algo in ['fedavg', 'fedprox', 'pfedme', 'ditto']:
+        # Filter for this algorithm
+        algo_df = eval_df[eval_df['server_type'] == algo].copy()
+        
+        if algo_df.empty:
+            continue
+            
+        algo_df.rename(columns={'metric_value': 'algo_metric'}, inplace=True)
+        
+        # Merge with local data
+        merged_df = pd.merge(
+            local_df[['cost_param', 'run_idx', 'local_metric']],
+            algo_df[['cost_param', 'run_idx', 'algo_metric']],
+            on=['cost_param', 'run_idx'],
+            how='inner'
+        )
+        
+        if merged_df.empty:
+            continue
+            
+        # Calculate delta based on metric type
+        if metric_type == 'score':
+            # For scores, higher is better: algo - local (positive means algo better)
+            merged_df['fl_performance_delta'] = merged_df['algo_metric'] - merged_df['local_metric']
+        else:
+            # For losses, lower is better: local - algo (positive means algo better)
+            merged_df['fl_performance_delta'] = merged_df['local_metric'] - merged_df['algo_metric']
+        
+        # Calculate percentage
+        mask = np.abs(merged_df['local_metric']) > 1e-10  # Avoid division by zero
+        merged_df['fl_performance_percent'] = np.nan
+        merged_df.loc[mask, 'fl_performance_percent'] = (merged_df.loc[mask, 'fl_performance_delta'] / np.abs(merged_df.loc[mask, 'local_metric'])) * 100
+        
+        # Add algorithm column
+        merged_df['algorithm'] = algo
+        
+        # Now merge with OT data
+        merged_with_ot = pd.merge(
+            ot_df,
+            merged_df,
+            left_on=['fl_cost_param', 'fl_run_idx'],
+            right_on=['cost_param', 'run_idx'],
+            how='inner'
+        )
+        
+        if not merged_with_ot.empty:            
+            # Drop temporary columns
+            merged_with_ot = merged_with_ot.drop(columns=[
+                'local_metric', 'algo_metric',
+                'cost_param', 'run_idx'
+            ], errors='ignore')
+            
+            algo_dfs.append(merged_with_ot)
+    
+    result_df = pd.concat(algo_dfs, ignore_index=True)
+    return result_df
 
 def calculate_ot_correlations(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1128,7 +1235,8 @@ def get_tuning_summary(
     experiment_type: str,
     server_filter: Optional[str] = None,
     higher_is_better_metric: bool = False,
-    averaged_ot_costs_df: Optional[pd.DataFrame] = None
+    averaged_ot_costs_df: Optional[pd.DataFrame] = None,
+    costs: Optional[List[float]] = None,
 ) -> pd.DataFrame:
     """
     Loads LR tuning results, calculates the average (median) performance 
@@ -1178,7 +1286,6 @@ def get_tuning_summary(
                 continue
         except (ValueError, TypeError) as e: 
             continue
-
         processed_data.append({
             'cost': record.cost,
             'server_type': record.server_type,
@@ -1191,14 +1298,13 @@ def get_tuning_summary(
         return pd.DataFrame()
 
     df = pd.DataFrame(processed_data)
-    
     # Merge with OT costs if provided
     if averaged_ot_costs_df is not None and not averaged_ot_costs_df.empty:
         df = pd.merge(
             df, 
             averaged_ot_costs_df, 
-            left_on=['cost', 'run_idx'], 
-            right_on=['fl_cost_param', 'fl_run_idx'], 
+            left_on=['cost'], 
+            right_on=['fl_cost_param'], 
             how='left'
         )
         # Drop duplicate columns
@@ -1242,18 +1348,20 @@ def get_tuning_summary(
         by=['cost', 'server_type', 'avg_val_performance'],
         ascending=[True, True, sort_direction]
     ).reset_index(drop=True)
-
+    if costs is not None:
+        # Filter to include only specified costs
+        agg_summary = agg_summary[agg_summary['cost'].isin(costs)]
     return agg_summary
 
 def plot_reg_param_vs_cost(
     best_params_df: pd.DataFrame, 
     x_axis_key: str = 'cost',
-    ot_method_name: str = 'WC_Direct_Hellinger_4:1',
-    client_pair: str = 'client_1_vs_client_2',
+    y_label: str = 'log(Best Regularization Parameter)',
     figsize: Tuple[int, int] = (6, 4)
 ) -> None:
     """
     Plot the best regularization parameter against either cost or OT cost for each server type.
+    Includes regression lines with error bands and R² values using seaborn.
     
     Args:
         best_params_df: DataFrame containing the best regularization parameters and costs
@@ -1266,32 +1374,250 @@ def plot_reg_param_vs_cost(
         x_axis_key = 'cost'
     
     # Create the plot
-    plt.figure(figsize=figsize)
-    scatterplot = sns.scatterplot(
-        data=best_params_df,
-        x=x_axis_key,
-        y='reg_param',
-        hue='server_type',
-        s=80,  
-        alpha=0.7, 
-        palette='deep', 
-        edgecolor='w',
-        linewidth=0.5
-    )
+    fig, ax = plt.subplots(figsize=figsize)
+    server_types = best_params_df['server_type'].unique()
     
+    # Use deep palette from seaborn for consistent colors
+    colors = sns.color_palette('deep', n_colors=len(server_types))
+    palette = dict(zip(server_types, colors))
+    
+    # Store legend info
+    legend_elements = []
+    
+    # Plot each server type separately
+    for i, server_type in enumerate(server_types):
+        # Filter data for this server type
+        server_data = best_params_df[best_params_df['server_type'] == server_type]
+    
+        x_values = server_data[x_axis_key].values
+        y_values = server_data['reg_param'].values
+        
+        slope, intercept, r_value, p_value, std_err = stats.linregress(x_values, y_values)
+        r_squared = r_value**2
+        
+        # Use seaborn regplot for regression line and confidence interval
+        sns.regplot(
+            data=server_data,
+            x=x_axis_key,
+            y='reg_param',
+            ax=ax,
+            ci=95,
+            scatter_kws={
+                'color': palette[server_type], 
+                's': 60, 
+                'alpha': 0.6, 
+                'edgecolor': 'w', 
+                'linewidths': 0.5
+            },
+            line_kws={
+                'color': palette[server_type], 
+                'linewidth': 1.5, 
+                'alpha': 0.8
+            },
+            color=palette[server_type]  # This controls the CI fill color
+        )
+        
+        # Create legend element
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color=palette[server_type], 
+                                        markerfacecolor=palette[server_type], 
+                                        markersize=8,
+                                        label=f"{server_type} (β = {slope:.1f}, p = {p_value:.3f})"))
+        
+
     # Dynamic x-axis label
     if x_axis_key == 'avg_ot_cost':
-        plt.xlabel(f"OT Cost", fontsize=10)
+        ax.set_xlabel(f"OT Cost", fontsize=10)
     else:
-        plt.xlabel("Cost (Heterogeneity Parameter)", fontsize=10)
+        ax.set_xlabel("Cost (Heterogeneity Parameter)", fontsize=10)
         
-    plt.ylabel("Best Regularization Parameter", fontsize=10)
-    # plt.title("Best Regularization Parameter vs. " + 
-    #          ("OT Cost" if x_axis_key == 'avg_ot_cost' else "Cost"), fontsize=8)
-    plt.legend(title="Server Type")
+    ax.set_ylabel(y_label, fontsize=10)
+    
+    # Create custom legend with R² values
+    ax.legend(handles=legend_elements, title="Server Type", loc = 'upper right')
+    
+    # Format x-axis ticks
     plt.xticks(rotation=45)
-    plt.tight_layout(rect=[0, 0, 0.85, 1]) 
+    plt.tight_layout(rect=[0, 0, 0.85, 1])
     plt.show()
+
+def plot_standardized_reg_param_vs_ot(
+    combined_df: pd.DataFrame,
+    x_axis_key: str = 'avg_ot_cost',
+    y_axis_key: str = 'reg_param',
+    y_label: str = 'Standardized log(Reg Param)',
+    dataset_key: str = 'dataset',
+    server_types: List[str] = ['fedprox', 'pfedme', 'ditto'],
+    figsize: Tuple[int, int] = (18, 6),
+    save_figure: Optional[bool] = None,
+    RESULTS_DIR: Optional[str] = 'results'
+) -> None:
+    """
+    Plot standardized regularization parameters vs OT cost with dataset-colored dots
+    and single regression lines across all data points for multiple server types.
+    
+    Args:
+        combined_df: DataFrame with data from multiple datasets and server types
+        x_axis_key: Column name for x-axis (default: 'avg_ot_cost')
+        y_axis_key: Column name for y-axis (default: 'reg_param')
+        dataset_key: Column name for dataset grouping (default: 'dataset')
+        server_types: List of server types to plot (default: ['fedprox', 'pfedme', 'ditto'])
+        figsize: Figure size as (width, height)
+    """
+    # Validate inputs
+    required_cols = [x_axis_key, y_axis_key, dataset_key, 'server_type']
+    missing_cols = [col for col in required_cols if col not in combined_df.columns]
+    if missing_cols:
+        print(f"Error: Missing columns {missing_cols}")
+        return
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(1, len(server_types), figsize=figsize, sharey=True)
+    if len(server_types) == 1:
+        axes = [axes]  # Ensure axes is always a list
+    
+    # Get unique datasets and create consistent color palette
+    all_datasets = combined_df[dataset_key].unique()
+    colors = sns.color_palette('tab10', n_colors=len(all_datasets))
+    dataset_colors = dict(zip(all_datasets, colors))
+    
+    # Store legend handles and labels (will be the same for all subplots)
+    legend_handles = []
+    legend_labels = []
+    
+    for idx, server_type in enumerate(server_types):
+        ax = axes[idx]
+        
+        # Filter data for this server type
+        server_df = combined_df[combined_df['server_type'] == server_type].copy()
+        
+        # Remove rows with NaN values
+        clean_df = server_df.dropna(subset=[x_axis_key, y_axis_key])
+        
+        if len(clean_df) < 2:
+            ax.text(0.5, 0.5, f'Insufficient data\nfor {server_type.upper()}', 
+                   transform=ax.transAxes, ha='center', va='center',
+                   fontsize=12, bbox=dict(boxstyle='round', facecolor='lightgray'))
+            ax.set_title(server_type.upper(), fontsize=14, fontweight='bold')
+            continue
+        
+        # Plot scatter points colored by dataset
+        for dataset in all_datasets:
+            dataset_data = clean_df[clean_df[dataset_key] == dataset]
+            if len(dataset_data) > 0:
+                scatter = ax.scatter(
+                    dataset_data[x_axis_key],
+                    dataset_data[y_axis_key],
+                    color=dataset_colors[dataset],
+                    label=dataset,
+                    s=80,
+                    alpha=0.7,
+                    edgecolor='white',
+                    linewidth=0.5
+                )
+                
+                # Store legend info from first subplot only
+                if idx == 0:
+                    legend_handles.append(scatter)
+                    legend_labels.append(dataset)
+        
+        # Calculate overall regression statistics for this server
+        x_values = clean_df[x_axis_key].values
+        y_values = clean_df[y_axis_key].values
+        
+        try:
+            # Calculate regression line for all data points
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x_values, y_values)
+            r_squared = r_value**2
+            
+            # Plot single regression line in black
+            x_min, x_max = np.min(x_values), np.max(x_values)
+            x_line = np.linspace(x_min, x_max, 100)
+            y_line = slope * x_line + intercept
+            
+            ax.plot(
+                x_line, y_line,
+                color='black',
+                linestyle='-',
+                linewidth=2,
+                alpha=0.8
+            )
+            
+            # Add confidence interval using seaborn
+            temp_df = pd.DataFrame({
+                'x': x_values,
+                'y': y_values
+            })
+            
+            sns.regplot(
+                data=temp_df,
+                x='x',
+                y='y',
+                ax=ax,
+                scatter=False,
+                ci=95,
+                color='black',
+                line_kws={'alpha': 0}  # Make line invisible since we already plotted it
+            )
+            
+            # Format p-value for display
+            if p_value < 0.001:
+                p_str = "p < 0.001"
+            elif p_value < 0.01:
+                p_str = f"p = {p_value:.3f}"
+            else:
+                p_str = f"p = {p_value:.2f}"
+            
+            # Add regression statistics as text
+            stats_text = f'β = {slope:.3f}\nR² = {r_squared:.3f}\n{p_str}'
+            ax.text(0.05, 0.95, stats_text, 
+                    transform=ax.transAxes, 
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                    verticalalignment='top',
+                    fontsize=14)
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate regression statistics for {server_type}: {e}")
+        
+        # Set title for each subplot
+        ax.set_title(server_type.upper(), fontsize=18, fontweight='bold')
+        
+        # Set x-label for all subplots
+        ax.set_xlabel('Average OT Cost', fontsize=16)
+        
+        ax.tick_params(axis='both', which='major', labelsize=12)
+        ax.tick_params(axis='both', which='minor', labelsize=10)
+        # Add grid for better readability
+        ax.grid(True, alpha=0.3)
+    
+    # Set y-label only for the leftmost subplot
+    axes[0].set_ylabel(y_label, fontsize=16)
+
+    if save_figure:
+        import os
+        # Create directory if it doesn't exist
+        save_dir = f'{RESULTS_DIR}/reg_param_figures'
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Save with high resolution for paper
+        filename = f'regularization_param.pdf'
+        filepath = os.path.join(save_dir, filename)
+        fig.savefig(filepath, 
+                   dpi=300,           # High resolution
+                   bbox_inches='tight', # Remove extra whitespace
+                   format='pdf',       # PDF format for papers
+                   facecolor='white',  # White background
+                   edgecolor='none')   # No edge color
+        print(f"Figure saved to: {filepath}")
+    # Add shared legend
+    if legend_handles:
+        fig.legend(legend_handles, legend_labels, 
+                  bbox_to_anchor=(0.875, 0.753), loc='center left',
+                  title='Dataset', fontsize = 14, title_fontsize=14)
+    
+    # Adjust layout to prevent overlap
+    plt.tight_layout()
+    plt.show()
+
 
 def get_diversity_summary(
     results_manager, 
@@ -1373,8 +1699,8 @@ def get_diversity_summary(
         df = pd.merge(
             df, 
             averaged_ot_costs_df, 
-            left_on=['cost', 'run_idx'], 
-            right_on=['fl_cost_param', 'fl_run_idx'], 
+            left_on=['cost'], 
+            right_on=['fl_cost_param'], 
             how='left'
         )
         # Drop duplicate columns
@@ -1389,13 +1715,13 @@ def plot_diversity_metrics(
     df, 
     dataset_name, 
     costs=None, 
-    window_size=5, 
+    window_size=3, 
     poly_order=1, 
     figsize=(10, 6),
     x_axis_source='cost',
-    ot_method_name='WC_Direct_Hellinger_4:1',
-    client_pair='client_1_vs_client_2',
-    metrics_to_plot=None
+    metrics_to_plot=None,
+    RESULTS_DIR = None,
+    save_figure = False
 ):
     """
     Plots diversity metrics over rounds, with colors based on either cost or OT cost.
@@ -1472,7 +1798,7 @@ def plot_diversity_metrics(
         
         # Create mapping from cost to average OT cost for legend and coloring
         cost_to_ot = dict(zip(ot_by_cost['cost'], ot_by_cost['avg_ot_cost']))
-        legend_prefix = "OT Cost = "
+        legend_prefix = "Cost = "
         
         # Create a continuous color scale based on OT costs
         min_ot = min(cost_to_ot.values())
@@ -1485,7 +1811,7 @@ def plot_diversity_metrics(
         ax = axes[i]
         
         # Set plot title and labels
-        ax.set_title(config['title'], fontsize=14)
+        #ax.set_title(config['title'], fontsize=14)
         ax.set_xlabel('Round', fontsize=12)
         ax.set_ylabel(config['title'], fontsize=12)
         
@@ -1541,7 +1867,7 @@ def plot_diversity_metrics(
             else:  # x_axis_source == 'avg_ot_cost'
                 # Use the mapped OT cost value instead of original cost
                 ot_value = cost_to_ot[group_value]
-                legend_labels.append(f"{legend_prefix}{ot_value:.2f}")
+                legend_labels.append(f"{legend_prefix}{ot_value:.3f}")
             
             # Plot original points with lower alpha
             ax.scatter(x, y, color=color, alpha=0.2)
@@ -1553,18 +1879,235 @@ def plot_diversity_metrics(
         # Add grid
         ax.grid(True, linestyle='--', alpha=0.7)
     
-    # # Set overall title based on grouping strategy
-    # if x_axis_source == 'cost':
-    #     fig.suptitle(f"Diversity Metrics for {dataset_name}", fontsize=16)
-    # else:  # x_axis_source == 'avg_ot_cost'
-    #     fig.suptitle(
-    #         f"Diversity Metrics for {dataset_name}\n" +
-    #         f"Colored by OT Cost ({ot_method_name}, {client_pair})",
-    #         fontsize=16
-    #     )
+    if save_figure:
+        import os
+        # Create directory if it doesn't exist
+        save_dir = f'{RESULTS_DIR}/weight_div_figures'
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Save with high resolution for paper
+        filename = f'{dataset_name}_weight_div.pdf'
+        filepath = os.path.join(save_dir, filename)
+        fig.savefig(filepath, 
+                   dpi=300,           # High resolution
+                   bbox_inches='tight', # Remove extra whitespace
+                   format='pdf',       # PDF format for papers
+                   facecolor='white',  # White background
+                   edgecolor='none')   # No edge color
+        print(f"Figure saved to: {filepath}")
     
     # Adjust layout
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+    
+    
+    
+def plot_ot_method_comparison(
+    dataset_name: str,
+    ot_results_df: pd.DataFrame,
+    costs: List[float],
+    baseline_ot_method_name: str,
+    variant_ot_method_names: List[str],
+    target_client_pair: Optional[str] = None,
+    plot_title: Optional[str] = None,
+    figsize: Tuple[int, int] = (8, 8),
+    save_figure: Optional[bool] = None,
+    RESULTS_DIR: Optional[str] = 'results'
+) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
+    """
+    Compare mean OT costs between a baseline method and variants across different cost parameters.
+    Lines connect points based on x-axis ordering.
+    
+    Args:
+        ot_results_df: DataFrame with OT analysis results
+        baseline_ot_method_name: Name of the baseline OT method (x-axis)
+        variant_ot_method_names: List of variant OT method names to compare (y-axis)
+        target_client_pair: Specific client pair to filter for (optional)
+        plot_title: Custom title for the plot
+        figsize: Figure size as (width, height)
+        
+    Returns:
+        Tuple of (Figure, Axes) or (None, None) if data is insufficient
+    """
+    ot_results_df = ot_results_df[ot_results_df['fl_cost_param'].isin(costs)]
+    # Input validation
+    if ot_results_df.empty:
+        return None, None
+    
+    required_cols = ['ot_method_name', 'ot_cost_value', 'fl_cost_param']
+    if not all(col in ot_results_df.columns for col in required_cols):
+        return None, None
+    
+    if baseline_ot_method_name not in ot_results_df['ot_method_name'].unique():
+        return None, None
+    
+    valid_variants = []
+    for variant in variant_ot_method_names:
+        if variant in ot_results_df['ot_method_name'].unique():
+            valid_variants.append(variant)
+    
+    if not valid_variants:
+        return None, None
+    
+    # Filter for target client pair if specified
+    df = ot_results_df.copy()
+    if target_client_pair:
+        df = df[df['client_pair'] == target_client_pair]
+        if df.empty:
+            return None, None
+    
+    # Get list of all cost parameters used in the data
+    all_costs = sorted(df['fl_cost_param'].unique())
+    if not all_costs:
+        return None, None
+    
+    # Create figure for plotting
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Calculate mean OT cost for baseline method for each cost parameter
+    baseline_means = {}
+    for cost in all_costs:
+        cost_data = df[(df['ot_method_name'] == baseline_ot_method_name) & 
+                       (df['fl_cost_param'] == cost)]
+        
+        if not cost_data.empty:
+            # Calculate mean of valid OT costs
+            valid_costs = cost_data['ot_cost_value'].dropna()
+            if not valid_costs.empty:
+                baseline_means[cost] = valid_costs.mean()
+    
+    # Skip if no baseline data
+    if not baseline_means:
+        return None, None
+    
+    # Define a set of highly distinguishable colors
+    distinct_colors = [
+        '#1f77b4',  # blue
+        '#d62728',  # red
+        '#2ca02c',  # green
+        '#9467bd',  # purple
+        '#ff7f0e',  # orange
+        '#8c564b',  # brown
+        '#e377c2',  # pink
+        '#17becf',  # cyan
+        '#bcbd22',  # olive
+        '#7f7f7f'   # gray
+    ]
+    
+    # For storing all values to determine plot limits
+    all_values = []
+    
+    for i, variant_name in enumerate(valid_variants):
+        variant_means = {}
+        
+        # Calculate mean OT cost for variant method for each cost parameter
+        for cost in all_costs:
+            cost_data = df[(df['ot_method_name'] == variant_name) & 
+                          (df['fl_cost_param'] == cost)]
+            
+            if not cost_data.empty:
+                valid_costs = cost_data['ot_cost_value'].dropna()
+                if not valid_costs.empty and cost in baseline_means:
+                    variant_means[cost] = valid_costs.mean()
+        
+        # Skip if no variant data
+        if not variant_means:
+            continue
+        
+        # Create lists for plotting - matched by cost parameter
+        common_costs = sorted([cost for cost in variant_means if cost in baseline_means])
+        if not common_costs:
+            continue
+            
+        x_values = [baseline_means[cost] for cost in common_costs]
+        y_values = [variant_means[cost] for cost in common_costs]
+        
+        # Sort by x-values to ensure line connects points in order of baseline costs
+        sorted_pairs = sorted(zip(x_values, y_values), key=lambda pair: pair[0])
+        x_values_sorted = [pair[0] for pair in sorted_pairs]
+        y_values_sorted = [pair[1] for pair in sorted_pairs]
+        
+        all_values.extend(x_values_sorted)
+        all_values.extend(y_values_sorted)
+        
+        # Get color for this variant
+        color = distinct_colors[i % len(distinct_colors)]
+        
+        # Plot connecting line based on x-axis ordering
+        ax.plot(
+            x_values_sorted, y_values_sorted,
+            color=color,
+            linestyle='-',
+            linewidth=1.5,
+            alpha=0.7,
+            label=variant_name
+        )
+        
+        # Plot scatter points
+        ax.scatter(
+            x_values_sorted, y_values_sorted,
+            color=color,
+            marker='o',
+            s=80,
+            alpha=0.8,
+            zorder=5,
+            edgecolors='white',
+            linewidths=0.5
+        )
+    
+    # Add y=x reference line
+    if all_values:
+        all_finite = [v for v in all_values if np.isfinite(v)]
+        if all_finite:
+            min_val = min(all_finite) * 0.9
+            max_val = max(all_finite) * 1.1
+            
+            ax.plot(
+                [min_val, max_val], 
+                [min_val, max_val], 
+                'k--',
+                alpha=0.7, 
+                linewidth=1.5,
+                label='Perfect Agreement'
+            )
+            
+            # Set axis limits
+            ax.set_xlim(min_val, max_val)
+            ax.set_ylim(min_val, max_val)
+    
+    # Labels and title
+    ax.set_xlabel(f"Mean OT Cost: Full", fontsize=12)
+    ax.set_ylabel("Mean OT Cost: Subsampled", fontsize=12)
+    
+    
+    # Add grid for readability
+    ax.grid(True, linestyle='--', alpha=0.7)
+    
+    # Ensure legend is visible
+    ax.legend(fontsize=12, title_fontsize=12, title = 'Sample size', loc='best')
+    
+    # Set equal aspect ratio
+    ax.set_aspect('equal')
+
+    if save_figure:
+        import os
+        # Create directory if it doesn't exist
+        save_dir = f'{RESULTS_DIR}/sensitivity_figures'
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Save with high resolution for paper
+        filename = f'{dataset_name}_sample.pdf'
+        filepath = os.path.join(save_dir, filename)
+        fig.savefig(filepath, 
+                    dpi=300,           # High resolution
+                    bbox_inches='tight', # Remove extra whitespace
+                    format='pdf',       # PDF format for papers
+                    facecolor='white',  # White background
+                    edgecolor='none')   # No edge color
+        print(f"Figure saved to: {filepath}")
+    
+    # Adjust layout
+    plt.tight_layout()
     plt.show()
     
     return

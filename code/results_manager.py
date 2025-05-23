@@ -20,6 +20,7 @@ RESULTS_DIR = dir_paths.results_dir
 
 # Import from helper.py
 from helper import MetricKey, ExperimentType, infer_higher_is_better
+from ot_configs import all_configs as all_ot_configs
 # =============================================================================
 # == Data Structures ==
 # ==============================================================================
@@ -398,6 +399,7 @@ class ResultsManager:
                         dataset_direction_overrides: Optional[Dict[str, str]] = None) -> Optional[Any]:
         """
         Finds the best hyperparameter (LR or Reg) based on the specified metric across runs.
+        Ignores runs with 0 or NaN validation metrics.
         
         Args:
             param_type: Type of parameter tuning ('learning_rate' or 'reg_param')
@@ -432,27 +434,39 @@ class ResultsManager:
         if not tuning_param_name:
             return None  # Parameter name should be set during tuning
 
-        # Group metrics by parameter value
+        # Group metrics by parameter value and track ignored runs
         param_values = {}  # {param_val: [list_of_metrics_per_run]}
+        ignored_runs_count = 0
+        
         for record in relevant_records:
             param_val = record.tuning_param_value
             metric_list = record.metrics.get(metric_key, [])
 
             if not metric_list:
+                ignored_runs_count += 1
                 continue  # Skip if no metrics
 
             try:
                 # Use median for robustness
                 run_metric = float(np.nanmedian(metric_list))
-                if np.isnan(run_metric):
+                
+                # Skip if metric is 0 or NaN
+                if np.isnan(run_metric) or run_metric == 0:
+                    ignored_runs_count += 1
                     continue
+                    
             except:
+                ignored_runs_count += 1
                 continue
 
             if param_val not in param_values:
                 param_values[param_val] = []
             param_values[param_val].append(run_metric)
 
+        # Report ignored runs if any
+        if ignored_runs_count > 0:
+            print(f"Warning: Ignored {ignored_runs_count} run(s) with 0 or NaN validation metrics for {server_type}, cost {cost}.")
+            
         if not param_values:
             return None
 
@@ -469,7 +483,6 @@ class ResultsManager:
         # Find the best parameter value based on higher_is_better
         best_param = max(avg_metrics, key=avg_metrics.get) if higher_is_better else min(avg_metrics, key=avg_metrics.get)
         return best_param
-
     def get_experiment_status(self, experiment_type: str,
                             expected_costs: List[Any],
                             default_params: Dict,
@@ -507,20 +520,8 @@ class ResultsManager:
                     client_pairs.append(f"{client_ids[i]}_vs_{client_ids[j]}")
             
             # Get OT method names from loaded records or use a default set
-            ot_method_names = set()
-            for record in records:
-                if isinstance(record, dict) and 'ot_method_name' in record:
-                    ot_method_names.add(record.get('ot_method_name'))
-            
-            # Fallback if no methods found in records
-            if not ot_method_names:
-                # Try to infer from known method names
-                from ot_configs import all_configs
-                ot_method_names = set([config.name for config in all_configs])
-                # If still empty, use a default
-                if not ot_method_names:
-                    ot_method_names = {"Direct_Wasserstein", "WC_Direct_Hellinger_4:1"}
-            
+            ot_method_names = set([config.name for config in all_ot_configs])
+
             # Build a set of successfully completed work units
             completed_units = set()
             for record in records:
