@@ -36,7 +36,7 @@ $G_c = (p_A(z_c) - e_{y_{target}})z_c^T, \quad G_k = (p_B(z_k) - e_{y_{target}})
 
 Then
 
-$\|G_c - G_k\|_F \leq \|p_A(z_c) - e_{y_{target}}\|_2 \|z_c - z_k\|_2 + \|p_A(z_c) - p_B(z_k)\|_2.$
+$|G_c - G_k|_F \leq \|p_A(z_c) - e_{y_{target}}|_2 |z_c - z_k|_2 + |p_A(z_c) - p_B(z_k)|_2.$
 
 **Proof.** We decompose the difference by adding and subtracting an intermediate term:
 
