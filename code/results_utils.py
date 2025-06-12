@@ -1919,7 +1919,8 @@ def plot_ot_method_comparison(
     plot_title: Optional[str] = None,
     figsize: Tuple[int, int] = (8, 8),
     save_figure: Optional[bool] = None,
-    RESULTS_DIR: Optional[str] = 'results'
+    RESULTS_DIR: Optional[str] = 'results',
+    name: Optional[str] = 'sample'
 ) -> Tuple[Optional[plt.Figure], Optional[plt.Axes]]:
     """
     Compare mean OT costs between a baseline method and variants across different cost parameters.
@@ -2105,7 +2106,7 @@ def plot_ot_method_comparison(
         os.makedirs(save_dir, exist_ok=True)
         
         # Save with high resolution for paper
-        filename = f'{dataset_name}_sample.pdf'
+        filename = f'{dataset_name}_{name}.pdf'
         filepath = os.path.join(save_dir, filename)
         fig.savefig(filepath, 
                     dpi=300,           # High resolution
