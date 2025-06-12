@@ -11,7 +11,8 @@ from directories import paths
 
 # --- Global Settings ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-torch.set_num_threads(6)
+#torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
+#torch.set_num_interop_threads(int(os.environ["OMP_NUM_THREADS"]))
 
 N_WORKERS = 4 
 
@@ -57,7 +58,7 @@ COMMON_TABULAR_PARAMS = dict(
     source_args={}, # For raw data loading parameters
     selection_criterion_key= SELECTION_CRITERION_KEY, # Default for tabular: optimize for scores (F1, etc.)
     selection_criterion_direction_overrides={}, # Empty dict means use defaults based on key name,
-    n_workers = 0
+    n_workers = 4
 )
 
 # --- Common Configuration for Image Datasets ---

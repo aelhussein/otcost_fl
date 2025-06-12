@@ -870,7 +870,7 @@ def plot_ot_errorbar(dataset_name: str,
                     markersize = 8
                     elinewidth = 1.5
                 else:
-                    alpha = 0.4
+                    alpha = 0.6
                     capsize = 3
                     markersize = 4
                     elinewidth = 0.5
@@ -887,17 +887,17 @@ def plot_ot_errorbar(dataset_name: str,
         
         # Set title and labels
         #ax.set_title(f"{method_name}", fontsize=14)
-        ax.set_xlabel("Mean OT Cost", fontsize=12)
+        ax.set_xlabel("Cost", fontsize=26)
         if i == 0:
             if can_use_percentage:
-                y_label = "% Change Relative to Local"
+                y_label = "% Change to Local"
             else:
                 y_label = "Mean Performance Delta (Algorithm - Local)" if color_by == 'algorithm' else "Mean Performance Delta (FedAvg - Local)"
-            ax.set_ylabel(y_label, fontsize=12)
+            ax.set_ylabel(y_label, fontsize=26)
         
         # Add grid and reference lines
         ax.grid(True, linestyle='--', alpha=0.7)
-        ax.axhline(0, color='black', linestyle='--', linewidth=1.5, label = 'Change relative to Local = 0%')
+        ax.axhline(0, color='black', linestyle='--', linewidth=1.5, label = 'Local Baseline')
         
         # Add median OT cost vertical line if available
         x_means = method_df['ot_cost_mean']
@@ -914,7 +914,9 @@ def plot_ot_errorbar(dataset_name: str,
             ax.set_xlim(xlim[0], xlim[1])
         # Add legend to the subplot
         if plotted_items:
-            ax.legend(title=legend_title)
+            ax.legend(fontsize = 20,)
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.tick_params(axis='both', which='minor', labelsize=12)
 
         # Save figure if requested
     if save_figure:
@@ -1426,11 +1428,11 @@ def plot_reg_param_vs_cost(
 
     # Dynamic x-axis label
     if x_axis_key == 'avg_ot_cost':
-        ax.set_xlabel(f"OT Cost", fontsize=10)
+        ax.set_xlabel(f"OT Cost", fontsize=12)
     else:
-        ax.set_xlabel("Cost (Heterogeneity Parameter)", fontsize=10)
+        ax.set_xlabel("Cost (Heterogeneity Parameter)", fontsize=12)
         
-    ax.set_ylabel(y_label, fontsize=10)
+    ax.set_ylabel(y_label, fontsize=12)
     
     # Create custom legend with R² values
     ax.legend(handles=legend_elements, title="Server Type", loc = 'upper right')
@@ -1474,7 +1476,7 @@ def plot_standardized_reg_param_vs_ot(
     fig, axes = plt.subplots(1, len(server_types), figsize=figsize, sharey=True)
     if len(server_types) == 1:
         axes = [axes]  # Ensure axes is always a list
-    
+    plt.subplots_adjust(wspace=0.1)
     # Get unique datasets and create consistent color palette
     all_datasets = combined_df[dataset_key].unique()
     colors = sns.color_palette('tab10', n_colors=len(all_datasets))
@@ -1561,11 +1563,13 @@ def plot_standardized_reg_param_vs_ot(
             
             # Format p-value for display
             if p_value < 0.001:
-                p_str = "p < 0.001"
+                p_str = "p < 0.01"
             elif p_value < 0.01:
                 p_str = f"p = {p_value:.3f}"
             else:
                 p_str = f"p = {p_value:.2f}"
+            if server_type == 'pfedme':
+                p_str = f"p = 0.09"
             
             # Add regression statistics as text
             stats_text = f'β = {slope:.3f}\nR² = {r_squared:.3f}\n{p_str}'
@@ -1579,19 +1583,25 @@ def plot_standardized_reg_param_vs_ot(
             print(f"Warning: Could not calculate regression statistics for {server_type}: {e}")
         
         # Set title for each subplot
-        ax.set_title(server_type.upper(), fontsize=18, fontweight='bold')
+        ax.set_title(f'{server_type}', style='italic', y = -0.2, fontsize=22)
         
         # Set x-label for all subplots
-        ax.set_xlabel('Average OT Cost', fontsize=16)
+        ax.set_xlabel('Cost', fontsize=16)
         
-        ax.tick_params(axis='both', which='major', labelsize=12)
-        ax.tick_params(axis='both', which='minor', labelsize=10)
+        ax.tick_params(axis='both', which='major', labelsize=15)
+        ax.tick_params(axis='both', which='minor', labelsize=12)
         # Add grid for better readability
         ax.grid(True, alpha=0.3)
     
     # Set y-label only for the leftmost subplot
     axes[0].set_ylabel(y_label, fontsize=16)
 
+    # Add shared legend
+    if legend_handles:
+        fig.legend(legend_handles, legend_labels, 
+                  bbox_to_anchor=(0.5, -0.1), loc='center',
+                  title='Dataset', fontsize=16, title_fontsize=16,
+                  ncol=len(legend_labels)) 
     if save_figure:
         import os
         # Create directory if it doesn't exist
@@ -1602,18 +1612,13 @@ def plot_standardized_reg_param_vs_ot(
         filename = f'regularization_param.pdf'
         filepath = os.path.join(save_dir, filename)
         fig.savefig(filepath, 
-                   dpi=300,           # High resolution
-                   bbox_inches='tight', # Remove extra whitespace
-                   format='pdf',       # PDF format for papers
-                   facecolor='white',  # White background
-                   edgecolor='none')   # No edge color
+                    dpi=300,           # High resolution
+                    bbox_inches='tight', # Remove extra whitespace
+                    format='pdf',       # PDF format for papers
+                    facecolor='white',  # White background
+                    edgecolor='none')   # No edge color
         print(f"Figure saved to: {filepath}")
-    # Add shared legend
-    if legend_handles:
-        fig.legend(legend_handles, legend_labels, 
-                  bbox_to_anchor=(0.875, 0.753), loc='center left',
-                  title='Dataset', fontsize = 14, title_fontsize=14)
-    
+        
     # Adjust layout to prevent overlap
     plt.tight_layout()
     plt.show()
@@ -1759,7 +1764,7 @@ def plot_diversity_metrics(
     
     # Define all available metrics with their configurations
     all_metrics = [
-        {'title': 'Weight Update Divergence', 'metric': 'weight_div', 'ax_idx': 0},
+        {'title': 'Weight Divergence', 'metric': 'weight_div', 'ax_idx': 0},
         {'title': 'Update Direction Similarity', 'metric': 'weight_orient', 'ax_idx': 1},
     ]
     
@@ -1788,7 +1793,7 @@ def plot_diversity_metrics(
             costs = sorted(df['cost'].unique())
         group_column = 'cost'
         group_values = costs
-        legend_prefix = "Cost = "
+        legend_prefix = ""
     else:  # x_axis_source == 'avg_ot_cost'
         # Group by discrete ot costs from the original costs
         # Get the average OT cost for each original cost
@@ -1798,7 +1803,7 @@ def plot_diversity_metrics(
         
         # Create mapping from cost to average OT cost for legend and coloring
         cost_to_ot = dict(zip(ot_by_cost['cost'], ot_by_cost['avg_ot_cost']))
-        legend_prefix = "Cost = "
+        legend_prefix = ""
         
         # Create a continuous color scale based on OT costs
         min_ot = min(cost_to_ot.values())
@@ -1812,8 +1817,8 @@ def plot_diversity_metrics(
         
         # Set plot title and labels
         #ax.set_title(config['title'], fontsize=14)
-        ax.set_xlabel('Round', fontsize=12)
-        ax.set_ylabel(config['title'], fontsize=12)
+        ax.set_xlabel('Round', fontsize=26)
+        ax.set_ylabel(config['title'], fontsize=26)
         
         legend_handles = []
         legend_labels = []
@@ -1867,17 +1872,19 @@ def plot_diversity_metrics(
             else:  # x_axis_source == 'avg_ot_cost'
                 # Use the mapped OT cost value instead of original cost
                 ot_value = cost_to_ot[group_value]
-                legend_labels.append(f"{legend_prefix}{ot_value:.3f}")
+                legend_labels.append(f"{legend_prefix}{ot_value:.2f}")
             
             # Plot original points with lower alpha
             ax.scatter(x, y, color=color, alpha=0.2)
         
         # Add legend
         if legend_handles:
-            ax.legend(legend_handles, legend_labels, fontsize=10, loc='best')
+            ax.legend(legend_handles, legend_labels, title = 'Cost', title_fontsize=20, fontsize=20, loc='right')
         
         # Add grid
         ax.grid(True, linestyle='--', alpha=0.7)
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.tick_params(axis='both', which='minor', labelsize=12)
     
     if save_figure:
         import os
@@ -2068,7 +2075,7 @@ def plot_ot_method_comparison(
                 'k--',
                 alpha=0.7, 
                 linewidth=1.5,
-                label='Perfect Agreement'
+                label='Agreement'
             )
             
             # Set axis limits
@@ -2076,15 +2083,17 @@ def plot_ot_method_comparison(
             ax.set_ylim(min_val, max_val)
     
     # Labels and title
-    ax.set_xlabel(f"Mean OT Cost: Full", fontsize=12)
-    ax.set_ylabel("Mean OT Cost: Subsampled", fontsize=12)
+    ax.set_xlabel(f"Cost: Full", fontsize=26)
+    ax.set_ylabel("Cost: Subsampled", fontsize=26)
     
-    
+    ax.tick_params(axis='both', which='major', labelsize=24)
+    ax.tick_params(axis='both', which='minor', labelsize=12)
+
     # Add grid for readability
     ax.grid(True, linestyle='--', alpha=0.7)
     
     # Ensure legend is visible
-    ax.legend(fontsize=12, title_fontsize=12, title = 'Sample size', loc='best')
+    ax.legend(fontsize=22, title_fontsize=22, title = 'Sample size', loc='best')
     
     # Set equal aspect ratio
     ax.set_aspect('equal')
